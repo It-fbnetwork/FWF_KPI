@@ -100,7 +100,8 @@ export default function PeoplePage() {
     const [customEndDate, setCustomEndDate] = useState("")
     const isAdmin = isAdminLikeRole(user?.role)
     const isStoreTrainer = user?.role === "store_trainer" && user?.department === "Cửa hàng"
-    const canManagePeople = isAdmin || isStoreTrainer
+    const isStoreManager = user?.role === "store_manager" && user?.department === "Cửa hàng"
+    const canManagePeople = isAdmin || isStoreTrainer || isStoreManager
     const currentUser = findPersonForAuthUser(user, people)
     const currentTeamId = currentUser?.team ?? ""
     const accessiblePeople = isAdmin
@@ -118,13 +119,25 @@ export default function PeoplePage() {
         person.team === "store" &&
         person.id !== currentUser?.id &&
         trainerManagedRoleSet.has(person.role)
-    const canEditPerson = (person: Person) => isAdmin || canTrainerManagePerson(person)
+    const managerManagedRoleSet = useMemo(
+        () => new Set(["Cửa hàng trưởng", "Kỹ thuật viên", "Nhân viên cửa hàng"]),
+        []
+    )
+    const canManagerManagePerson = (person: Person) =>
+        isStoreManager &&
+        person.team === "store" &&
+        person.id !== currentUser?.id &&
+        managerManagedRoleSet.has(person.role)
+    const canEditPerson = (person: Person) => isAdmin || canTrainerManagePerson(person) || canManagerManagePerson(person)
     const availablePersonRoles = useMemo(() => {
         if (isStoreTrainer) {
             return personDisplayRoles.filter((role) => trainerManagedRoleSet.has(role))
         }
+        if (isStoreManager) {
+            return personDisplayRoles.filter((role) => managerManagedRoleSet.has(role))
+        }
         return personDisplayRoles
-    }, [isStoreTrainer, trainerManagedRoleSet])
+    }, [isStoreManager, isStoreTrainer, managerManagedRoleSet, trainerManagedRoleSet])
 
     const filteredPeople = accessiblePeople.filter((person) => {
         const matchesSearch =

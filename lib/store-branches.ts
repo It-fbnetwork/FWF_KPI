@@ -79,3 +79,36 @@ export const STORE_BRANCHES_BY_REGION = STORE_REGIONS.reduce<Record<StoreRegion,
 });
 
 export const STORE_BRANCH_ID_SET = new Set(STORE_BRANCHES.map((branch) => branch.id));
+
+export const STORE_AREAS = {
+  north: {
+    id: "north",
+    label: "Miền Bắc",
+    cities: ["Hà Nội", "Hải Phòng"] as const
+  },
+  central: {
+    id: "central",
+    label: "Miền Trung",
+    cities: ["Đà Nẵng", "Nha Trang"] as const
+  },
+  south: {
+    id: "south",
+    label: "Miền Nam",
+    cities: ["Hồ Chí Minh", "Vũng Tàu"] as const
+  }
+} as const;
+
+export type StoreAreaId = keyof typeof STORE_AREAS;
+
+export const STORE_AREA_OPTIONS = (Object.values(STORE_AREAS) as Array<(typeof STORE_AREAS)[StoreAreaId]>).map((area) => ({
+  id: area.id,
+  label: `${area.label} (${area.cities.join(", ")})`,
+  cities: [...area.cities]
+}));
+
+export function getBranchIdsByArea(areaId: StoreAreaId) {
+  const area = STORE_AREAS[areaId];
+  if (!area) return [];
+  const citySet = new Set(area.cities);
+  return STORE_BRANCHES.filter((branch) => citySet.has(branch.city as (typeof area.cities)[number])).map((branch) => branch.id);
+}

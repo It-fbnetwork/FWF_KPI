@@ -192,6 +192,7 @@ type DbLearningQuiz = {
   description?: string;
   questions: DbQuizQuestion[];
   durationMinutes: number;
+  timePerQuestionSeconds?: number;
   createdByPersonId: string;
   createdAt: string;
   updatedAt: string;
@@ -459,6 +460,7 @@ export type LearningQuizRecord = {
   description: string;
   questions: QuizQuestion[];
   durationMinutes: number;
+  timePerQuestionSeconds?: number;
   createdByPersonId: string;
   createdAt: string;
   updatedAt: string;
@@ -579,9 +581,18 @@ function isStoreTrainerActor(actor: SessionActor) {
   return actor.user.role === "store_trainer" && actor.user.department === "Cửa hàng";
 }
 
+function isStoreManagerActor(actor: SessionActor) {
+  return actor.user.role === "store_manager" && actor.user.department === "Cửa hàng";
+}
+
 function canStoreTrainerManageDisplayRole(role: string) {
   const normalized = normalizePersonDisplayRole(role);
   return normalized === "Quản lí cửa hàng" || normalized === "Cửa hàng trưởng" || normalized === "Kỹ thuật viên" || normalized === "Nhân viên cửa hàng";
+}
+
+function canStoreManagerManageDisplayRole(role: string) {
+  const normalized = normalizePersonDisplayRole(role);
+  return normalized === "Cửa hàng trưởng" || normalized === "Kỹ thuật viên" || normalized === "Nhân viên cửa hàng";
 }
 
 function normalizeTeamId(teamId: string) {
@@ -1101,6 +1112,7 @@ function mapDbLearningQuiz(quiz: DbLearningQuiz, sanitize: boolean): LearningQui
       ...(sanitize ? {} : { explanation: q.explanation }),
     })),
     durationMinutes: quiz.durationMinutes,
+    ...(quiz.timePerQuestionSeconds ? { timePerQuestionSeconds: quiz.timePerQuestionSeconds } : {}),
     createdByPersonId: quiz.createdByPersonId,
     createdAt: quiz.createdAt,
     updatedAt: quiz.updatedAt,
@@ -1718,9 +1730,6 @@ export async function createRegistrationOtp(input: {
       if (!normalizedStoreBranchIds.every((branchId) => STORE_BRANCH_ID_SET.has(branchId))) {
         return { ok: false, message: "Danh sách chi nhánh không hợp lệ." };
       }
-      if (input.role === "store_manager" && normalizedStoreBranchIds.length > 5) {
-        return { ok: false, message: "Quản lí cửa hàng chỉ được chọn tối đa 5 chi nhánh." };
-      }
       if (input.role !== "store_manager" && normalizedStoreBranchIds.length !== 1) {
         return { ok: false, message: "Role này chỉ được chọn đúng 1 chi nhánh." };
       }
@@ -1942,7 +1951,7 @@ async function requirePeopleManagerActor(sessionUserId?: string | null) {
     throw new Error("Unauthorized");
   }
 
-  if (actor.isAdmin || isStoreTrainerActor(actor)) {
+  if (actor.isAdmin || isStoreTrainerActor(actor) || isStoreManagerActor(actor)) {
     return actor;
   }
 
@@ -1980,6 +1989,14 @@ export async function createPersonRecord(
     }
     if (!canStoreTrainerManageDisplayRole(normalizedRole)) {
       throw new Error("Trainer chỉ được thêm Quản lí cửa hàng, Cửa hàng trưởng hoặc Kỹ thuật viên.");
+    }
+  }
+  if (isStoreManagerActor(actor)) {
+    if (input.team !== "store") {
+      throw new Error("Quản lí cửa hàng chỉ được thêm nhân sự phòng ban Cửa hàng.");
+    }
+    if (!canStoreManagerManageDisplayRole(normalizedRole)) {
+      throw new Error("Quản lí cửa hàng chỉ được thêm Cửa hàng trưởng hoặc Kỹ thuật viên.");
     }
   }
 
@@ -2058,6 +2075,17 @@ export async function updatePersonRecord(
     }
     if (!canStoreTrainerManageDisplayRole(normalizedRole)) {
       throw new Error("Trainer chỉ được chỉnh role Quản lí cửa hàng, Cửa hàng trưởng hoặc Kỹ thuật viên.");
+    }
+  }
+  if (isStoreManagerActor(actor)) {
+    if (!canAccessPerson(actor, personId)) {
+      throw new Error("Forbidden");
+    }
+    if (existingPerson.teamId !== "store" || updates.team !== "store") {
+      throw new Error("Quản lí cửa hàng chỉ được chỉnh nhân sự phòng ban Cửa hàng.");
+    }
+    if (!canStoreManagerManageDisplayRole(normalizedRole)) {
+      throw new Error("Quản lí cửa hàng chỉ được chỉnh role Cửa hàng trưởng hoặc Kỹ thuật viên.");
     }
   }
 
@@ -2408,6 +2436,17 @@ export async function deletePersonRecord(
     }
     if (!canStoreTrainerManageDisplayRole(existingPerson.role)) {
       throw new Error("Trainer không thể xóa role này.");
+    }
+  }
+  if (isStoreManagerActor(actor)) {
+    if (!canAccessPerson(actor, personId)) {
+      throw new Error("Forbidden");
+    }
+    if (existingPerson.teamId !== "store") {
+      throw new Error("Quản lí cửa hàng chỉ được xóa nhân sự phòng ban Cửa hàng.");
+    }
+    if (!canStoreManagerManageDisplayRole(existingPerson.role)) {
+      throw new Error("Quản lí cửa hàng không thể xóa role này.");
     }
   }
 
@@ -3322,6 +3361,7 @@ export async function createLearningQuiz(
     description?: string;
     questions: Array<{ text: string; options: string[]; correctIndex: number; explanation?: string }>;
     durationMinutes: number;
+    timePerQuestionSeconds?: number;
   }
 ): Promise<LearningQuizRecord> {
   const actor = await getSessionActor(sessionUserId);
@@ -3345,6 +3385,9 @@ export async function createLearningQuiz(
       explanation: q.explanation?.trim() ?? "",
     })),
     durationMinutes: Math.max(5, input.durationMinutes),
+    timePerQuestionSeconds: input.timePerQuestionSeconds
+      ? Math.max(5, Math.floor(input.timePerQuestionSeconds))
+      : undefined,
     createdByPersonId: actor.person.id,
     createdAt: now,
     updatedAt: now,
@@ -3362,6 +3405,7 @@ export async function updateLearningQuiz(
     description?: string;
     questions?: Array<{ text: string; options: string[]; correctIndex: number; explanation?: string }>;
     durationMinutes?: number;
+    timePerQuestionSeconds?: number;
   }
 ): Promise<LearningQuizRecord | null> {
   const actor = await getSessionActor(sessionUserId);
@@ -3381,6 +3425,9 @@ export async function updateLearningQuiz(
     }));
   }
   if (updates.durationMinutes !== undefined) payload.durationMinutes = Math.max(5, updates.durationMinutes);
+  if (updates.timePerQuestionSeconds !== undefined) {
+    payload.timePerQuestionSeconds = Math.max(5, Math.floor(updates.timePerQuestionSeconds));
+  }
 
   await db.collection<DbLearningQuiz>("learning_quizzes").updateOne({ _id: quizId }, { $set: payload });
   const updated = await db.collection<DbLearningQuiz>("learning_quizzes").findOne({ _id: quizId });
