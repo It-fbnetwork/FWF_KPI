@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent } from "@/components/ui/card"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { documentTypes, formatFileSize, formatDate, type Document, type Folder } from "@/lib/documents"
 import type { UserAccount } from "@/lib/auth"
@@ -53,8 +53,6 @@ import {
     Pencil,
     Users,
     GraduationCap,
-    AlertTriangle,
-    Maximize,
 } from "lucide-react"
 
 type LearningQuizQuestion = {
@@ -71,6 +69,7 @@ type LearningQuizRecord = {
     description: string
     questions: LearningQuizQuestion[]
     durationMinutes: number
+    timePerQuestionSeconds?: number
     createdByPersonId: string
     createdAt: string
     updatedAt: string
@@ -107,6 +106,7 @@ interface QuizCreateState {
     title: string
     description: string
     durationMinutes: string
+    timePerQuestionSeconds: string
     questions: QuizCreateQuestion[]
     isNewDocument?: boolean
     isGenerating?: boolean
@@ -121,11 +121,11 @@ interface QuizTakeState {
     currentQuestion: number
     startedAt: string
     timeLeftSeconds: number
+    questionTimeLimitSeconds: number
+    expiredQuestionIndexes: number[]
     isSubmitting: boolean
     isSubmitted: boolean
     result: QuizAttemptRecord | null
-    violationCount: number
-    lastViolationReason: string
     questionOrder: number[]
     optionOrderByQuestion: number[][]
 }
@@ -201,7 +201,7 @@ interface VisibilityDialogState {
     selectedOfficePersonIds: string[]
 }
 
-const LEARNING_REQUIRED_SECONDS = 30
+const LEARNING_REQUIRED_SECONDS = 10
 
 type LearningProgressState = {
     completedDocIds: string[]
@@ -281,12 +281,12 @@ export default function DocumentsPage() {
     const [createDocumentDialog, setCreateDocumentDialog] = useState<CreateDocumentDialogState>(
         buildDefaultCreateDocumentDialog(user)
     )
-    const [createRoleFilter, setCreateRoleFilter] = useState<string>("all")
+    const [createRoleFilter, setCreateRoleFilter] = useState<string[]>([])
     const [createMemberSearch, setCreateMemberSearch] = useState("")
     const [visibilityDialog, setVisibilityDialog] = useState<VisibilityDialogState>(
         buildDefaultVisibilityDialog(user)
     )
-    const [visibilityRoleFilter, setVisibilityRoleFilter] = useState<string>("all")
+    const [visibilityRoleFilter, setVisibilityRoleFilter] = useState<string[]>([])
     const [visibilityMemberSearch, setVisibilityMemberSearch] = useState("")
     const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -298,16 +298,16 @@ export default function DocumentsPage() {
 
     const defaultQuizCreate = (): QuizCreateState => ({
         open: false, documentId: "", documentName: "", existingQuizId: null,
-        title: "", description: "", durationMinutes: "15",
+        title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30",
         questions: [{ text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
         isNewDocument: false,
     })
     const defaultQuizTake = (): QuizTakeState => ({
         open: false, quiz: null, documentId: "", answers: [],
         currentQuestion: 0, startedAt: "", timeLeftSeconds: 0,
+        questionTimeLimitSeconds: 0,
+        expiredQuestionIndexes: [],
         isSubmitting: false, isSubmitted: false, result: null,
-        violationCount: 0,
-        lastViolationReason: "",
         questionOrder: [],
         optionOrderByQuestion: [],
     })
@@ -331,8 +331,6 @@ export default function DocumentsPage() {
     const quizTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const learningTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const quizTakeModalRef = useRef<QuizTakeState>(defaultQuizTake())
-    const quizViolationsRef = useRef(0)
-    const MAX_QUIZ_VIOLATIONS = 3
 
     const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null
     const currentPerson = people.find((person) => person.id === user?.personId) ?? null
@@ -376,15 +374,21 @@ export default function DocumentsPage() {
 
         return ["all", ...orderedRoles]
     }, [currentPerson?.team, officeSelectablePeople])
+    const matchesAnySelectedRole = useCallback(
+        (personRole: string, selectedRoles: string[]) => {
+            if (selectedRoles.length === 0) return true
+            return selectedRoles.some((selectedRole) => {
+                if (personRole === selectedRole) return true
+                return getRoleGroup(personRole) === getRoleGroup(selectedRole)
+            })
+        },
+        [getRoleGroup]
+    )
     const filteredCreatePeople = useMemo(
         () => {
-            const base =
-                createRoleFilter === "all"
-                    ? officeSelectablePeople
-                    : officeSelectablePeople.filter((person) => {
-                        if (person.role === createRoleFilter) return true
-                        return getRoleGroup(person.role) === getRoleGroup(createRoleFilter)
-                    })
+            const base = officeSelectablePeople.filter((person) =>
+                matchesAnySelectedRole(person.role, createRoleFilter)
+            )
             const query = createMemberSearch.trim().toLowerCase()
             if (!query) return base
             return base.filter(
@@ -393,17 +397,13 @@ export default function DocumentsPage() {
                     person.email.toLowerCase().includes(query)
             )
         },
-        [createMemberSearch, createRoleFilter, getRoleGroup, officeSelectablePeople]
+        [createMemberSearch, createRoleFilter, matchesAnySelectedRole, officeSelectablePeople]
     )
     const filteredVisibilityPeople = useMemo(
         () => {
-            const base =
-                visibilityRoleFilter === "all"
-                    ? officeSelectablePeople
-                    : officeSelectablePeople.filter((person) => {
-                        if (person.role === visibilityRoleFilter) return true
-                        return getRoleGroup(person.role) === getRoleGroup(visibilityRoleFilter)
-                    })
+            const base = officeSelectablePeople.filter((person) =>
+                matchesAnySelectedRole(person.role, visibilityRoleFilter)
+            )
             const query = visibilityMemberSearch.trim().toLowerCase()
             if (!query) return base
             return base.filter(
@@ -412,7 +412,7 @@ export default function DocumentsPage() {
                     person.email.toLowerCase().includes(query)
             )
         },
-        [getRoleGroup, officeSelectablePeople, visibilityMemberSearch, visibilityRoleFilter]
+        [matchesAnySelectedRole, officeSelectablePeople, visibilityMemberSearch, visibilityRoleFilter]
     )
 
     useEffect(() => {
@@ -630,13 +630,13 @@ export default function DocumentsPage() {
             ...buildDefaultCreateDocumentDialog(user),
             open: true,
         })
-        setCreateRoleFilter("all")
+        setCreateRoleFilter([])
         setCreateMemberSearch("")
     }
 
     const closeCreateDocumentDialog = () => {
         setCreateDocumentDialog(buildDefaultCreateDocumentDialog(user))
-        setCreateRoleFilter("all")
+        setCreateRoleFilter([])
         setCreateMemberSearch("")
     }
 
@@ -784,11 +784,27 @@ export default function DocumentsPage() {
     }
 
     const handleDeleteDocument = async (docId: string) => {
+        if (!confirm("Xóa tài liệu này? Thao tác này không thể hoàn tác.")) return
         try {
-            await fetch(`/api/documents/${docId}`, { method: "DELETE", credentials: "include" })
+            const res = await fetch(`/api/documents/${docId}`, { method: "DELETE", credentials: "include" })
+            if (!res.ok) throw new Error()
             setDocumentsData((prev) => prev.filter((d) => d.id !== docId))
+            setQuizzes((prev) => {
+                const next = { ...prev }
+                delete next[docId]
+                return next
+            })
+            setMyAttempts((prev) => {
+                const next = { ...prev }
+                delete next[docId]
+                return next
+            })
+            if (selectedLearningDoc?.id === docId) {
+                setSelectedLearningDoc(null)
+            }
             setContextMenu(null)
             if (selectedDocument?.id === docId) { setSelectedDocument(null); setIsDrawerOpen(false) }
+            toast({ title: "Đã xóa tài liệu" })
         } catch {
             toast({ title: "Không thể xóa file", variant: "destructive" })
         }
@@ -929,9 +945,6 @@ export default function DocumentsPage() {
         const planSteps = selectedLearningDoc.learningPlan?.steps ?? []
         const docPlanProgress = learningPlanProgress[currentDocId] ?? buildDefaultPlanProgress()
         const activePlanStep = planSteps[docPlanProgress.activeStepIndex] ?? planSteps[0]
-        const planVideoProgress = activePlanStep
-            ? videoProgressByDocId[getLearningVideoProgressKey(currentDocId, activePlanStep.id)]
-            : undefined
         const videoProgress = videoProgressByDocId[getLearningVideoProgressKey(currentDocId)]
         const isVideoLesson = selectedLearningDoc.type === "mp4" && Boolean(selectedLearningDoc.url)
 
@@ -943,15 +956,6 @@ export default function DocumentsPage() {
 
         if (planSteps.length > 0 && activePlanStep) {
             if (learningTimerRef.current) clearInterval(learningTimerRef.current)
-
-            const hasVideoStep = Boolean(activePlanStep.media?.some((item) => item.type === "video"))
-            if (hasVideoStep) {
-                const remaining = planVideoProgress?.duration && planVideoProgress.duration > 0
-                    ? Math.max(0, Math.ceil(planVideoProgress.duration - planVideoProgress.current))
-                    : LEARNING_REQUIRED_SECONDS
-                setLearningRemainingSeconds(remaining)
-                return
-            }
 
             let startedAt = docPlanProgress.startedAtByStepId[activePlanStep.id]
             if (!startedAt) {
@@ -974,7 +978,7 @@ export default function DocumentsPage() {
 
             const tick = () => {
                 const elapsed = Math.floor((Date.now() - new Date(startedAt!).getTime()) / 1000)
-                const required = Math.max(activePlanStep.estimatedSeconds, 1)
+                const required = LEARNING_REQUIRED_SECONDS
                 const remain = Math.max(0, required - elapsed)
                 setLearningRemainingSeconds(remain)
                 if (remain <= 0) {
@@ -1217,9 +1221,18 @@ export default function DocumentsPage() {
     }
 
     const handleStartLearningFromDocument = (doc: Document) => {
-        if (isLeaderOrAdmin) return
+        const targetLearningDoc = learningDocs.find((item) => item.id === doc.id) ?? null
+        if (!targetLearningDoc) {
+            toast({
+                title: "Tài liệu này chưa có trong phần học liệu.",
+                description: "Hãy đánh dấu tài liệu là học liệu hoặc chọn tài liệu khác.",
+                variant: "destructive",
+            })
+            return
+        }
+
         setActiveTab("learning")
-        setSelectedLearningDoc(doc)
+        setSelectedLearningDoc(targetLearningDoc)
         const docs = documentsData
         void loadLearningData(docs)
     }
@@ -1234,6 +1247,7 @@ export default function DocumentsPage() {
             title: existingQuiz?.title ?? doc.name,
             description: existingQuiz?.description ?? "",
             durationMinutes: String(existingQuiz?.durationMinutes ?? 15),
+            timePerQuestionSeconds: String(existingQuiz?.timePerQuestionSeconds ?? 30),
             questions: existingQuiz?.questions.map((q) => ({
                 text: q.text,
                 options: (q.options as [string, string, string, string]) ?? ["", "", "", ""],
@@ -1255,7 +1269,7 @@ export default function DocumentsPage() {
     }
 
     const handleSaveQuiz = async () => {
-        const { documentId: currentDocId, existingQuizId, title, description, durationMinutes, questions, isNewDocument } = quizCreateDialog
+        const { documentId: currentDocId, existingQuizId, title, description, durationMinutes, timePerQuestionSeconds, questions, isNewDocument } = quizCreateDialog
         const normalizedTitle = title.trim()
         if (!normalizedTitle) { toast({ title: "Cần nhập tên bài kiểm tra", variant: "destructive" }); return }
         if (questions.some((q) => !q.text.trim() || q.options.some((o) => !o.trim()))) {
@@ -1296,6 +1310,7 @@ export default function DocumentsPage() {
                 title: normalizedTitle,
                 description: description.trim(),
                 durationMinutes: Number(durationMinutes) || 15,
+                timePerQuestionSeconds: Math.max(5, Number(timePerQuestionSeconds) || 30),
                 questions,
                 ...(existingQuizId ? { quizId: existingQuizId } : {}),
             }
@@ -1383,11 +1398,21 @@ export default function DocumentsPage() {
     }
 
     const handleOpenQuizTake = (doc: Document) => {
+        if (!isLeaderOrAdmin && !learningProgress.completedDocIds.includes(doc.id)) {
+            toast({
+                title: "Bạn cần học xong tất cả slide trước khi làm bài kiểm tra.",
+                variant: "destructive",
+            })
+            return
+        }
         const quiz = quizzes[doc.id]
         if (!quiz) return
         const questionOrder = shuffleIndices(quiz.questions.length)
         const optionOrderByQuestion = quiz.questions.map((question) => shuffleIndices(question.options.length))
         const startedAt = new Date().toISOString()
+        const questionTimeLimitSeconds = quiz.timePerQuestionSeconds
+            ? Math.max(5, quiz.timePerQuestionSeconds)
+            : Math.max(10, Math.floor((quiz.durationMinutes * 60) / Math.max(quiz.questions.length, 1)))
         setQuizTakeModal({
             open: true,
             quiz,
@@ -1395,12 +1420,12 @@ export default function DocumentsPage() {
             answers: Array(quiz.questions.length).fill(-1) as number[],
             currentQuestion: 0,
             startedAt,
-            timeLeftSeconds: quiz.durationMinutes * 60,
+            timeLeftSeconds: questionTimeLimitSeconds,
+            questionTimeLimitSeconds,
+            expiredQuestionIndexes: [],
             isSubmitting: false,
             isSubmitted: false,
             result: null,
-            violationCount: 0,
-            lastViolationReason: "",
             questionOrder,
             optionOrderByQuestion,
         })
@@ -1414,9 +1439,25 @@ export default function DocumentsPage() {
         quizTimerRef.current = setInterval(() => {
             setQuizTakeModal((prev) => {
                 if (prev.timeLeftSeconds <= 1) {
-                    clearInterval(quizTimerRef.current!)
-                    void handleSubmitQuiz(true)
-                    return { ...prev, timeLeftSeconds: 0 }
+                    const currentIndex = prev.currentQuestion
+                    const expiredSet = new Set(prev.expiredQuestionIndexes)
+                    expiredSet.add(currentIndex)
+                    const isLastQuestion = currentIndex >= (prev.quiz?.questions.length ?? 1) - 1
+                    if (isLastQuestion) {
+                        clearInterval(quizTimerRef.current!)
+                        void handleSubmitQuiz(true)
+                        return {
+                            ...prev,
+                            expiredQuestionIndexes: Array.from(expiredSet).sort((a, b) => a - b),
+                            timeLeftSeconds: 0,
+                        }
+                    }
+                    return {
+                        ...prev,
+                        expiredQuestionIndexes: Array.from(expiredSet).sort((a, b) => a - b),
+                        currentQuestion: currentIndex + 1,
+                        timeLeftSeconds: prev.questionTimeLimitSeconds,
+                    }
                 }
                 return { ...prev, timeLeftSeconds: prev.timeLeftSeconds - 1 }
             })
@@ -1427,67 +1468,6 @@ export default function DocumentsPage() {
 
     // Keep ref in sync so anti-cheat handlers always read latest answers
     useEffect(() => { quizTakeModalRef.current = quizTakeModal }, [quizTakeModal])
-
-    // Anti-cheat: fullscreen + tab/app-switch detection
-    useEffect(() => {
-        if (!quizTakeModal.open || quizTakeModal.isSubmitted) {
-            if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
-            quizViolationsRef.current = 0
-            return
-        }
-
-        if (!document.fullscreenElement) {
-            void document.documentElement.requestFullscreen().catch(() => undefined)
-        }
-
-        const warn = (reason: string) => {
-            quizViolationsRef.current += 1
-            const count = quizViolationsRef.current
-            setQuizTakeModal((prev) => ({ ...prev, violationCount: count, lastViolationReason: reason }))
-            if (count >= MAX_QUIZ_VIOLATIONS) {
-                toast({ title: "Vi phạm quá nhiều lần – Bài thi tự động nộp!", variant: "destructive" })
-                void handleSubmitQuiz(true)
-            } else {
-                toast({
-                    title: `Cảnh báo gian lận: ${reason}`,
-                    description: `Vi phạm lần ${count}/${MAX_QUIZ_VIOLATIONS}. Vượt quá giới hạn sẽ tự động nộp bài.`,
-                    variant: "destructive",
-                })
-            }
-        }
-
-        const onVisibility = () => { if (document.hidden) warn("Bạn đã chuyển tab hoặc rời khỏi trang thi") }
-        const onBlur = () => { if (!document.hidden) warn("Bạn đã chuyển sang ứng dụng khác") }
-        const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = "" }
-        const onFullscreenChange = () => {
-            if (!document.fullscreenElement && !quizTakeModalRef.current.isSubmitted) {
-                void document.documentElement.requestFullscreen().catch(() => undefined)
-                warn("Bạn đã thoát chế độ toàn màn hình")
-            }
-        }
-        const onKeyDown = (e: KeyboardEvent) => {
-            const key = e.key.toLowerCase()
-            if ((e.ctrlKey || e.metaKey) && ["tab", "t", "n", "w", "l", "r"].includes(key)) {
-                e.preventDefault()
-                warn(`Bạn vừa dùng phím tắt bị chặn (Ctrl/Cmd + ${e.key.toUpperCase()})`)
-            }
-        }
-
-        document.addEventListener("visibilitychange", onVisibility)
-        window.addEventListener("blur", onBlur)
-        window.addEventListener("beforeunload", onBeforeUnload)
-        document.addEventListener("fullscreenchange", onFullscreenChange)
-        window.addEventListener("keydown", onKeyDown)
-
-        return () => {
-            document.removeEventListener("visibilitychange", onVisibility)
-            window.removeEventListener("blur", onBlur)
-            window.removeEventListener("beforeunload", onBeforeUnload)
-            document.removeEventListener("fullscreenchange", onFullscreenChange)
-            window.removeEventListener("keydown", onKeyDown)
-        }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [quizTakeModal.open, quizTakeModal.isSubmitted])
 
     const handleSubmitQuiz = async (autoSubmit = false) => {
         if (!autoSubmit && !confirm("Nộp bài? Bạn sẽ không thể làm lại.")) return
@@ -1510,6 +1490,30 @@ export default function DocumentsPage() {
             setQuizTakeModal((prev) => ({ ...prev, isSubmitting: false }))
         }
     }
+
+    const canNavigateToQuestion = useCallback((targetIndex: number, state: QuizTakeState) => {
+        if (targetIndex < 0) return false
+        if (targetIndex >= (state.quiz?.questions.length ?? 0)) return false
+        if (targetIndex > state.currentQuestion) {
+            const currentOriginalIndex = state.questionOrder[state.currentQuestion] ?? state.currentQuestion
+            return state.answers[currentOriginalIndex] !== -1
+        }
+        if (targetIndex === state.currentQuestion) return true
+        return !state.expiredQuestionIndexes.includes(targetIndex)
+    }, [])
+
+    const moveToQuizQuestion = useCallback((targetIndex: number) => {
+        setQuizTakeModal((prev) => {
+            if (!canNavigateToQuestion(targetIndex, prev)) {
+                return prev
+            }
+            return {
+                ...prev,
+                currentQuestion: targetIndex,
+                timeLeftSeconds: prev.questionTimeLimitSeconds,
+            }
+        })
+    }, [canNavigateToQuestion])
 
     const handleOpenQuizResults = async (doc: Document) => {
         setQuizResultsRoleFilter("all")
@@ -1576,6 +1580,7 @@ export default function DocumentsPage() {
         return (
             <Card
                 className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:shadow-md transition-all cursor-pointer group"
+                onClick={() => handleStartLearningFromDocument(doc)}
                 onDoubleClick={() => handleDocumentClick(doc)}
                 onContextMenu={(e) => handleContextMenu(e, doc)}
             >
@@ -1651,6 +1656,7 @@ export default function DocumentsPage() {
         return (
             <div
                 className="flex items-center space-x-4 p-3 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg cursor-pointer group"
+                onClick={() => handleStartLearningFromDocument(doc)}
                 onDoubleClick={() => handleDocumentClick(doc)}
                 onContextMenu={(e) => handleContextMenu(e, doc)}
             >
@@ -1894,7 +1900,7 @@ export default function DocumentsPage() {
                                         <Button size="sm" variant="ghost" className="h-7 text-xs px-2"
                                             onClick={() => setQuizCreateDialog({
                                                 open: true, documentId: "", documentName: "", existingQuizId: null,
-                                                title: "", description: "", durationMinutes: "15",
+                                                title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30",
                                                 questions: [{ text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
                                                 isNewDocument: true,
                                             })}>
@@ -1993,13 +1999,7 @@ export default function DocumentsPage() {
                                 const activePlanStep = learningPlanSteps[activePlanStepIndex]
                                 const activeStepHasVideo = Boolean(activePlanStep?.media?.some((item) => item.type === "video"))
                                 const isVideoLesson = doc.type === "mp4" && Boolean(doc.url)
-                                const planVideoProgress = activePlanStep
-                                    ? videoProgressByDocId[getLearningVideoProgressKey(doc.id, activePlanStep.id)]
-                                    : undefined
-                                const directVideoProgress = videoProgressByDocId[getLearningVideoProgressKey(doc.id)]
-                                const requiredSeconds = hasLearningPlan
-                                    ? Math.max(activePlanStep?.estimatedSeconds ?? 0, Math.ceil(planVideoProgress?.duration ?? 0), 1)
-                                    : Math.ceil(directVideoProgress?.duration ?? 0) || LEARNING_REQUIRED_SECONDS
+                                const requiredSeconds = LEARNING_REQUIRED_SECONDS
                                 const isCurrentLessonCompleted = isLeaderOrAdmin || learningProgress.completedDocIds.includes(doc.id)
                                 const canGoNext = !!nextDoc
                                 const prevPlanStep = hasLearningPlan && activePlanStepIndex > 0
@@ -2262,6 +2262,21 @@ export default function DocumentsPage() {
                                                                     <DropdownMenuItem onClick={() => void handleOpenQuizResults(doc)}>
                                                                         <Users className="w-4 h-4 mr-2" />Theo dõi tiến độ nhân viên
                                                                     </DropdownMenuItem>
+                                                                    {quiz && (
+                                                                        <DropdownMenuItem
+                                                                            className="text-red-600 focus:text-red-700 dark:text-red-400 dark:focus:text-red-300"
+                                                                            onClick={() => void handleDeleteQuiz(doc.id)}
+                                                                        >
+                                                                            <Trash2 className="w-4 h-4 mr-2" />Xóa bài kiểm tra
+                                                                        </DropdownMenuItem>
+                                                                    )}
+                                                                    <DropdownMenuSeparator />
+                                                                    <DropdownMenuItem
+                                                                        className="text-red-600 focus:text-red-700 dark:text-red-400 dark:focus:text-red-300"
+                                                                        onClick={() => void handleDeleteDocument(doc.id)}
+                                                                    >
+                                                                        <Trash2 className="w-4 h-4 mr-2" />Xóa tài liệu
+                                                                    </DropdownMenuItem>
                                                                 </DropdownMenuContent>
                                                             </DropdownMenu>
                                                         )}
@@ -2360,10 +2375,16 @@ export default function DocumentsPage() {
                                                             <div className="space-y-3">
                                                                 <Button
                                                                     className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60"
+                                                                    disabled={!isCurrentLessonCompleted}
                                                                     onClick={() => handleOpenQuizTake(doc)}
                                                                 >
                                                                     <ClipboardCheck className="w-4 h-4 mr-2" />Bắt đầu kiểm tra
                                                                 </Button>
+                                                                {!isCurrentLessonCompleted && (
+                                                                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                                                                        Cần học xong tất cả slide trước khi làm bài kiểm tra.
+                                                                    </p>
+                                                                )}
                                                             </div>
                                                         )
                                                     )}
@@ -2618,7 +2639,9 @@ export default function DocumentsPage() {
                         )}
                         {viewMode === "grid" ? (
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                                {groupDocs.map((doc) => <DocumentCard key={doc.id} doc={doc} />)}
+                                {(sortBy === "date" ? [...groupDocs].reverse() : groupDocs).map((doc) => (
+                                    <DocumentCard key={doc.id} doc={doc} />
+                                ))}
                             </div>
                         ) : (
                             <div className="space-y-1">
@@ -2670,7 +2693,7 @@ export default function DocumentsPage() {
                                     visibility: vis === "specific" ? "team" : (vis as DocVisibility),
                                     selectedOfficePersonIds: contextMenu.document.visibleToPersonIds ?? [],
                                 })
-                                setVisibilityRoleFilter("all")
+                                setVisibilityRoleFilter([])
                                 setContextMenu(null)
                             }}>
                             <Globe className="w-4 h-4 mr-2" />Quyền xem
@@ -2849,7 +2872,7 @@ export default function DocumentsPage() {
                                                     visibility: vis === "specific" ? "team" : (vis as DocVisibility),
                                                     selectedOfficePersonIds: selectedDocument.visibleToPersonIds ?? [],
                                                 })
-                                                setVisibilityRoleFilter("all")
+                                                setVisibilityRoleFilter([])
                                             }}>
                                             <Globe className="w-4 h-4 mr-2" />Quyền xem
                                         </Button>
@@ -2932,18 +2955,45 @@ export default function DocumentsPage() {
                                     Nhân viên trực thuộc phòng ban
                                 </p>
                                 <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-3 dark:border-gray-700 dark:bg-gray-900/30">
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                        <select
-                                            value={createRoleFilter}
-                                            onChange={(e) => setCreateRoleFilter(e.target.value)}
-                                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
-                                        >
-                                            {officeRoleOptions.map((role) => (
-                                                <option key={role} value={role}>
-                                                    {role === "all" ? "Tất cả vai trò" : role}
-                                                </option>
-                                            ))}
-                                        </select>
+                                    <div className="space-y-2">
+                                        <div className="flex flex-wrap gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setCreateRoleFilter([])}
+                                                className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                                                    createRoleFilter.length === 0
+                                                        ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+                                                        : "border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300"
+                                                }`}
+                                            >
+                                                Tất cả vai trò
+                                            </button>
+                                            {officeRoleOptions
+                                                .filter((role) => role !== "all")
+                                                .map((role) => {
+                                                    const selected = createRoleFilter.includes(role)
+                                                    return (
+                                                        <button
+                                                            key={`create-role-${role}`}
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setCreateRoleFilter((prev) =>
+                                                                    prev.includes(role)
+                                                                        ? prev.filter((item) => item !== role)
+                                                                        : [...prev, role]
+                                                                )
+                                                            }
+                                                            className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                                                                selected
+                                                                    ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+                                                                    : "border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300"
+                                                            }`}
+                                                        >
+                                                            {role}
+                                                        </button>
+                                                    )
+                                                })}
+                                        </div>
                                         <Input
                                             value={createMemberSearch}
                                             onChange={(e) => setCreateMemberSearch(e.target.value)}
@@ -3065,18 +3115,45 @@ export default function DocumentsPage() {
                                     Nhân viên trực thuộc phòng ban
                                 </p>
                                 <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-3 dark:border-gray-700 dark:bg-gray-900/30">
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                        <select
-                                            value={visibilityRoleFilter}
-                                            onChange={(e) => setVisibilityRoleFilter(e.target.value)}
-                                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
-                                        >
-                                            {officeRoleOptions.map((role) => (
-                                                <option key={`visibility-${role}`} value={role}>
-                                                    {role === "all" ? "Tất cả vai trò" : role}
-                                                </option>
-                                            ))}
-                                        </select>
+                                    <div className="space-y-2">
+                                        <div className="flex flex-wrap gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setVisibilityRoleFilter([])}
+                                                className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                                                    visibilityRoleFilter.length === 0
+                                                        ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+                                                        : "border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300"
+                                                }`}
+                                            >
+                                                Tất cả vai trò
+                                            </button>
+                                            {officeRoleOptions
+                                                .filter((role) => role !== "all")
+                                                .map((role) => {
+                                                    const selected = visibilityRoleFilter.includes(role)
+                                                    return (
+                                                        <button
+                                                            key={`visibility-role-${role}`}
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setVisibilityRoleFilter((prev) =>
+                                                                    prev.includes(role)
+                                                                        ? prev.filter((item) => item !== role)
+                                                                        : [...prev, role]
+                                                                )
+                                                            }
+                                                            className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                                                                selected
+                                                                    ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+                                                                    : "border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300"
+                                                            }`}
+                                                        >
+                                                            {role}
+                                                        </button>
+                                                    )
+                                                })}
+                                        </div>
                                         <Input
                                             value={visibilityMemberSearch}
                                             onChange={(e) => setVisibilityMemberSearch(e.target.value)}
@@ -3161,7 +3238,7 @@ export default function DocumentsPage() {
                             <Button variant="outline" className="bg-transparent"
                                 onClick={() => {
                                     setVisibilityDialog(buildDefaultVisibilityDialog(user))
-                                    setVisibilityRoleFilter("all")
+                                    setVisibilityRoleFilter([])
                                     setVisibilityMemberSearch("")
                                 }}>Huỷ</Button>
                             <Button onClick={() => void handleSaveVisibility()}>Lưu</Button>
@@ -3213,12 +3290,16 @@ export default function DocumentsPage() {
                             </div>
                             <Input placeholder="Mô tả (tuỳ chọn)" value={quizCreateDialog.description}
                                 onChange={(e) => setQuizCreateDialog((s) => ({ ...s, description: e.target.value }))} />
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                                 <Timer className="w-4 h-4 text-gray-400" />
                                 <Input type="number" min={5} placeholder="Thời lượng (phút)" className="w-40"
                                     value={quizCreateDialog.durationMinutes}
                                     onChange={(e) => setQuizCreateDialog((s) => ({ ...s, durationMinutes: e.target.value }))} />
                                 <span className="text-sm text-gray-500">phút</span>
+                                <Input type="number" min={5} placeholder="Thời gian/câu" className="w-40"
+                                    value={quizCreateDialog.timePerQuestionSeconds}
+                                    onChange={(e) => setQuizCreateDialog((s) => ({ ...s, timePerQuestionSeconds: e.target.value }))} />
+                                <span className="text-sm text-gray-500">giây/câu</span>
                             </div>
 
                             {/* Auto-generate section */}
@@ -3354,27 +3435,6 @@ export default function DocumentsPage() {
                     <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl dark:bg-gray-800 sm:max-h-[90vh]">
                         {!quizTakeModal.isSubmitted ? (
                             <>
-                                {/* Anti-cheat violation banner */}
-                                {quizTakeModal.violationCount > 0 && (
-                                    <div className="px-5 py-2.5 bg-red-600 text-white rounded-t-2xl">
-                                        <div className="flex items-center gap-2 text-sm font-medium">
-                                            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                                            <span>Vi phạm: {quizTakeModal.violationCount}/{MAX_QUIZ_VIOLATIONS} lần – Vượt quá giới hạn sẽ tự động nộp bài!</span>
-                                        </div>
-                                        {quizTakeModal.lastViolationReason ? (
-                                            <p className="mt-1 text-xs text-red-100">
-                                                Lần gần nhất: {quizTakeModal.lastViolationReason}
-                                            </p>
-                                        ) : null}
-                                    </div>
-                                )}
-                                {/* Fullscreen notice */}
-                                {quizTakeModal.violationCount === 0 && (
-                                    <div className="flex items-center gap-2 px-5 py-2 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs rounded-t-2xl border-b border-blue-100 dark:border-blue-800">
-                                        <Maximize className="w-3.5 h-3.5 flex-shrink-0" />
-                                        <span>Bài thi đang chạy ở chế độ toàn màn hình. Không được chuyển tab hoặc rời trang.</span>
-                                    </div>
-                                )}
                                 {/* Header + timer */}
                                 <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-4 pb-4 pt-4 dark:border-gray-700 sm:items-center sm:px-6 sm:pt-5">
                                     <div>
@@ -3421,8 +3481,18 @@ export default function DocumentsPage() {
                                                 {/* Progress dots */}
                                                 <div className="flex gap-1.5 flex-wrap pt-2">
                                                     {quizTakeModal.questionOrder.map((originalIndex, i) => (
-                                                        <button key={i} onClick={() => setQuizTakeModal((prev) => ({ ...prev, currentQuestion: i }))}
-                                                            className={`w-7 h-7 rounded-full text-xs font-medium transition-all ${i === quizTakeModal.currentQuestion ? "bg-blue-600 text-white" : quizTakeModal.answers[originalIndex] !== -1 ? "bg-green-500 text-white" : "bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400"}`}>
+                                                        <button
+                                                            key={i}
+                                                            disabled={!canNavigateToQuestion(i, quizTakeModal)}
+                                                            onClick={() => moveToQuizQuestion(i)}
+                                                            className={`w-7 h-7 rounded-full text-xs font-medium transition-all ${
+                                                                i === quizTakeModal.currentQuestion
+                                                                    ? "bg-blue-600 text-white"
+                                                                    : quizTakeModal.answers[originalIndex] !== -1
+                                                                        ? "bg-green-500 text-white"
+                                                                        : "bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400"
+                                                            } disabled:opacity-40 disabled:cursor-not-allowed`}
+                                                        >
                                                             {i + 1}
                                                         </button>
                                                     ))}
@@ -3434,12 +3504,16 @@ export default function DocumentsPage() {
 
                                 {/* Navigation */}
                                 <div className="flex items-center justify-between border-t border-gray-200 px-4 py-4 dark:border-gray-700 sm:px-6">
-                                    <Button variant="outline" className="bg-transparent" disabled={quizTakeModal.currentQuestion === 0}
-                                        onClick={() => setQuizTakeModal((prev) => ({ ...prev, currentQuestion: prev.currentQuestion - 1 }))}>
+                                    <Button
+                                        variant="outline"
+                                        className="bg-transparent"
+                                        disabled={!canNavigateToQuestion(quizTakeModal.currentQuestion - 1, quizTakeModal)}
+                                        onClick={() => moveToQuizQuestion(quizTakeModal.currentQuestion - 1)}
+                                    >
                                         <ChevronLeft className="w-4 h-4 mr-1" />Trước
                                     </Button>
                                     {quizTakeModal.currentQuestion < quizTakeModal.quiz.questions.length - 1 ? (
-                                        <Button onClick={() => setQuizTakeModal((prev) => ({ ...prev, currentQuestion: prev.currentQuestion + 1 }))}>
+                                        <Button onClick={() => moveToQuizQuestion(quizTakeModal.currentQuestion + 1)}>
                                             Tiếp <ChevronRight className="w-4 h-4 ml-1" />
                                         </Button>
                                     ) : (
