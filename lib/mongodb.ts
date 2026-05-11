@@ -1,11 +1,8 @@
 import { MongoClient, type Db } from "mongodb";
+import { isSupabaseOnlyMode } from "@/lib/postgres";
 
 const connectionUri = process.env.MONGODB_URI ?? process.env.MONGO_URI;
 const databaseName = process.env.MONGODB_DB ?? "fwf_kpi";
-
-if (!connectionUri) {
-  throw new Error("Missing MONGODB_URI or MONGO_URI environment variable.");
-}
 
 declare global {
   // eslint-disable-next-line no-var
@@ -14,21 +11,34 @@ declare global {
   var __fwfMongoIndexPromise__: Promise<void> | undefined;
 }
 
-let clientPromise: Promise<MongoClient>;
+let clientPromise: Promise<MongoClient> | null = null;
+let mongoDisabledReason: string | null = null;
 
-if (process.env.NODE_ENV === "development") {
-  if (!global.__fwfMongoClientPromise__) {
-    const client = new MongoClient(connectionUri);
-    global.__fwfMongoClientPromise__ = client.connect();
-  }
-
-  clientPromise = global.__fwfMongoClientPromise__;
-} else {
-  const client = new MongoClient(connectionUri);
-  clientPromise = client.connect();
+if (isSupabaseOnlyMode()) {
+  mongoDisabledReason =
+    "MongoDB is disabled in Supabase mode. Set DATA_PROVIDER=mongodb (or hybrid) if you need Mongo fallback.";
 }
 
 export async function getMongoClient() {
+  if (mongoDisabledReason) {
+    throw new Error(mongoDisabledReason);
+  }
+  if (!connectionUri) {
+    throw new Error("Missing MONGODB_URI or MONGO_URI environment variable.");
+  }
+
+  if (process.env.NODE_ENV === "development") {
+    if (!global.__fwfMongoClientPromise__) {
+      const client = new MongoClient(connectionUri);
+      global.__fwfMongoClientPromise__ = client.connect();
+    }
+    return global.__fwfMongoClientPromise__;
+  }
+
+  if (!clientPromise) {
+    const client = new MongoClient(connectionUri);
+    clientPromise = client.connect();
+  }
   return clientPromise;
 }
 
@@ -64,6 +74,9 @@ async function ensureMongoIndexes(db: Db) {
 }
 
 export async function getMongoDb(): Promise<Db> {
+  if (mongoDisabledReason) {
+    throw new Error(mongoDisabledReason);
+  }
   const client = await getMongoClient();
   const db = client.db(databaseName);
 

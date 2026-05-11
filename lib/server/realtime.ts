@@ -1,7 +1,7 @@
 import "server-only";
 
 import Ably from "ably";
-import { getMongoDb } from "@/lib/mongodb";
+import { pgQuery } from "@/lib/postgres";
 
 export type AppRealtimeEventType =
   | "chat.message.created"
@@ -18,6 +18,7 @@ export type AppRealtimeEventAction =
   | "updated"
   | "deleted"
   | "assigned"
+  | "reminder"
   | "requested"
   | "approved"
   | "rejected";
@@ -114,14 +115,39 @@ export async function publishAppEventToPersons(personIds: string[], event: AppRe
 
   const createdAt = new Date().toISOString();
   try {
-    const db = await getMongoDb();
-    const documents: DbPersonNotification[] = uniquePersonIds.map((personId) => ({
-      personId,
-      ...event,
-      createdAt,
-      readAt: null
-    }));
-    await db.collection<DbPersonNotification>("person_notifications").insertMany(documents);
+    for (const personId of uniquePersonIds) {
+      await pgQuery(
+        `insert into person_notifications (
+          id, person_id, type, actor_id, action, entity_type, entity_label, thread_id, project_id, schedule_id,
+          entity_id, message_id, target_person_ids, occurred_at, created_at, read_at, raw_json
+        ) values (
+          gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9,
+          $10, $11, $12::jsonb, $13::timestamptz, $14::timestamptz, null, $15::jsonb
+        )`,
+        [
+          personId,
+          event.type,
+          event.actorId,
+          event.action ?? null,
+          event.entityType ?? null,
+          event.entityLabel ?? null,
+          event.threadId ?? null,
+          event.projectId ?? null,
+          event.scheduleId ?? null,
+          event.entityId ?? null,
+          event.messageId ?? null,
+          JSON.stringify(event.targetPersonIds ?? []),
+          event.occurredAt,
+          createdAt,
+          JSON.stringify({
+            personId,
+            ...event,
+            createdAt,
+            readAt: null
+          })
+        ]
+      );
+    }
   } catch {
     // Persisting notifications should not block the primary action.
   }
