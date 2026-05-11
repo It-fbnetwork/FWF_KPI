@@ -5,16 +5,27 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { GridFSBucket } from "mongodb";
 import JSZip from "jszip";
 import { XMLParser } from "fast-xml-parser";
-import { getMongoDb } from "@/lib/mongodb";
 import { getSessionUserId } from "@/lib/server/session";
 import type { LearningPlan, LearningStepMedia } from "@/lib/documents";
 import { countPdfPages, extractPdfTextContent, splitTextByPage } from "@/lib/server/pdf-text";
+import { saveFileBuffer } from "@/lib/server/file-storage";
 
 export const maxDuration = 180;
 const execFileAsync = promisify(execFile);
+
+function toFriendlyUploadErrorMessage(message: string) {
+  if (message.includes("unsupported Unicode escape sequence")) {
+    return "Tài liệu chứa ký tự không hợp lệ. Vui lòng xuất lại file PDF/PPTX rồi tải lên lại.";
+  }
+  if (message.includes("\\u0000") || message.toLowerCase().includes("invalid byte sequence")) {
+    return "Nội dung tài liệu không hợp lệ để xử lý. Vui lòng làm sạch nội dung file rồi thử lại.";
+  }
+  if (message === "No file provided") return "Bạn chưa chọn file để tải lên.";
+  if (message === "Unauthorized") return "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.";
+  return message;
+}
 
 function inferMimeType(fileName: string) {
   const lower = fileName.toLowerCase();
@@ -84,36 +95,25 @@ async function extractPptxSlideText(zip: JSZip, parser: XMLParser, slidePath: st
   return textNodes.join("\n");
 }
 
-async function uploadBufferToGridFs(
-  bucket: GridFSBucket,
+async function uploadBufferToStorage(
   filename: string,
   buffer: Buffer,
   contentType: string
 ) {
-  const stream = bucket.openUploadStream(filename, {
-    chunkSizeBytes: 255 * 1024,
-    metadata: {
-      contentType,
-      originalName: filename,
-      size: buffer.length,
-      uploadedAt: new Date().toISOString(),
-    },
+  const stored = await saveFileBuffer(filename, buffer, contentType, {
+    originalName: filename,
+    uploadedAt: new Date().toISOString(),
   });
-
-  await new Promise<void>((resolve, reject) => {
-    stream.end(buffer, (error?: Error | null) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
-
-  return stream.id.toString();
+  return stored.fileId;
 }
 
 async function buildPdfLearningPlan(buffer: Buffer): Promise<LearningPlan> {
   const pageCount = countPdfPages(buffer);
-  const extractedText = await extractPdfTextContent(buffer);
-  const pageContents = splitTextByPage(extractedText, pageCount);
+  const shouldExtractText =
+    String(process.env.PDF_EXTRACT_TEXT_ON_UPLOAD ?? "").toLowerCase() === "true";
+  const pageContents = shouldExtractText
+    ? splitTextByPage(await extractPdfTextContent(buffer), pageCount)
+    : [];
   return {
     sourceType: "pdf",
     generatedAt: new Date().toISOString(),
@@ -130,7 +130,6 @@ async function buildPdfLearningPlan(buffer: Buffer): Promise<LearningPlan> {
 
 async function buildPptxLearningPlan(
   buffer: Buffer,
-  bucket: GridFSBucket,
   originalName: string,
   previewUrl?: string
 ): Promise<LearningPlan | undefined> {
@@ -190,8 +189,7 @@ async function buildPptxLearningPlan(
             const mediaBuffer = await mediaFile.async("nodebuffer");
             const mediaName = resolvedPath.split("/").pop() ?? `slide-${slideNumber}-video.mp4`;
             const contentType = inferMimeType(mediaName);
-            const mediaId = await uploadBufferToGridFs(
-              bucket,
+            const mediaId = await uploadBufferToStorage(
               `${baseName}-slide-${slideNumber}-${mediaName}`,
               mediaBuffer,
               contentType
@@ -263,11 +261,8 @@ export async function POST(request: Request) {
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
-    const db = await getMongoDb();
-    const bucket = new GridFSBucket(db, { bucketName: "uploads" });
-
     const mimeType = file.type || "application/octet-stream";
-    const fileId = await uploadBufferToGridFs(bucket, file.name, buffer, mimeType);
+    const fileId = await uploadBufferToStorage(file.name, buffer, mimeType);
     const url = `/api/files/${fileId}`;
     const lowerName = file.name.toLowerCase();
     let learningPlan: LearningPlan | undefined;
@@ -277,8 +272,7 @@ export async function POST(request: Request) {
       let previewUrl: string | undefined;
       try {
         const previewPdfBuffer = await convertPptxToPdfBuffer(buffer);
-        const previewPdfId = await uploadBufferToGridFs(
-          bucket,
+        const previewPdfId = await uploadBufferToStorage(
           `${inferBaseName(file.name)}-preview.pdf`,
           previewPdfBuffer,
           "application/pdf"
@@ -287,15 +281,16 @@ export async function POST(request: Request) {
       } catch (conversionError) {
         console.error("PPTX to PDF conversion failed:", conversionError);
       }
-      learningPlan = await buildPptxLearningPlan(buffer, bucket, file.name, previewUrl);
+      learningPlan = await buildPptxLearningPlan(buffer, file.name, previewUrl);
     }
 
     return NextResponse.json({ ok: true, fileId, url, learningPlan });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : "Upload failed";
+    const rawMessage = error instanceof Error ? error.message : "Upload failed";
+    const msg = toFriendlyUploadErrorMessage(rawMessage);
     return NextResponse.json(
       { ok: false, message: msg },
-      { status: msg === "Unauthorized" ? 401 : 500 }
+      { status: rawMessage === "Unauthorized" ? 401 : 500 }
     );
   }
 }
