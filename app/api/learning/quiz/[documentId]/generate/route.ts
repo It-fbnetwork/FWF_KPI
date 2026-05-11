@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { GridFSBucket, ObjectId } from "mongodb";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { getMongoDb } from "@/lib/mongodb";
 import { getAuthState } from "@/lib/server/data";
 import { isAdminLikeRole } from "@/lib/auth";
 import { getSessionUserId } from "@/lib/server/session";
 import type { LearningPlan } from "@/lib/documents";
 import { extractPdfTextContent } from "@/lib/server/pdf-text";
+import { getFileByApiUrl } from "@/lib/server/file-storage";
+import { pgQuery } from "@/lib/postgres";
 
 type Params = { params: Promise<{ documentId: string }> };
 
@@ -27,27 +27,6 @@ type NormalizedQuestion = {
   correctIndex: number;
   explanation: string;
 };
-
-async function downloadGridFsFileByApiUrl(db: Awaited<ReturnType<typeof getMongoDb>>, url?: string) {
-  if (!url) return null;
-  const fileId = url.match(/\/api\/files\/([^/?#]+)/)?.[1];
-  if (!fileId) return null;
-
-  try {
-    const bucket = new GridFSBucket(db, { bucketName: "uploads" });
-    const fileBuffer = await new Promise<Buffer>((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      bucket
-        .openDownloadStream(new ObjectId(fileId))
-        .on("data", (chunk: Buffer) => chunks.push(chunk))
-        .on("error", reject)
-        .on("end", () => resolve(Buffer.concat(chunks)));
-    });
-    return fileBuffer;
-  } catch {
-    return null;
-  }
-}
 
 function normalizeTextForPrompt(text: string) {
   return text
@@ -140,8 +119,25 @@ export async function POST(request: Request, { params }: Params) {
       url?: string;
       learningPlan?: LearningPlan;
     };
-    const db = await getMongoDb();
-    const doc = await db.collection<DocRecord>("documents").findOne({ _id: documentId });
+    let doc: DocRecord | null = null;
+
+    const docRes = await pgQuery<{
+      id: string;
+      name: string;
+      type: "pdf" | "pptx" | "txt" | "link" | "mp4" | null;
+      url: string | null;
+      learning_plan: LearningPlan | null;
+    }>("select id, name, type, url, learning_plan from documents where id = $1 limit 1", [documentId]);
+    const row = docRes.rows[0];
+    doc = row
+      ? {
+          _id: row.id,
+          name: row.name,
+          type: row.type ?? undefined,
+          url: row.url ?? undefined,
+          learningPlan: row.learning_plan ?? undefined,
+        }
+      : null;
 
     if (!doc) return NextResponse.json({ ok: false, message: "Tài liệu không tồn tại." }, { status: 404 });
 
@@ -150,7 +146,8 @@ export async function POST(request: Request, { params }: Params) {
       .map((s) => s.content?.trim())
       .filter(Boolean)
       .join("\n\n");
-    const originalFileBuffer = await downloadGridFsFileByApiUrl(db, doc.url);
+    const originalFile = await getFileByApiUrl(doc.url);
+    const originalFileBuffer = originalFile?.buffer ?? null;
 
     if (!textContent && doc.learningPlan?.sourceType === "pdf" && originalFileBuffer) {
       textContent = await extractPdfTextContent(originalFileBuffer);

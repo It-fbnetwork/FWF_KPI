@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useState } from "react"
 import { Pie, PieChart, Cell } from "recharts"
 import { CalendarDays, ChevronDown, Search, GraduationCap, ChevronRight, CheckCircle2, XCircle } from "lucide-react"
 
@@ -784,7 +784,7 @@ export default function DashboardPage() {
                                                                     : "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
 
                                                         return (
-                                                            <>
+                                                            <Fragment key={row.personId}>
                                                                 <tr
                                                                     key={row.personId}
                                                                     className="bg-white dark:bg-gray-900 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
@@ -855,7 +855,7 @@ export default function DashboardPage() {
                                                                         </td>
                                                                     </tr>
                                                                 ))}
-                                                            </>
+                                                            </Fragment>
                                                         )
                                                     })}
                                                 </tbody>

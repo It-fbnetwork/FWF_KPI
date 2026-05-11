@@ -53,6 +53,7 @@ import {
     Pencil,
     Users,
     GraduationCap,
+    RotateCcw,
 } from "lucide-react"
 
 type LearningQuizQuestion = {
@@ -70,6 +71,7 @@ type LearningQuizRecord = {
     questions: LearningQuizQuestion[]
     durationMinutes: number
     timePerQuestionSeconds?: number
+    deadlineAt?: string
     createdByPersonId: string
     createdAt: string
     updatedAt: string
@@ -107,6 +109,7 @@ interface QuizCreateState {
     description: string
     durationMinutes: string
     timePerQuestionSeconds: string
+    deadlineAt: string
     questions: QuizCreateQuestion[]
     isNewDocument?: boolean
     isGenerating?: boolean
@@ -192,6 +195,7 @@ interface CreateDocumentDialogState {
     visibility: DocVisibility
     file: File | null
     selectedOfficePersonIds: string[]
+    deadlineAt: string
 }
 
 interface VisibilityDialogState {
@@ -240,7 +244,16 @@ function buildDefaultCreateDocumentDialog(user: UserAccount | null): CreateDocum
         visibility: getDefaultVisibility(user),
         file: null,
         selectedOfficePersonIds: [],
+        deadlineAt: "",
     }
+}
+
+function toDatetimeLocalInputValue(value?: string) {
+    if (!value) return ""
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return ""
+    const timezoneOffset = date.getTimezoneOffset() * 60_000
+    return new Date(date.getTime() - timezoneOffset).toISOString().slice(0, 16)
 }
 
 function buildDefaultVisibilityDialog(user: UserAccount | null): VisibilityDialogState {
@@ -298,7 +311,7 @@ export default function DocumentsPage() {
 
     const defaultQuizCreate = (): QuizCreateState => ({
         open: false, documentId: "", documentName: "", existingQuizId: null,
-        title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30",
+        title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30", deadlineAt: "",
         questions: [{ text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
         isNewDocument: false,
     })
@@ -317,8 +330,11 @@ export default function DocumentsPage() {
     const [quizResultsModal, setQuizResultsModal] = useState<QuizResultsState>({
         open: false, documentId: "", documentName: "", attempts: [], learningStatuses: [], isLoading: false,
     })
+    const [resettingAttemptPersonId, setResettingAttemptPersonId] = useState<string | null>(null)
     const [quizResultsRoleFilter, setQuizResultsRoleFilter] = useState<QuizResultsRoleFilter>("all")
     const [selectedLearningDoc, setSelectedLearningDoc] = useState<Document | null>(null)
+    const [failedLearningPreviewKeys, setFailedLearningPreviewKeys] = useState<Record<string, true>>({})
+    const [loadedLearningPreviewKeys, setLoadedLearningPreviewKeys] = useState<Record<string, true>>({})
     const [learningProgress, setLearningProgress] = useState<LearningProgressState>({
         completedDocIds: [],
         startedAtByDocId: {},
@@ -658,23 +674,69 @@ export default function DocumentsPage() {
                     ? "specific"
                     : visibility
 
-            // Upload file to GridFS first if a local file was selected
+            // Direct upload to Supabase Storage (signed URL) to speed up large files.
             let uploadedFileUrl: string | undefined
             let generatedLearningPlan: Document["learningPlan"] | undefined
-            const formData = new FormData()
-            formData.append("file", file)
-            const uploadRes = await fetch("/api/documents/upload", {
+            const inferredDocType = inferDocumentType(file.name)
+            const contentType = file.type || (
+                inferredDocType === "pdf"
+                    ? "application/pdf"
+                    : "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            )
+
+            const presignRes = await fetch("/api/documents/upload/presign", {
                 method: "POST",
+                headers: { "Content-Type": "application/json" },
                 credentials: "include",
-                body: formData,
+                body: JSON.stringify({
+                    filename: file.name,
+                    contentType,
+                    size: file.size,
+                }),
             })
-            if (!uploadRes.ok) throw new Error("Không thể upload file")
-            const uploadData = (await uploadRes.json()) as {
+            if (!presignRes.ok) throw new Error("Không thể khởi tạo upload file")
+            const presignData = (await presignRes.json()) as {
                 ok: boolean
+                message?: string
+                fileId: string
+                bucket: string
+                objectPath: string
+                uploadUrl: string
+                contentType: string
+            }
+            if (!presignData.ok) throw new Error(presignData.message || "Không thể khởi tạo upload file")
+
+            const directUploadRes = await fetch(presignData.uploadUrl, {
+                method: "PUT",
+                headers: {
+                    "content-type": presignData.contentType || contentType,
+                    "x-upsert": "true",
+                },
+                body: file,
+            })
+            if (!directUploadRes.ok) throw new Error("Upload file thất bại")
+
+            const finalizeRes = await fetch("/api/documents/upload/finalize", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({
+                    fileId: presignData.fileId,
+                    filename: file.name,
+                    contentType: presignData.contentType || contentType,
+                    size: file.size,
+                    bucket: presignData.bucket,
+                    objectPath: presignData.objectPath,
+                }),
+            })
+            if (!finalizeRes.ok) throw new Error("Không thể hoàn tất upload file")
+            const uploadData = (await finalizeRes.json()) as {
+                ok: boolean
+                message?: string
                 url: string
                 learningPlan?: Document["learningPlan"]
             }
-            if (!uploadData.ok) throw new Error("Không thể upload file")
+            if (!uploadData.ok) throw new Error(uploadData.message || "Không thể upload file")
             uploadedFileUrl = uploadData.url
             generatedLearningPlan = uploadData.learningPlan
 
@@ -690,6 +752,7 @@ export default function DocumentsPage() {
                 url: uploadedFileUrl,
                 learningPlan: generatedLearningPlan,
                 isLearningMaterial: Boolean(generatedLearningPlan),
+                deadlineAt: createDocumentDialog.deadlineAt ? new Date(createDocumentDialog.deadlineAt).toISOString() : undefined,
             }
 
             const res = await fetch("/api/documents", {
@@ -699,10 +762,13 @@ export default function DocumentsPage() {
                 body: JSON.stringify(requestPayload),
             })
 
-            const responsePayload = (await res.json()) as { ok: boolean; document: Document }
-            if (!res.ok) throw new Error()
+            const responsePayload = (await res.json()) as { ok: boolean; document?: Document; message?: string }
+            if (!res.ok || !responsePayload.ok || !responsePayload.document) {
+                throw new Error(responsePayload.message ?? "Không thể tạo tài liệu")
+            }
+            const createdDocument = responsePayload.document
 
-            setDocumentsData((prev) => [responsePayload.document, ...prev])
+            setDocumentsData((prev) => [createdDocument, ...prev])
             closeCreateDocumentDialog()
             toast({ title: "Tạo file thành công" })
         } catch (err) {
@@ -833,6 +899,70 @@ export default function DocumentsPage() {
             if (selectedDocument?.id === doc.id) setSelectedDocument(updated)
         } catch {
             toast({ title: "Không thể di chuyển", variant: "destructive" })
+        }
+    }
+
+    const handleDeleteLearningStep = async (doc: Document, stepId: string) => {
+        const steps = doc.learningPlan?.steps ?? []
+        if (!doc.learningPlan || steps.length === 0) return
+        if (steps.length <= 1) {
+            toast({
+                title: "Tài liệu cần ít nhất 1 slide",
+                description: "Không thể xóa slide cuối cùng.",
+                variant: "destructive",
+            })
+            return
+        }
+
+        const targetStep = steps.find((step) => step.id === stepId)
+        if (!targetStep) return
+
+        const confirmed = window.confirm(`Xóa "${targetStep.title}" khỏi học liệu?`)
+        if (!confirmed) return
+
+        setIsSubmitting(true)
+        try {
+            const filteredSteps = steps.filter((step) => step.id !== stepId)
+            const updatedLearningPlan = {
+                ...doc.learningPlan,
+                steps: filteredSteps,
+            }
+
+            const updated = await patchDocument(doc.id, { learningPlan: updatedLearningPlan })
+
+            setDocumentsData((prev) => prev.map((item) => (item.id === doc.id ? updated : item)))
+            setSelectedLearningDoc((prev) => (prev?.id === doc.id ? updated : prev))
+
+            setLearningPlanProgress((prev) => {
+                const currentProgress = prev[doc.id] ?? buildDefaultPlanProgress()
+                const currentActiveStep = steps[currentProgress.activeStepIndex]
+                const activeStepStillExists = currentActiveStep && currentActiveStep.id !== stepId
+                const fallbackIndex = Math.max(0, Math.min(currentProgress.activeStepIndex, filteredSteps.length - 1))
+                const adjustedActiveStepIndex = activeStepStillExists
+                    ? Math.min(currentProgress.activeStepIndex, filteredSteps.length - 1)
+                    : Math.max(0, Math.min(currentProgress.activeStepIndex - 1, filteredSteps.length - 1))
+
+                const nextProgressForDoc = {
+                    activeStepIndex: Number.isFinite(adjustedActiveStepIndex) ? adjustedActiveStepIndex : fallbackIndex,
+                    completedStepIds: currentProgress.completedStepIds.filter((id) => id !== stepId),
+                    startedAtByStepId: Object.fromEntries(
+                        Object.entries(currentProgress.startedAtByStepId).filter(([id]) => id !== stepId)
+                    ),
+                }
+
+                const nextState = {
+                    ...prev,
+                    [doc.id]: nextProgressForDoc,
+                }
+                void syncLearningProgressToServer(doc.id, learningProgress, nextState)
+                return nextState
+            })
+
+            toast({ title: "Đã xóa slide khỏi học liệu" })
+        } catch {
+            toast({ title: "Không thể xóa slide", variant: "destructive" })
+        } finally {
+            setIsSubmitting(false)
         }
     }
 
@@ -1237,6 +1367,29 @@ export default function DocumentsPage() {
         void loadLearningData(docs)
     }
 
+    const markLearningPreviewFailed = useCallback((key: string) => {
+        setFailedLearningPreviewKeys((prev) => {
+            if (prev[key]) return prev
+            return { ...prev, [key]: true }
+        })
+    }, [])
+
+    const clearLearningPreviewFailure = useCallback((key: string) => {
+        setFailedLearningPreviewKeys((prev) => {
+            if (!prev[key]) return prev
+            const next = { ...prev }
+            delete next[key]
+            return next
+        })
+    }, [])
+
+    const markLearningPreviewLoaded = useCallback((key: string) => {
+        setLoadedLearningPreviewKeys((prev) => {
+            if (prev[key]) return prev
+            return { ...prev, [key]: true }
+        })
+    }, [])
+
     const handleOpenQuizCreate = (doc: Document) => {
         const existingQuiz = quizzes[doc.id] ?? null
         setQuizCreateDialog({
@@ -1248,6 +1401,7 @@ export default function DocumentsPage() {
             description: existingQuiz?.description ?? "",
             durationMinutes: String(existingQuiz?.durationMinutes ?? 15),
             timePerQuestionSeconds: String(existingQuiz?.timePerQuestionSeconds ?? 30),
+            deadlineAt: toDatetimeLocalInputValue(existingQuiz?.deadlineAt),
             questions: existingQuiz?.questions.map((q) => ({
                 text: q.text,
                 options: (q.options as [string, string, string, string]) ?? ["", "", "", ""],
@@ -1269,7 +1423,7 @@ export default function DocumentsPage() {
     }
 
     const handleSaveQuiz = async () => {
-        const { documentId: currentDocId, existingQuizId, title, description, durationMinutes, timePerQuestionSeconds, questions, isNewDocument } = quizCreateDialog
+        const { documentId: currentDocId, existingQuizId, title, description, durationMinutes, timePerQuestionSeconds, deadlineAt, questions, isNewDocument } = quizCreateDialog
         const normalizedTitle = title.trim()
         if (!normalizedTitle) { toast({ title: "Cần nhập tên bài kiểm tra", variant: "destructive" }); return }
         if (questions.some((q) => !q.text.trim() || q.options.some((o) => !o.trim()))) {
@@ -1294,6 +1448,7 @@ export default function DocumentsPage() {
                         visibleToPersonIds: [],
                         description: description.trim() || `Tạo ngày ${new Date().toLocaleDateString("vi-VN")}`,
                         isLearningMaterial: true,
+                        deadlineAt: deadlineAt ? new Date(deadlineAt).toISOString() : undefined,
                     }),
                 })
                 const docPayload = (await docRes.json()) as { ok: boolean; document: Document }
@@ -1311,6 +1466,7 @@ export default function DocumentsPage() {
                 description: description.trim(),
                 durationMinutes: Number(durationMinutes) || 15,
                 timePerQuestionSeconds: Math.max(5, Number(timePerQuestionSeconds) || 30),
+                deadlineAt: deadlineAt ? new Date(deadlineAt).toISOString() : undefined,
                 questions,
                 ...(existingQuizId ? { quizId: existingQuizId } : {}),
             }
@@ -1546,6 +1702,30 @@ export default function DocumentsPage() {
         }
     }
 
+    const handleResetQuizAttemptForPerson = async (personId: string) => {
+        if (!quizResultsModal.documentId) return
+        setResettingAttemptPersonId(personId)
+        try {
+            const res = await fetch(`/api/learning/quiz/${quizResultsModal.documentId}/attempts`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ personId }),
+            })
+            const data = (await res.json()) as { ok?: boolean; message?: string; deleted?: boolean }
+            if (!res.ok || !data.ok) throw new Error(data.message ?? "Không thể reset kết quả")
+            setQuizResultsModal((prev) => ({
+                ...prev,
+                attempts: prev.attempts.filter((attempt) => attempt.personId !== personId),
+            }))
+            toast({ title: "Đã reset kết quả. Nhân viên có thể làm bài lại." })
+        } catch (error) {
+            toast({ title: error instanceof Error ? error.message : "Không thể reset kết quả", variant: "destructive" })
+        } finally {
+            setResettingAttemptPersonId(null)
+        }
+    }
+
     // ── Sub-components ───────────────────────────────────────────────
 
     const VisibilityBadge = ({ doc }: { doc: Document }) => {
@@ -1603,7 +1783,11 @@ export default function DocumentsPage() {
                                     : <StarOff className="w-3 h-3 text-gray-400" />}
                             </Button>
                             <Button variant="ghost" size="icon" className="h-6 w-6"
-                                onClick={(e) => handleContextMenu(e, doc)}>
+                                onClick={(e) => {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    handleContextMenu(e, doc)
+                                }}>
                                 <MoreHorizontal className="w-3 h-3" />
                             </Button>
                         </div>
@@ -1702,7 +1886,11 @@ export default function DocumentsPage() {
                     </Avatar>
                     <span className="text-sm text-gray-600 dark:text-gray-300 hidden sm:block">{owner?.name || "Unknown"}</span>
                     <Button variant="ghost" size="icon" className="h-6 w-6 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                        onClick={(e) => handleContextMenu(e, doc)}>
+                        onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            handleContextMenu(e, doc)
+                        }}>
                         <MoreHorizontal className="w-4 h-4" />
                     </Button>
                 </div>
@@ -1900,7 +2088,7 @@ export default function DocumentsPage() {
                                         <Button size="sm" variant="ghost" className="h-7 text-xs px-2"
                                             onClick={() => setQuizCreateDialog({
                                                 open: true, documentId: "", documentName: "", existingQuizId: null,
-                                                title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30",
+                                                title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30", deadlineAt: "",
                                                 questions: [{ text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
                                                 isNewDocument: true,
                                             })}>
@@ -2034,20 +2222,68 @@ export default function DocumentsPage() {
                                                     </div>
 
                                                     {(() => {
-                                                        const previewUrl = doc.learningPlan?.sourceType === "pdf"
-                                                            ? doc.url
-                                                            : doc.learningPlan?.previewUrl
-                                                        if (previewUrl && activePlanStep.pageNumber) {
+                                                        const isPdfSource = doc.learningPlan?.sourceType === "pdf"
+                                                        const previewBaseUrl = isPdfSource ? doc.url : doc.learningPlan?.previewUrl
+                                                        const canUsePdfPreview = Boolean(previewBaseUrl && activePlanStep.pageNumber)
+                                                        const stepPreviewKey = `${doc.id}:${activePlanStep.id}:preview`
+                                                        const isStepPreviewLoaded = Boolean(loadedLearningPreviewKeys[stepPreviewKey])
+                                                        const currentPage = activePlanStep.pageNumber ?? 1
+                                                        const previewParams = "&view=FitH&zoom=page-fit&toolbar=0&navpanes=0&scrollbar=0&statusbar=0&messages=0"
+
+                                                        if (canUsePdfPreview && !failedLearningPreviewKeys[stepPreviewKey]) {
+                                                            const previewSrc = `${previewBaseUrl}#page=${currentPage}${previewParams}`
+                                                            const adjacentPreviewPages = [currentPage - 1, currentPage + 1].filter((page) => page >= 1)
+
                                                             return (
                                                                 <div className="relative aspect-video rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white">
                                                                     <iframe
                                                                         key={`${doc.id}-${activePlanStep.id}`}
                                                                         title={`${doc.name}-page-${activePlanStep.pageNumber}`}
-                                                                        src={`${previewUrl}?step=${activePlanStep.id}#page=${activePlanStep.pageNumber}&view=FitH&zoom=page-fit&toolbar=0&navpanes=0&scrollbar=0&statusbar=0&messages=0`}
-                                                                        className="block h-full w-[calc(100%+18px)] -mr-[18px] pointer-events-none select-none"
+                                                                        src={previewSrc}
+                                                                        className={`block h-full w-[calc(100%+18px)] -mr-[18px] pointer-events-none select-none transition-opacity duration-200 ${isStepPreviewLoaded ? "opacity-100" : "opacity-0"}`}
+                                                                        loading="lazy"
                                                                         scrolling="no"
+                                                                        onLoad={() => {
+                                                                            clearLearningPreviewFailure(stepPreviewKey)
+                                                                            markLearningPreviewLoaded(stepPreviewKey)
+                                                                        }}
+                                                                        onError={() => markLearningPreviewFailed(stepPreviewKey)}
                                                                     />
+                                                                    {!isStepPreviewLoaded && (
+                                                                        <div className="absolute inset-0 grid place-items-center bg-white/90 dark:bg-gray-900/80">
+                                                                            <div className="text-center">
+                                                                                <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-violet-200 border-t-violet-600" />
+                                                                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">Đang tải trang...</p>
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
+                                                                    {adjacentPreviewPages.map((page) => (
+                                                                        <iframe
+                                                                            key={`${doc.id}-${activePlanStep.id}-prefetch-${page}`}
+                                                                            title={`${doc.name}-prefetch-page-${page}`}
+                                                                            src={`${previewBaseUrl}#page=${page}${previewParams}`}
+                                                                            loading="lazy"
+                                                                            aria-hidden="true"
+                                                                            tabIndex={-1}
+                                                                            className="absolute h-0 w-0 opacity-0 pointer-events-none"
+                                                                        />
+                                                                    ))}
                                                                     <div className="absolute inset-0" aria-hidden="true" />
+                                                                </div>
+                                                            )
+                                                        }
+                                                        if (canUsePdfPreview && failedLearningPreviewKeys[stepPreviewKey]) {
+                                                            return (
+                                                                <div className="aspect-video rounded-xl border border-amber-200 bg-amber-50/80 dark:border-amber-900/40 dark:bg-amber-950/20 grid place-items-center">
+                                                                    <div className="text-center px-6">
+                                                                        <FileText className="w-10 h-10 mx-auto text-amber-500 mb-3" />
+                                                                        <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                                                                            Không tải được file preview của slide này
+                                                                        </p>
+                                                                        <p className="text-xs text-amber-700/80 dark:text-amber-400 mt-1">
+                                                                            Tệp có thể đã bị xóa hoặc URL không còn hợp lệ.
+                                                                        </p>
+                                                                    </div>
                                                                 </div>
                                                             )
                                                         }
@@ -2084,42 +2320,73 @@ export default function DocumentsPage() {
 
                                                     {activePlanStep.media && activePlanStep.media.length > 0 && (
                                                         <div className="space-y-3">
-                                                            {activePlanStep.media.map((media) => (
-                                                                <div key={media.id} className="aspect-video rounded-xl overflow-hidden bg-black border border-gray-200 dark:border-gray-700">
-                                                                    <video
-                                                                        src={media.url}
-                                                                        controls
-                                                                        controlsList="nodownload"
-                                                                        disablePictureInPicture
-                                                                        className="w-full h-full"
-                                                                        onContextMenu={(e) => e.preventDefault()}
-                                                                        onLoadedMetadata={(e) =>
-                                                                            handleLearningVideoProgress(
-                                                                                doc.id,
-                                                                                e.currentTarget.currentTime,
-                                                                                e.currentTarget.duration,
-                                                                                activePlanStep.id
-                                                                            )
-                                                                        }
-                                                                        onTimeUpdate={(e) =>
-                                                                            handleLearningVideoProgress(
-                                                                                doc.id,
-                                                                                e.currentTarget.currentTime,
-                                                                                e.currentTarget.duration,
-                                                                                activePlanStep.id
-                                                                            )
-                                                                        }
-                                                                        onEnded={(e) =>
-                                                                            handleLearningVideoProgress(
-                                                                                doc.id,
-                                                                                e.currentTarget.duration,
-                                                                                e.currentTarget.duration,
-                                                                                activePlanStep.id
-                                                                            )
-                                                                        }
-                                                                    />
-                                                                </div>
-                                                            ))}
+                                                            {activePlanStep.media.map((media) => {
+                                                                const mediaPreviewKey = `${doc.id}:${activePlanStep.id}:${media.id}:media`
+                                                                const isMediaLoaded = Boolean(loadedLearningPreviewKeys[mediaPreviewKey])
+                                                                if (failedLearningPreviewKeys[mediaPreviewKey]) {
+                                                                    return (
+                                                                        <div key={media.id} className="aspect-video rounded-xl border border-amber-200 bg-amber-50/80 dark:border-amber-900/40 dark:bg-amber-950/20 grid place-items-center">
+                                                                            <div className="text-center px-6">
+                                                                                <FileText className="w-10 h-10 mx-auto text-amber-500 mb-3" />
+                                                                                <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                                                                                    Không tải được video bài học
+                                                                                </p>
+                                                                            </div>
+                                                                        </div>
+                                                                    )
+                                                                }
+
+                                                                return (
+                                                                    <div key={media.id} className="relative aspect-video rounded-xl overflow-hidden bg-black border border-gray-200 dark:border-gray-700">
+                                                                        <video
+                                                                            src={media.url}
+                                                                            controls
+                                                                            controlsList="nodownload"
+                                                                            disablePictureInPicture
+                                                                            preload="metadata"
+                                                                            className="w-full h-full"
+                                                                            onContextMenu={(e) => e.preventDefault()}
+                                                                            onLoadedMetadata={(e) =>
+                                                                                handleLearningVideoProgress(
+                                                                                    doc.id,
+                                                                                    e.currentTarget.currentTime,
+                                                                                    e.currentTarget.duration,
+                                                                                    activePlanStep.id
+                                                                                )
+                                                                            }
+                                                                            onTimeUpdate={(e) =>
+                                                                                handleLearningVideoProgress(
+                                                                                    doc.id,
+                                                                                    e.currentTarget.currentTime,
+                                                                                    e.currentTarget.duration,
+                                                                                    activePlanStep.id
+                                                                                )
+                                                                            }
+                                                                            onEnded={(e) =>
+                                                                                handleLearningVideoProgress(
+                                                                                    doc.id,
+                                                                                    e.currentTarget.duration,
+                                                                                    e.currentTarget.duration,
+                                                                                    activePlanStep.id
+                                                                                )
+                                                                            }
+                                                                            onCanPlay={() => {
+                                                                                clearLearningPreviewFailure(mediaPreviewKey)
+                                                                                markLearningPreviewLoaded(mediaPreviewKey)
+                                                                            }}
+                                                                            onError={() => markLearningPreviewFailed(mediaPreviewKey)}
+                                                                        />
+                                                                        {!isMediaLoaded && (
+                                                                            <div className="absolute inset-0 grid place-items-center bg-black/50">
+                                                                                <div className="text-center">
+                                                                                    <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                                                                                    <p className="mt-2 text-xs text-white/80">Đang tải video...</p>
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                )
+                                                            })}
                                                         </div>
                                                     )}
 
@@ -2188,6 +2455,21 @@ export default function DocumentsPage() {
                                                                 <ChevronRight className="w-4 h-4 ml-2" />
                                                             </Button>
                                                         </div>
+                                                        {isLeaderOrAdmin && (
+                                                            <div className="mt-2 flex justify-end">
+                                                                <Button
+                                                                    type="button"
+                                                                    size="sm"
+                                                                    variant="ghost"
+                                                                    disabled={isSubmitting}
+                                                                    className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-950/30"
+                                                                    onClick={() => void handleDeleteLearningStep(doc, activePlanStep.id)}
+                                                                >
+                                                                    <Trash2 className="w-4 h-4 mr-1.5" />
+                                                                    Xóa slide này
+                                                                </Button>
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 </div>
                                             ) : isVideoLesson && doc.url ? (
@@ -2670,7 +2952,12 @@ export default function DocumentsPage() {
                     style={{ left: contextMenu.position.x, top: contextMenu.position.y }}
                 >
                     <button className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center"
-                        onClick={() => { handleDocumentClick(contextMenu.document); setContextMenu(null) }}>
+                        onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            handleDocumentClick(contextMenu.document)
+                            setContextMenu(null)
+                        }}>
                         <Eye className="w-4 h-4 mr-2" />Chi tiết
                     </button>
                     {contextMenu.document.type === "link" && contextMenu.document.url && (
@@ -2933,6 +3220,16 @@ export default function DocumentsPage() {
                                     value={createDocumentDialog.name}
                                     onChange={(e) =>
                                         setCreateDocumentDialog((s) => ({ ...s, name: e.target.value }))
+                                    }
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Deadline học liệu (tuỳ chọn)</p>
+                                <Input
+                                    type="datetime-local"
+                                    value={createDocumentDialog.deadlineAt}
+                                    onChange={(e) =>
+                                        setCreateDocumentDialog((s) => ({ ...s, deadlineAt: e.target.value }))
                                     }
                                 />
                             </div>
@@ -3300,6 +3597,16 @@ export default function DocumentsPage() {
                                     value={quizCreateDialog.timePerQuestionSeconds}
                                     onChange={(e) => setQuizCreateDialog((s) => ({ ...s, timePerQuestionSeconds: e.target.value }))} />
                                 <span className="text-sm text-gray-500">giây/câu</span>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                                    Deadline làm bài (tuỳ chọn)
+                                </label>
+                                <Input
+                                    type="datetime-local"
+                                    value={quizCreateDialog.deadlineAt}
+                                    onChange={(e) => setQuizCreateDialog((s) => ({ ...s, deadlineAt: e.target.value }))}
+                                />
                             </div>
 
                             {/* Auto-generate section */}
@@ -3821,9 +4128,24 @@ export default function DocumentsPage() {
                                                                             </p>
                                                                         </div>
                                                                     </div>
-                                                                    <span className={`text-base font-bold ${att.score >= 80 ? "text-green-600" : att.score >= 50 ? "text-yellow-500" : "text-red-500"}`}>
-                                                                        {att.score}đ
-                                                                    </span>
+                                                                    <div className="flex items-center gap-2">
+                                                                        <span className={`text-base font-bold ${att.score >= 80 ? "text-green-600" : att.score >= 50 ? "text-yellow-500" : "text-red-500"}`}>
+                                                                            {att.score}đ
+                                                                        </span>
+                                                                        {user?.role === "store_trainer" && (
+                                                                            <Button
+                                                                                type="button"
+                                                                                size="sm"
+                                                                                variant="outline"
+                                                                                className="h-8 bg-transparent"
+                                                                                disabled={resettingAttemptPersonId === att.personId}
+                                                                                onClick={() => void handleResetQuizAttemptForPerson(att.personId)}
+                                                                            >
+                                                                                <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                                                                                {resettingAttemptPersonId === att.personId ? "Đang reset..." : "Reset"}
+                                                                            </Button>
+                                                                        )}
+                                                                    </div>
                                                                 </div>
                                                             ))}
                                                         </>

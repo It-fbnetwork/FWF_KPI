@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getDirectory, getWorkspaceData } from "@/lib/server/data";
-import { getAuthState } from "@/lib/server/data";
+import { getAuthState, getDirectory, getWorkspaceData, maybeCreateLearningDeadlineReminders } from "@/lib/server/data";
 import { getSessionUserId } from "@/lib/server/session";
 
 export async function GET() {
@@ -22,6 +21,7 @@ export async function GET() {
     getDirectory(),
     getWorkspaceData(sessionUserId)
   ]);
+  void maybeCreateLearningDeadlineReminders(sessionUserId);
 
   return NextResponse.json({
     user: authState.user ? { ...authState.user, password: "" } : null,

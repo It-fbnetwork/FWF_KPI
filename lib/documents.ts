@@ -64,6 +64,7 @@ export interface Document {
   visibleToPersonIds: string[];
   isLearningMaterial?: boolean;
   learningPlan?: LearningPlan;
+  deadlineAt?: string;
 }
 
 export const documentTypes = {

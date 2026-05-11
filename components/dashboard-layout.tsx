@@ -96,7 +96,7 @@ type RealtimeNotification = {
 type RealtimeEventPayload = {
     type?: string
     actorId?: string
-    action?: "created" | "updated" | "deleted" | "assigned" | "requested" | "approved" | "rejected"
+    action?: "created" | "updated" | "deleted" | "assigned" | "reminder" | "requested" | "approved" | "rejected"
     entityType?: "task" | "project" | "schedule" | "document" | "quiz" | "learning_progress" | "person" | "profile" | "approval"
     entityLabel?: string
     entityId?: string
@@ -266,7 +266,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 message = `${actorName} vừa cập nhật thông tin thành viên.`
             }
         } else if (event.type === "learning.updated") {
-            if (event.entityType === "quiz" && event.action === "created") {
+            if (event.action === "reminder") {
+                title = "Nhắc nhở học tập"
+                message = entityLabel
+            } else if (event.entityType === "quiz" && event.action === "created") {
                 title = "Quiz mới"
                 message = `${actorName} vừa tạo quiz cho "${entityLabel}".`
             } else if (event.entityType === "quiz" && event.action === "deleted") {
