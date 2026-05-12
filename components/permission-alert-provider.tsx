@@ -23,9 +23,19 @@ export function PermissionAlertProvider() {
     const originalFetch = window.fetch.bind(window);
 
     const wrappedFetch: typeof window.fetch = async (...args) => {
+      const requestInput = args[0];
+      const requestInit = args[1];
+      const method = (() => {
+        if (requestInit?.method) return requestInit.method.toUpperCase();
+        if (typeof Request !== "undefined" && requestInput instanceof Request) {
+          return requestInput.method.toUpperCase();
+        }
+        return "GET";
+      })();
       const response = await originalFetch(...args);
 
-      if (response.status === 403) {
+      // Avoid noisy permission modal for background GET polling.
+      if (response.status === 403 && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
         const now = Date.now();
         if (now - lastShownAtRef.current > COOLDOWN_MS) {
           lastShownAtRef.current = now;

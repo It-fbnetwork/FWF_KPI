@@ -49,7 +49,7 @@ function InputField({ label, value, onChange, type = "text", placeholder }: Fiel
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 px-4 py-3 outline-none transition focus:border-ink"
+        className="rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/85 px-4 py-3 text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-ink dark:border-slate-600 dark:bg-slate-900/70 dark:text-slate-100 dark:placeholder:text-slate-400"
       />
     </label>
   );
@@ -78,18 +78,18 @@ function CompanyEmailField({ value, onChange }: Pick<FieldProps, "value" | "onCh
   return (
     <label className="grid gap-2">
       <span className="text-sm font-medium text-text">Email công ty</span>
-      <div className="flex items-center rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 px-4 py-3 transition focus-within:border-ink">
+      <div className="flex items-center rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/85 px-4 py-3 transition focus-within:border-ink dark:border-slate-600 dark:bg-slate-900/70">
         <input
           type="text"
           value={extractEmailLocalPart(value)}
           onChange={(event) => onChange(normalizeCompanyEmailInput(event.target.value))}
           placeholder="yourname"
-          className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-400"
+          className="min-w-0 flex-1 bg-transparent text-slate-900 outline-none placeholder:text-slate-400 dark:text-slate-100 dark:placeholder:text-slate-400"
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}
         />
-        <span className="ml-2 shrink-0 font-medium text-[#dd6b4d]">{COMPANY_DOMAIN}</span>
+        <span className="ml-2 shrink-0 font-medium text-[#dd6b4d] dark:text-orange-300">{COMPANY_DOMAIN}</span>
       </div>
     </label>
   );

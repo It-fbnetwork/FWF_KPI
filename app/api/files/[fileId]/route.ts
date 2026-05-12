@@ -1,4 +1,20 @@
 import { getFileByIdWithFallback } from "@/lib/server/file-storage";
+import { canAccessFileById } from "@/lib/server/data";
+import { getSessionUserId } from "@/lib/server/session";
+
+function toAsciiFilename(input: string) {
+  const ascii = input
+    .replace(/[^\x20-\x7E]+/g, "_")
+    .replace(/["\\]/g, "_")
+    .trim();
+  return ascii || "file";
+}
+
+function encodeRfc5987ValueChars(input: string) {
+  return encodeURIComponent(input)
+    .replace(/['()]/g, escape)
+    .replace(/\*/g, "%2A");
+}
 
 export async function GET(
   request: Request,
@@ -6,6 +22,11 @@ export async function GET(
 ) {
   try {
     const { fileId } = await params;
+    const sessionUserId = await getSessionUserId();
+    const canAccess = await canAccessFileById(sessionUserId, fileId);
+    if (!canAccess) {
+      return new Response("Forbidden", { status: 403 });
+    }
     const file = await getFileByIdWithFallback(fileId);
     if (!file) {
       return new Response("File not found", { status: 404 });
@@ -68,13 +89,16 @@ export async function GET(
       },
     });
 
+    const safeAsciiName = toAsciiFilename(file.filename);
+    const encodedUnicodeName = encodeRfc5987ValueChars(file.filename);
+
     return new Response(readable, {
       headers: {
         "Content-Type": contentType,
         "Content-Length": fileSize.toString(),
         "Accept-Ranges": "bytes",
         "Cache-Control": "public, max-age=31536000, immutable",
-        "Content-Disposition": `inline; filename="${file.filename}"`,
+        "Content-Disposition": `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUnicodeName}`,
       },
     });
   } catch {

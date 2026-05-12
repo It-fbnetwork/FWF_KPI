@@ -36,6 +36,26 @@ function normalizeTextForPrompt(text: string) {
     .trim();
 }
 
+function isLikelyMojibake(text: string) {
+  if (!text) return false;
+  const sample = text.slice(0, 8000);
+  if (sample.includes("�")) return true;
+  const suspiciousSeq = sample.match(/[ÃÂÐÑØÞ]{1,2}[^\s]{0,3}/g)?.length ?? 0;
+  const replacementLike = sample.match(/[�¤§¦¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿]/g)?.length ?? 0;
+  const strangeControls = sample.match(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g)?.length ?? 0;
+  const total = Math.max(sample.length, 1);
+  const noisyRatio = (suspiciousSeq * 4 + replacementLike * 2 + strangeControls * 3) / total;
+  return noisyRatio > 0.06;
+}
+
+function isReadableQuestionText(text: string) {
+  if (!text) return false;
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length < 6) return false;
+  if (isLikelyMojibake(normalized)) return false;
+  return true;
+}
+
 function extractJsonObject(raw: string) {
   const trimmed = raw.trim();
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed;
@@ -60,7 +80,8 @@ function buildFallbackQuestionsFromText(text: string, count: number): Normalized
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line.length >= 12 && line.length <= 160);
+    .filter((line) => line.length >= 12 && line.length <= 160)
+    .filter((line) => !isLikelyMojibake(line));
 
   const deduped = Array.from(new Set(lines)).slice(0, 80);
   const snippets = deduped.length >= 4
@@ -94,6 +115,27 @@ function buildFallbackQuestionsFromText(text: string, count: number): Normalized
   }
 
   return output;
+}
+
+function buildTitleBasedFallbackQuestions(title: string, count: number): NormalizedQuestion[] {
+  const topic = title.trim() || "tài liệu";
+  const baseFacts = [
+    `Nội dung chính của tài liệu là ${topic}.`,
+    `Người học cần đọc kỹ toàn bộ tài liệu ${topic}.`,
+    `Tài liệu ${topic} có thể bao gồm quy trình và lưu ý thực hành.`,
+    `Người học cần hoàn thành tài liệu ${topic} trước khi làm bài kiểm tra.`,
+  ];
+  return Array.from({ length: count }, (_, i) => {
+    const correct = baseFacts[i % baseFacts.length]!;
+    const wrong = baseFacts.filter((x) => x !== correct).slice(0, 3);
+    const options = shuffle([correct, ...wrong]).slice(0, 4);
+    return {
+      text: `Phát biểu nào đúng về tài liệu "${topic}"?`,
+      options: options as [string, string, string, string],
+      correctIndex: Math.max(options.indexOf(correct), 0),
+      explanation: "Đây là bộ câu hỏi nháp do hệ thống tạo khi chưa trích xuất được đủ nội dung tài liệu.",
+    };
+  });
 }
 
 export async function POST(request: Request, { params }: Params) {
@@ -148,9 +190,23 @@ export async function POST(request: Request, { params }: Params) {
       .join("\n\n");
     const originalFile = await getFileByApiUrl(doc.url);
     const originalFileBuffer = originalFile?.buffer ?? null;
+    const previewFile = await getFileByApiUrl(doc.learningPlan?.previewUrl);
+    const previewFileBuffer = previewFile?.buffer ?? null;
+
+    const textFromPlanLooksBad = isLikelyMojibake(textContent);
+    if (textFromPlanLooksBad) textContent = "";
+
+    // PPTX->PDF pipeline: when slides in learningPlan don't contain text, use preview PDF text.
+    if (!textContent && doc.learningPlan?.sourceType === "pptx" && previewFileBuffer) {
+      textContent = await extractPdfTextContent(previewFileBuffer);
+    }
 
     if (!textContent && doc.learningPlan?.sourceType === "pdf" && originalFileBuffer) {
       textContent = await extractPdfTextContent(originalFileBuffer);
+    }
+
+    if (isLikelyMojibake(textContent)) {
+      textContent = "";
     }
 
     const groqApiKey = process.env.GROQ_API_KEY;
@@ -201,9 +257,13 @@ Trả về JSON theo đúng cấu trúc:
 
     if (!textContent && !rawContent) {
       return NextResponse.json({
-        ok: false,
-        message: "Không đọc được nội dung từ PDF này. Vui lòng thử file khác hoặc tạo câu hỏi thủ công.",
-      }, { status: 422 });
+        ok: true,
+        questions: buildTitleBasedFallbackQuestions(doc.name, count),
+        documentName: doc.name,
+        fallback: true,
+        warning:
+          "Không đọc được đủ nội dung chữ từ tài liệu. Hệ thống đã tạo bộ câu hỏi nháp theo tiêu đề để bạn chỉnh nhanh.",
+      });
     }
 
     if (!rawContent && groqApiKey) {
@@ -328,6 +388,12 @@ CHỈ TRẢ VỀ JSON, KHÔNG GIẢI THÍCH THÊM.`;
         options: q.options.slice(0, 4) as [string, string, string, string],
         correctIndex: Math.min(Math.max(Math.round(q.correctIndex), 0), 3),
         explanation: q.explanation ?? "",
+      }))
+      .filter((q) => isReadableQuestionText(q.text))
+      .filter((q) => q.options.every((opt) => isReadableQuestionText(opt)))
+      .map((q) => ({
+        ...q,
+        explanation: isReadableQuestionText(q.explanation) ? q.explanation : "Đáp án đúng dựa theo nội dung tài liệu.",
       }));
 
     if (validated.length === 0) {
