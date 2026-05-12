@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAuthState, getMyQuizAttempt, getTeamQuizAttempts, resetQuizAttemptForPerson } from "@/lib/server/data";
+import { getAuthState, getMyQuizAttempt, getTeamQuizAttemptResets, getTeamQuizAttempts, resetQuizAttemptForPerson } from "@/lib/server/data";
 import { publishAppEventToPersons } from "@/lib/server/realtime";
 import { getSessionUserId } from "@/lib/server/session";
 
@@ -14,8 +14,11 @@ export async function GET(
     const scope = searchParams.get("scope");
 
     if (scope === "team") {
-      const attempts = await getTeamQuizAttempts(sessionUserId, documentId);
-      return NextResponse.json({ attempts });
+      const [attempts, resets] = await Promise.all([
+        getTeamQuizAttempts(sessionUserId, documentId),
+        getTeamQuizAttemptResets(sessionUserId, documentId),
+      ]);
+      return NextResponse.json({ attempts, resets });
     }
 
     const attempt = await getMyQuizAttempt(sessionUserId, documentId);
@@ -54,7 +57,7 @@ export async function PATCH(
       occurredAt: new Date().toISOString(),
     });
 
-    return NextResponse.json({ ok: true, deleted: resetResult.deleted });
+    return NextResponse.json({ ok: true, deleted: resetResult.deleted, resetAt: resetResult.resetAt, personId });
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed";
     return NextResponse.json(

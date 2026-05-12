@@ -21,6 +21,10 @@ function normalizeConnectionString(input?: string) {
   if (!url.searchParams.get("uselibpqcompat")) {
     url.searchParams.set("uselibpqcompat", "true");
   }
+  const host = url.hostname.toLowerCase();
+  if (host.includes("pooler.supabase.com") && url.port !== "6543") {
+    url.port = "6543";
+  }
   return url.toString();
 }
 
@@ -37,7 +41,14 @@ function getPool() {
     pool = new Pool({
       connectionString,
       ssl: { rejectUnauthorized: false },
-      max: 10,
+      max: 5,
+      min: 0,
+      idleTimeoutMillis: 10000,
+      connectionTimeoutMillis: 10000,
+      allowExitOnIdle: true,
+    });
+    pool.on("error", (error) => {
+      console.error("[postgres] idle client error:", error.message);
     });
   }
 

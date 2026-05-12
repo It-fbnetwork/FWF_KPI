@@ -54,6 +54,9 @@ import {
     Users,
     GraduationCap,
     RotateCcw,
+    Lock,
+    Unlock,
+    Loader2,
 } from "lucide-react"
 
 type LearningQuizQuestion = {
@@ -90,7 +93,19 @@ type QuizAttemptRecord = {
     totalQuestions: number
     startedAt: string
     submittedAt: string
+    attemptRound?: number
+    isActiveAttempt?: boolean
     reviewQuestions?: LearningQuizQuestion[]
+}
+
+type QuizAttemptResetRecord = {
+    id: string
+    documentId: string
+    personId: string
+    personName?: string
+    resetByPersonId: string
+    resetByPersonName?: string
+    resetAt: string
 }
 
 type QuizCreateQuestion = {
@@ -138,11 +153,13 @@ interface QuizResultsState {
     documentId: string
     documentName: string
     attempts: QuizAttemptRecord[]
+    resets: QuizAttemptResetRecord[]
     learningStatuses: LearningStatusRow[]
     isLoading: boolean
 }
 
 type QuizResultsRoleFilter = "all" | "store_manager" | "store_lead" | "store_technician" | "trainer" | "other"
+type QuizResultsTab = "results" | "reset_history"
 
 type LearningStatusType = "completed" | "in_progress" | "not_started"
 
@@ -302,6 +319,8 @@ export default function DocumentsPage() {
     const [visibilityRoleFilter, setVisibilityRoleFilter] = useState<string[]>([])
     const [visibilityMemberSearch, setVisibilityMemberSearch] = useState("")
     const [isSubmitting, setIsSubmitting] = useState(false)
+    const [pendingStarIds, setPendingStarIds] = useState<Set<string>>(new Set())
+    const [pendingLockIds, setPendingLockIds] = useState<Set<string>>(new Set())
 
     // ── Learning / E-learning state ──────────────────────────────────
     const [activeTab, setActiveTab] = useState<"all" | "learning">("all")
@@ -328,10 +347,13 @@ export default function DocumentsPage() {
     const [quizCreateDialog, setQuizCreateDialog] = useState<QuizCreateState>(defaultQuizCreate())
     const [quizTakeModal, setQuizTakeModal] = useState<QuizTakeState>(defaultQuizTake())
     const [quizResultsModal, setQuizResultsModal] = useState<QuizResultsState>({
-        open: false, documentId: "", documentName: "", attempts: [], learningStatuses: [], isLoading: false,
+        open: false, documentId: "", documentName: "", attempts: [], resets: [], learningStatuses: [], isLoading: false,
     })
     const [resettingAttemptPersonId, setResettingAttemptPersonId] = useState<string | null>(null)
     const [quizResultsRoleFilter, setQuizResultsRoleFilter] = useState<QuizResultsRoleFilter>("all")
+    const [quizResultsTab, setQuizResultsTab] = useState<QuizResultsTab>("results")
+    const [quizResetPersonFilter, setQuizResetPersonFilter] = useState<string>("all")
+    const [quizResetTimeFilter, setQuizResetTimeFilter] = useState<"all" | "today" | "7d" | "30d" | "90d">("all")
     const [selectedLearningDoc, setSelectedLearningDoc] = useState<Document | null>(null)
     const [failedLearningPreviewKeys, setFailedLearningPreviewKeys] = useState<Record<string, true>>({})
     const [loadedLearningPreviewKeys, setLoadedLearningPreviewKeys] = useState<Record<string, true>>({})
@@ -805,6 +827,14 @@ export default function DocumentsPage() {
     // ── Document handlers ────────────────────────────────────────────
 
     const handleDocumentClick = (doc: Document) => {
+        if (doc.isLocked && !isLeaderOrAdmin) {
+            toast({
+                title: "Tài liệu đang bị khóa",
+                description: "Trainer đã khóa tài liệu này. Vui lòng chờ mở khóa để xem.",
+                variant: "destructive",
+            })
+            return
+        }
         setSelectedDocument(doc)
         setIsDrawerOpen(true)
     }
@@ -817,6 +847,7 @@ export default function DocumentsPage() {
             height += 12 /* separator */
             height += 44 /* rename */
             height += 44 /* move */
+            height += 44 /* lock toggle */
             height += 44 /* learning toggle */
             height += 12 /* separator */
             height += 44 /* delete */
@@ -840,12 +871,20 @@ export default function DocumentsPage() {
     const handleStarToggle = async (docId: string) => {
         const target = documentsData.find((d) => d.id === docId)
         if (!target) return
+        if (pendingStarIds.has(docId)) return
+        setPendingStarIds((prev) => new Set(prev).add(docId))
         try {
             const updated = await patchDocument(docId, { isStarred: !target.isStarred })
             setDocumentsData((prev) => prev.map((d) => (d.id === docId ? updated : d)))
             if (selectedDocument?.id === docId) setSelectedDocument(updated)
         } catch {
             toast({ title: "Không thể cập nhật", variant: "destructive" })
+        } finally {
+            setPendingStarIds((prev) => {
+                const next = new Set(prev)
+                next.delete(docId)
+                return next
+            })
         }
     }
 
@@ -899,6 +938,28 @@ export default function DocumentsPage() {
             if (selectedDocument?.id === doc.id) setSelectedDocument(updated)
         } catch {
             toast({ title: "Không thể di chuyển", variant: "destructive" })
+        }
+    }
+
+    const handleToggleDocumentLock = async (doc: Document) => {
+        if (!isLeaderOrAdmin) return
+        if (pendingLockIds.has(doc.id)) return
+        setPendingLockIds((prev) => new Set(prev).add(doc.id))
+        try {
+            const updated = await patchDocument(doc.id, { isLocked: !doc.isLocked })
+            setDocumentsData((prev) => prev.map((item) => (item.id === doc.id ? updated : item)))
+            setSelectedDocument((prev) => (prev?.id === doc.id ? updated : prev))
+            setSelectedLearningDoc((prev) => (prev?.id === doc.id ? updated : prev))
+            setContextMenu(null)
+            toast({ title: updated.isLocked ? "Đã khóa tài liệu" : "Đã mở khóa tài liệu" })
+        } catch {
+            toast({ title: "Không thể cập nhật trạng thái khóa", variant: "destructive" })
+        } finally {
+            setPendingLockIds((prev) => {
+                const next = new Set(prev)
+                next.delete(doc.id)
+                return next
+            })
         }
     }
 
@@ -1014,7 +1075,7 @@ export default function DocumentsPage() {
     const groups = groupedDocuments()
     const learningDocs = (isLeaderOrAdmin
         ? documentsData.filter((d) => d.isLearningMaterial)
-        : documentsData
+        : documentsData.filter((d) => !d.isLocked)
     ).sort((a, b) => new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime())
     const completedLearningCount = learningDocs.filter((doc) => learningProgress.completedDocIds.includes(doc.id)).length
 
@@ -1215,7 +1276,7 @@ export default function DocumentsPage() {
 
         const learningDocs = isLeaderOrAdmin
             ? docs.filter((d) => d.isLearningMaterial)
-            : docs
+            : docs.filter((d) => !d.isLocked)
         if (learningDocs.length > 0 && !selectedLearningDoc) {
             setSelectedLearningDoc(learningDocs[0] ?? null)
         }
@@ -1246,7 +1307,7 @@ export default function DocumentsPage() {
         setActiveTab("learning")
         const docs = isLeaderOrAdmin
             ? documentsData.filter((d) => d.isLearningMaterial)
-            : documentsData
+            : documentsData.filter((d) => !d.isLocked)
         if (docs.length > 0 && !selectedLearningDoc) {
             setSelectedLearningDoc(docs[0] ?? null)
         }
@@ -1351,6 +1412,14 @@ export default function DocumentsPage() {
     }
 
     const handleStartLearningFromDocument = (doc: Document) => {
+        if (doc.isLocked && !isLeaderOrAdmin) {
+            toast({
+                title: "Tài liệu đang bị khóa",
+                description: "Trainer đã khóa tài liệu này. Vui lòng chờ mở khóa để xem.",
+                variant: "destructive",
+            })
+            return
+        }
         const targetLearningDoc = learningDocs.find((item) => item.id === doc.id) ?? null
         if (!targetLearningDoc) {
             toast({
@@ -1363,7 +1432,9 @@ export default function DocumentsPage() {
 
         setActiveTab("learning")
         setSelectedLearningDoc(targetLearningDoc)
-        const docs = documentsData
+        const docs = isLeaderOrAdmin
+            ? documentsData.filter((item) => item.isLearningMaterial)
+            : documentsData.filter((item) => !item.isLocked)
         void loadLearningData(docs)
     }
 
@@ -1673,30 +1744,29 @@ export default function DocumentsPage() {
 
     const handleOpenQuizResults = async (doc: Document) => {
         setQuizResultsRoleFilter("all")
+        setQuizResultsTab("results")
+        setQuizResetPersonFilter("all")
+        setQuizResetTimeFilter("all")
         setQuizResultsModal({
             open: true,
             documentId: doc.id,
             documentName: doc.name,
             attempts: [],
+            resets: [],
             learningStatuses: [],
             isLoading: true,
         })
         try {
             const [attemptsRes, statusesRes] = await Promise.all([
-                fetch(`/api/learning/quiz/${doc.id}/attempts?scope=team`, {
-                    credentials: "include",
-                    cache: "no-store",
-                }),
-                fetch(`/api/learning/progress/${doc.id}/team`, {
-                    credentials: "include",
-                    cache: "no-store",
-                }),
+                fetch(`/api/learning/quiz/${doc.id}/attempts?scope=team`, { credentials: "include", cache: "no-store" }),
+                fetch(`/api/learning/progress/${doc.id}/team`, { credentials: "include", cache: "no-store" }),
             ])
-            const attemptsData = (await attemptsRes.json()) as { attempts: QuizAttemptRecord[] }
+            const attemptsData = (await attemptsRes.json()) as { attempts: QuizAttemptRecord[]; resets?: QuizAttemptResetRecord[] }
             const statusData = (await statusesRes.json()) as { rows: LearningStatusRow[] }
             const attempts = attemptsData.attempts ?? []
+            const resets = attemptsData.resets ?? []
             const learningStatuses = statusData.rows ?? []
-            setQuizResultsModal((prev) => ({ ...prev, attempts, learningStatuses, isLoading: false }))
+            setQuizResultsModal((prev) => ({ ...prev, attempts, resets, learningStatuses, isLoading: false }))
         } catch {
             setQuizResultsModal((prev) => ({ ...prev, isLoading: false }))
         }
@@ -1712,11 +1782,19 @@ export default function DocumentsPage() {
                 credentials: "include",
                 body: JSON.stringify({ personId }),
             })
-            const data = (await res.json()) as { ok?: boolean; message?: string; deleted?: boolean }
+            const data = (await res.json()) as { ok?: boolean; message?: string; deleted?: boolean; resetAt?: string }
             if (!res.ok || !data.ok) throw new Error(data.message ?? "Không thể reset kết quả")
+            const [attemptsRes, statusesRes] = await Promise.all([
+                fetch(`/api/learning/quiz/${quizResultsModal.documentId}/attempts?scope=team`, { credentials: "include", cache: "no-store" }),
+                fetch(`/api/learning/progress/${quizResultsModal.documentId}/team`, { credentials: "include", cache: "no-store" }),
+            ])
+            const attemptsData = (await attemptsRes.json()) as { attempts: QuizAttemptRecord[]; resets?: QuizAttemptResetRecord[] }
+            const statusData = (await statusesRes.json()) as { rows: LearningStatusRow[] }
             setQuizResultsModal((prev) => ({
                 ...prev,
-                attempts: prev.attempts.filter((attempt) => attempt.personId !== personId),
+                attempts: attemptsData.attempts ?? [],
+                resets: attemptsData.resets ?? prev.resets,
+                learningStatuses: statusData.rows ?? prev.learningStatuses,
             }))
             toast({ title: "Đã reset kết quả. Nhân viên có thể làm bài lại." })
         } catch (error) {
@@ -1756,6 +1834,8 @@ export default function DocumentsPage() {
     const DocumentCard = ({ doc }: { doc: Document }) => {
         const owner = people.find((p) => p.id === doc.ownerId)
         const docType = documentTypes[doc.type] ?? documentTypes.txt
+        const isLockPending = pendingLockIds.has(doc.id)
+        const isStarPending = pendingStarIds.has(doc.id)
 
         return (
             <Card
@@ -1776,11 +1856,33 @@ export default function DocumentsPage() {
                             )}
                         </div>
                         <div className="flex items-center space-x-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className={`h-6 w-6 ${
+                                    doc.isLocked ? "text-amber-500 hover:text-amber-600" : "text-emerald-500 hover:text-emerald-600"
+                                }`}
+                                title={doc.isLocked ? "Khóa tài liệu" : "Mở khóa tài liệu"}
+                                disabled={!isLeaderOrAdmin || isLockPending}
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    if (isLeaderOrAdmin) {
+                                        void handleToggleDocumentLock(doc)
+                                    }
+                                }}
+                            >
+                                {isLockPending ? <Loader2 className="w-3 h-3 animate-spin" /> : doc.isLocked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
+                            </Button>
                             <Button variant="ghost" size="icon" className="h-6 w-6"
+                                disabled={isStarPending}
                                 onClick={(e) => { e.stopPropagation(); void handleStarToggle(doc.id) }}>
-                                {doc.isStarred
-                                    ? <Star className="w-3 h-3 text-yellow-500 fill-current" />
-                                    : <StarOff className="w-3 h-3 text-gray-400" />}
+                                {isStarPending ? (
+                                    <Loader2 className="w-3 h-3 animate-spin text-gray-400" />
+                                ) : (
+                                    doc.isStarred
+                                        ? <Star className="w-3 h-3 text-yellow-500 fill-current" />
+                                        : <StarOff className="w-3 h-3 text-gray-400" />
+                                )}
                             </Button>
                             <Button variant="ghost" size="icon" className="h-6 w-6"
                                 onClick={(e) => {
@@ -1796,6 +1898,12 @@ export default function DocumentsPage() {
                         <h3 className="font-medium text-gray-900 dark:text-white text-sm truncate" title={doc.name}>
                             {doc.name}
                         </h3>
+                        {doc.isLocked && (
+                            <div className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
+                                <Lock className="w-3 h-3" />
+                                Đã khóa
+                            </div>
+                        )}
                         {doc.type === "link" && doc.url && (
                             <p className="text-xs text-cyan-600 dark:text-cyan-400 truncate">{doc.url}</p>
                         )}
@@ -1836,6 +1944,7 @@ export default function DocumentsPage() {
     const DocumentListItem = ({ doc }: { doc: Document }) => {
         const owner = people.find((p) => p.id === doc.ownerId)
         const docType = documentTypes[doc.type] ?? documentTypes.txt
+        const isLockPending = pendingLockIds.has(doc.id)
 
         return (
             <div
@@ -1856,6 +1965,12 @@ export default function DocumentsPage() {
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center space-x-2">
                         <h3 className="font-medium text-gray-900 dark:text-white truncate">{doc.name}</h3>
+                        {doc.isLocked && (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
+                                <Lock className="w-3 h-3" />
+                                Đã khóa
+                            </span>
+                        )}
                         {doc.isStarred && <Star className="w-4 h-4 text-yellow-500 fill-current flex-shrink-0" />}
                     </div>
                     <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
@@ -1865,6 +1980,23 @@ export default function DocumentsPage() {
                     </div>
                 </div>
                 <div className="flex items-center space-x-3 flex-shrink-0">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className={`h-6 w-6 ${
+                            doc.isLocked ? "text-amber-500 hover:text-amber-600" : "text-emerald-500 hover:text-emerald-600"
+                        }`}
+                        title={doc.isLocked ? "Khóa tài liệu" : "Mở khóa tài liệu"}
+                        disabled={!isLeaderOrAdmin || isLockPending}
+                        onClick={(e) => {
+                            e.stopPropagation()
+                            if (isLeaderOrAdmin) {
+                                void handleToggleDocumentLock(doc)
+                            }
+                        }}
+                    >
+                        {isLockPending ? <Loader2 className="w-4 h-4 animate-spin" /> : doc.isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+                    </Button>
                     {!isLeaderOrAdmin && (
                         <Button
                             size="sm"
@@ -2997,6 +3129,22 @@ export default function DocumentsPage() {
                                 onClick={() => void handleMoveDocument(contextMenu.document)}>
                                 <Move className="w-4 h-4 mr-2" />Di chuyển
                             </button>
+                            <button
+                                className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center"
+                                onClick={() => void handleToggleDocumentLock(contextMenu.document)}
+                            >
+                                {contextMenu.document.isLocked ? (
+                                    <>
+                                        <Unlock className="w-4 h-4 mr-2" />
+                                        Mở khóa tài liệu
+                                    </>
+                                ) : (
+                                    <>
+                                        <Lock className="w-4 h-4 mr-2" />
+                                        Khóa tài liệu
+                                    </>
+                                )}
+                            </button>
                             <button className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center"
                                 onClick={() => { void handleMarkAsLearning(contextMenu.document.id, !contextMenu.document.isLearningMaterial); setContextMenu(null) }}>
                                 <GraduationCap className="w-4 h-4 mr-2" />
@@ -3895,8 +4043,114 @@ export default function DocumentsPage() {
                             </button>
                         </div>
                         <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">
+                            <div className="mb-3 inline-flex rounded-lg border border-gray-200 p-1 dark:border-gray-700">
+                                <button
+                                    type="button"
+                                    onClick={() => setQuizResultsTab("results")}
+                                    className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                                        quizResultsTab === "results"
+                                            ? "bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+                                            : "text-gray-600 dark:text-gray-300"
+                                    }`}
+                                >
+                                    Kết quả quiz
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setQuizResultsTab("reset_history")}
+                                    className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                                        quizResultsTab === "reset_history"
+                                            ? "bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+                                            : "text-gray-600 dark:text-gray-300"
+                                    }`}
+                                >
+                                    Lịch sử reset
+                                </button>
+                            </div>
                             {quizResultsModal.isLoading ? (
                                 <p className="text-sm text-gray-500 text-center py-8">Đang tải...</p>
+                            ) : quizResultsTab === "reset_history" ? (
+                                <div className="space-y-2">
+                                    {(() => {
+                                        const now = Date.now()
+                                        const filteredResets = quizResultsModal.resets.filter((reset) => {
+                                            if (quizResetPersonFilter !== "all" && reset.personId !== quizResetPersonFilter) return false
+                                            const resetAtMs = new Date(reset.resetAt).getTime()
+                                            if (!Number.isFinite(resetAtMs)) return false
+                                            if (quizResetTimeFilter === "today") {
+                                                const d = new Date(resetAtMs)
+                                                const n = new Date(now)
+                                                return (
+                                                    d.getFullYear() === n.getFullYear() &&
+                                                    d.getMonth() === n.getMonth() &&
+                                                    d.getDate() === n.getDate()
+                                                )
+                                            }
+                                            if (quizResetTimeFilter === "7d") return resetAtMs >= now - 7 * 24 * 60 * 60 * 1000
+                                            if (quizResetTimeFilter === "30d") return resetAtMs >= now - 30 * 24 * 60 * 60 * 1000
+                                            if (quizResetTimeFilter === "90d") return resetAtMs >= now - 90 * 24 * 60 * 60 * 1000
+                                            return true
+                                        })
+                                        const personOptions = Array.from(
+                                            new Map(
+                                                quizResultsModal.resets.map((reset) => [reset.personId, reset.personName ?? "Unknown"])
+                                            ).entries()
+                                        )
+                                        return (
+                                            <>
+                                                <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-3 dark:border-gray-700 dark:bg-gray-900/30">
+                                                    <p className="mb-2 text-xs font-semibold text-gray-600 dark:text-gray-300">Bộ lọc lịch sử reset</p>
+                                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                                        <select
+                                                            value={quizResetPersonFilter}
+                                                            onChange={(event) => setQuizResetPersonFilter(event.target.value)}
+                                                            className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                                                        >
+                                                            <option value="all">Tất cả nhân viên</option>
+                                                            {personOptions.map(([id, name]) => (
+                                                                <option key={id} value={id}>{name}</option>
+                                                            ))}
+                                                        </select>
+                                                        <select
+                                                            value={quizResetTimeFilter}
+                                                            onChange={(event) => setQuizResetTimeFilter(event.target.value as "all" | "today" | "7d" | "30d" | "90d")}
+                                                            className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                                                        >
+                                                            <option value="all">Toàn thời gian</option>
+                                                            <option value="today">Hôm nay</option>
+                                                            <option value="7d">7 ngày gần đây</option>
+                                                            <option value="30d">30 ngày gần đây</option>
+                                                            <option value="90d">90 ngày gần đây</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                {filteredResets.length === 0 ? (
+                                                    <div className="text-center py-8 rounded-xl border border-dashed border-gray-200 dark:border-gray-700">
+                                                        <RotateCcw className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                                                        <p className="text-sm text-gray-500 dark:text-gray-400">Không có dữ liệu reset theo bộ lọc.</p>
+                                                    </div>
+                                                ) : (
+                                                    filteredResets.map((reset) => (
+                                                        <div
+                                                            key={reset.id}
+                                                            className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/30"
+                                                        >
+                                                            <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                                                                {reset.personName ?? "Unknown"}
+                                                            </p>
+                                                            <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                                                                Được reset bởi <span className="font-medium">{reset.resetByPersonName ?? "Unknown"}</span>
+                                                            </p>
+                                                            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                                                                {new Date(reset.resetAt).toLocaleString("vi-VN")}
+                                                            </p>
+                                                        </div>
+                                                    ))
+                                                )}
+                                            </>
+                                        )
+                                    })()}
+                                </div>
                             ) : (
                                 <div className="space-y-3">
                                     {(() => {
@@ -3944,11 +4198,12 @@ export default function DocumentsPage() {
 
                                         const scopedLearningStatuses = quizResultsModal.learningStatuses.filter((item) => roleMatched(item.personId))
                                         const scopedAttempts = quizResultsModal.attempts.filter((attempt) => roleMatched(attempt.personId))
+                                        const activeAttempts = scopedAttempts.filter((attempt) => attempt.isActiveAttempt !== false)
 
                                         const completed = scopedLearningStatuses.filter((item) => item.status === "completed")
                                         const inProgress = scopedLearningStatuses.filter((item) => item.status === "in_progress")
                                         const notStarted = scopedLearningStatuses.filter((item) => item.status === "not_started")
-                                        const submittedPersonIdSet = new Set(scopedAttempts.map((attempt) => attempt.personId))
+                                        const submittedPersonIdSet = new Set(activeAttempts.map((attempt) => attempt.personId))
                                         const readyButNotSubmitted = completed.filter((item) => !submittedPersonIdSet.has(item.personId))
                                         const notEligibleForQuiz = [...inProgress, ...notStarted]
                                         return (
@@ -4038,7 +4293,7 @@ export default function DocumentsPage() {
                                                     <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Tiến độ làm bài kiểm tra</h3>
                                                     <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
                                                         <div className="text-center px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-900/20">
-                                                            <p className="text-lg font-bold text-blue-700 dark:text-blue-300">{scopedAttempts.length}</p>
+                                                            <p className="text-lg font-bold text-blue-700 dark:text-blue-300">{activeAttempts.length}</p>
                                                             <p className="text-xs text-blue-600 dark:text-blue-400">Đã nộp</p>
                                                         </div>
                                                         <div className="text-center px-3 py-2 rounded-xl bg-amber-50 dark:bg-amber-900/20">
@@ -4054,9 +4309,9 @@ export default function DocumentsPage() {
                                                         <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-900/10 p-3">
                                                             <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-2">Đã nộp</p>
                                                             <div className="space-y-1 max-h-40 overflow-y-auto">
-                                                                {scopedAttempts.length === 0 ? (
+                                                                {activeAttempts.length === 0 ? (
                                                                     <p className="text-xs text-blue-700/70 dark:text-blue-300/70">Chưa có</p>
-                                                                ) : scopedAttempts.map((item) => (
+                                                                ) : activeAttempts.map((item) => (
                                                                     <p key={item.id} className="text-xs text-blue-900 dark:text-blue-200">
                                                                         {item.personName ?? "Unknown"}
                                                                     </p>
@@ -4097,18 +4352,20 @@ export default function DocumentsPage() {
                                                         <>
                                                             <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
                                                                 <div className="text-center px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-900/20">
-                                                                    <p className="text-lg font-bold text-blue-700 dark:text-blue-300">{scopedAttempts.length}</p>
+                                                                    <p className="text-lg font-bold text-blue-700 dark:text-blue-300">{activeAttempts.length}</p>
                                                                     <p className="text-xs text-blue-600 dark:text-blue-400">Đã nộp</p>
                                                                 </div>
                                                                 <div className="text-center px-3 py-2 rounded-xl bg-green-50 dark:bg-green-900/20">
                                                                     <p className="text-lg font-bold text-green-700 dark:text-green-300">
-                                                                        {Math.round(scopedAttempts.reduce((s, a) => s + a.score, 0) / scopedAttempts.length)}
+                                                                        {activeAttempts.length > 0
+                                                                            ? Math.round(activeAttempts.reduce((s, a) => s + a.score, 0) / activeAttempts.length)
+                                                                            : 0}
                                                                     </p>
                                                                     <p className="text-xs text-green-600 dark:text-green-400">Điểm TB</p>
                                                                 </div>
                                                                 <div className="text-center px-3 py-2 rounded-xl bg-violet-50 dark:bg-violet-900/20">
                                                                     <p className="text-lg font-bold text-violet-700 dark:text-violet-300">
-                                                                        {scopedAttempts.filter((a) => a.score >= 80).length}
+                                                                        {activeAttempts.filter((a) => a.score >= 80).length}
                                                                     </p>
                                                                     <p className="text-xs text-violet-600 dark:text-violet-400">Đạt ≥80</p>
                                                                 </div>
@@ -4124,15 +4381,20 @@ export default function DocumentsPage() {
                                                                                 {att.personName ?? "Unknown"}
                                                                             </p>
                                                                             <p className="text-xs text-gray-500 dark:text-gray-400">
-                                                                                {att.correctAnswers}/{att.totalQuestions} câu · {new Date(att.submittedAt).toLocaleDateString("vi-VN")}
+                                                                                Lần {att.attemptRound ?? 1} · {att.correctAnswers}/{att.totalQuestions} câu · {new Date(att.submittedAt).toLocaleDateString("vi-VN")}
                                                                             </p>
                                                                         </div>
                                                                     </div>
                                                                     <div className="flex items-center gap-2">
+                                                                        {att.isActiveAttempt === false && (
+                                                                            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-600 dark:text-amber-300">
+                                                                                Đã reset
+                                                                            </span>
+                                                                        )}
                                                                         <span className={`text-base font-bold ${att.score >= 80 ? "text-green-600" : att.score >= 50 ? "text-yellow-500" : "text-red-500"}`}>
                                                                             {att.score}đ
                                                                         </span>
-                                                                        {user?.role === "store_trainer" && (
+                                                                        {user?.role === "store_trainer" && att.isActiveAttempt !== false && (
                                                                             <Button
                                                                                 type="button"
                                                                                 size="sm"

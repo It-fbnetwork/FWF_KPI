@@ -65,6 +65,9 @@ export interface Document {
   isLearningMaterial?: boolean;
   learningPlan?: LearningPlan;
   deadlineAt?: string;
+  isLocked?: boolean;
+  lockedAt?: string;
+  lockedByUserId?: string;
 }
 
 export const documentTypes = {

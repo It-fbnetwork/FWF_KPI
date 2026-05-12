@@ -120,6 +120,9 @@ type DbDocument = {
   isLearningMaterial?: boolean;
   learningPlan?: Document["learningPlan"];
   deadlineAt?: string;
+  isLocked?: boolean;
+  lockedAt?: string;
+  lockedByUserId?: string;
 };
 
 type DbFolder = {
@@ -212,6 +215,14 @@ type DbQuizAttempt = {
   totalQuestions: number;
   startedAt: string;
   submittedAt: string;
+};
+
+type DbQuizAttemptReset = {
+  _id: string;
+  documentId: string;
+  personId: string;
+  resetByPersonId: string;
+  resetAt: string;
 };
 
 type DbLearningProgress = {
@@ -483,7 +494,19 @@ export type QuizAttemptRecord = {
   totalQuestions: number;
   startedAt: string;
   submittedAt: string;
+  attemptRound?: number;
+  isActiveAttempt?: boolean;
   reviewQuestions?: QuizQuestion[];
+};
+
+export type QuizAttemptResetRecord = {
+  id: string;
+  documentId: string;
+  personId: string;
+  personName?: string;
+  resetByPersonId: string;
+  resetByPersonName?: string;
+  resetAt: string;
 };
 
 export type LearningProgressRecord = {
@@ -520,6 +543,31 @@ declare global {
         inFlight?: Promise<void>;
       }
     | undefined;
+  // eslint-disable-next-line no-var
+  var __fwfQuizAttemptResetSchemaReady__:
+    | {
+        checkedAt: number;
+      }
+    | undefined;
+}
+
+async function ensureQuizAttemptResetSchemaReady() {
+  if (!shouldUseSupabasePhaseA()) return;
+  const state = globalThis.__fwfQuizAttemptResetSchemaReady__;
+  if (state && Date.now() - state.checkedAt < 5 * 60 * 1000) return;
+
+  await pgQuery(`
+    create table if not exists quiz_attempt_resets (
+      id text primary key,
+      document_id text not null,
+      person_id text not null,
+      reset_by_person_id text not null,
+      reset_at timestamptz not null,
+      raw_json jsonb
+    )
+  `);
+  await pgQuery("create index if not exists idx_quiz_attempt_resets_doc_person on quiz_attempt_resets(document_id, person_id, reset_at desc)");
+  globalThis.__fwfQuizAttemptResetSchemaReady__ = { checkedAt: Date.now() };
 }
 
 function normalizeEmail(email: string) {
@@ -1166,7 +1214,10 @@ function mapDbDocument(document: DbDocument): Document {
     visibleToPersonIds: document.visibleToPersonIds ?? [],
     isLearningMaterial: document.isLearningMaterial ?? false,
     learningPlan: document.learningPlan,
-    deadlineAt: document.deadlineAt
+    deadlineAt: document.deadlineAt,
+    isLocked: document.isLocked ?? false,
+    lockedAt: document.lockedAt,
+    lockedByUserId: document.lockedByUserId
   };
 }
 
@@ -1195,7 +1246,9 @@ function mapDbQuizAttempt(
   attempt: DbQuizAttempt,
   personName?: string,
   personRole?: string,
-  reviewQuestions?: QuizQuestion[]
+  reviewQuestions?: QuizQuestion[],
+  attemptRound?: number,
+  isActiveAttempt?: boolean
 ): QuizAttemptRecord {
   return {
     id: attempt._id,
@@ -1210,6 +1263,8 @@ function mapDbQuizAttempt(
     totalQuestions: attempt.totalQuestions,
     startedAt: attempt.startedAt,
     submittedAt: attempt.submittedAt,
+    attemptRound,
+    isActiveAttempt,
     reviewQuestions,
   };
 }
@@ -1330,6 +1385,9 @@ function mapPgUserRow(row: Record<string, unknown>): DbUser {
 }
 
 function mapPgDocumentRow(row: Record<string, unknown>): DbDocument {
+  const raw = row.raw_json && typeof row.raw_json === "object"
+    ? (row.raw_json as Record<string, unknown>)
+    : {};
   return {
     _id: String(row.id),
     name: String(row.name ?? ""),
@@ -1350,7 +1408,57 @@ function mapPgDocumentRow(row: Record<string, unknown>): DbDocument {
     isLearningMaterial: Boolean(row.is_learning_material),
     learningPlan: (row.learning_plan as Document["learningPlan"] | undefined) ?? undefined,
     deadlineAt: toIsoStringOrUndefined(row.deadline_at),
+    isLocked: Boolean(row.is_locked ?? raw.isLocked ?? false),
+    lockedAt: toIsoStringOrUndefined(row.locked_at ?? raw.lockedAt),
+    lockedByUserId: (row.locked_by_user_id as string | undefined) ?? (raw.lockedByUserId as string | undefined),
   };
+}
+
+function canBypassDocumentLock(actor: SessionActor, document: Pick<DbDocument, "ownerId">) {
+  if (actor.isAdmin) return true;
+  if (canManageLearningContent(actor)) return true;
+  return actor.person.id === document.ownerId;
+}
+
+function isDocumentLockedForActor(actor: SessionActor, document: DbDocument) {
+  if (!document.isLocked) return false;
+  return !canBypassDocumentLock(actor, document);
+}
+
+function documentContainsFileId(document: DbDocument, fileId: string) {
+  const pickFileId = (url?: string) => url?.match(/\/api\/files\/([^/?#]+)/)?.[1];
+  if (pickFileId(document.url) === fileId) return true;
+  if (pickFileId(document.learningPlan?.previewUrl) === fileId) return true;
+  for (const step of document.learningPlan?.steps ?? []) {
+    for (const media of step.media ?? []) {
+      if (pickFileId(media.url) === fileId) return true;
+    }
+  }
+  return false;
+}
+
+export async function canAccessFileById(
+  sessionUserId: string | null | undefined,
+  fileId: string
+) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) return false;
+
+  if (shouldUseSupabasePhaseA()) {
+    const docsRes = await pgQuery("select * from documents");
+    const documents = docsRes.rows.map((row) => mapPgDocumentRow(row));
+    const target = documents.find((document) => documentContainsFileId(document, fileId));
+    if (!target) return true;
+    if (!canAccessPerson(actor, target.ownerId)) return false;
+    return !isDocumentLockedForActor(actor, target);
+  }
+
+  const db = await getMongoDb();
+  const docs = await db.collection<DbDocument>("documents").find().toArray();
+  const target = docs.find((document) => documentContainsFileId(document, fileId));
+  if (!target) return true;
+  if (!canAccessPerson(actor, target.ownerId)) return false;
+  return !isDocumentLockedForActor(actor, target);
 }
 
 function mapPgFolderRow(row: Record<string, unknown>): DbFolder {
@@ -1393,6 +1501,62 @@ function mapPgQuizAttemptRow(row: Record<string, unknown>): DbQuizAttempt {
     startedAt: toIsoStringOrUndefined(row.started_at) ?? new Date().toISOString(),
     submittedAt: toIsoStringOrUndefined(row.submitted_at) ?? new Date().toISOString(),
   };
+}
+
+function mapPgQuizAttemptResetRow(row: Record<string, unknown>): DbQuizAttemptReset {
+  return {
+    _id: String(row.id),
+    documentId: String(row.document_id ?? ""),
+    personId: String(row.person_id ?? ""),
+    resetByPersonId: String(row.reset_by_person_id ?? ""),
+    resetAt: toIsoStringOrUndefined(row.reset_at) ?? new Date().toISOString(),
+  };
+}
+
+function mapDbQuizAttemptReset(
+  row: DbQuizAttemptReset,
+  personName?: string,
+  resetByPersonName?: string
+): QuizAttemptResetRecord {
+  return {
+    id: row._id,
+    documentId: row.documentId,
+    personId: row.personId,
+    personName,
+    resetByPersonId: row.resetByPersonId,
+    resetByPersonName,
+    resetAt: row.resetAt,
+  };
+}
+
+function computeAttemptRoundByPerson(attempts: DbQuizAttempt[], resets: DbQuizAttemptReset[]) {
+  const personResetMap = new Map<string, string[]>();
+  for (const reset of resets) {
+    const arr = personResetMap.get(reset.personId) ?? [];
+    arr.push(reset.resetAt);
+    personResetMap.set(reset.personId, arr);
+  }
+  for (const [personId, resetAts] of personResetMap) {
+    resetAts.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+    personResetMap.set(personId, resetAts);
+  }
+
+  const rounds = new Map<string, number>();
+  const ordered = [...attempts].sort(
+    (a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime()
+  );
+  for (const attempt of ordered) {
+    const resetAts = personResetMap.get(attempt.personId) ?? [];
+    const attemptAt = new Date(attempt.submittedAt).getTime();
+    let round = 1;
+    for (const resetAt of resetAts) {
+      if (attemptAt > new Date(resetAt).getTime()) {
+        round += 1;
+      }
+    }
+    rounds.set(attempt._id, round);
+  }
+  return rounds;
 }
 
 function mapPgLearningProgressRow(row: Record<string, unknown>): DbLearningProgress {
@@ -4791,7 +4955,17 @@ export async function getDocumentsData(sessionUserId?: string | null, folderId?:
         if (visibility === "store") return actor.person.team === "store" || isVanHanhLeader;
         return doc.ownerId === actor.person.id || actor.isLeader || (doc.visibleToPersonIds ?? []).includes(actor.person.id);
       })
-      .map(mapDbDocument);
+      .map((doc) => {
+        if (isDocumentLockedForActor(actor, doc)) {
+          return mapDbDocument({
+            ...doc,
+            learningPlan: undefined,
+            url: undefined,
+            thumbnail: undefined,
+          });
+        }
+        return mapDbDocument(doc);
+      });
   }
 
   const db = await getMongoDb();
@@ -4855,7 +5029,17 @@ export async function getDocumentsData(sessionUserId?: string | null, folderId?:
         (doc.visibleToPersonIds ?? []).includes(actor.person.id)
       );
     })
-    .map(mapDbDocument);
+    .map((doc) => {
+      if (isDocumentLockedForActor(actor, doc)) {
+        return mapDbDocument({
+          ...doc,
+          learningPlan: undefined,
+          url: undefined,
+          thumbnail: undefined,
+        });
+      }
+      return mapDbDocument(doc);
+    });
 }
 
 export async function createDocumentRecord(
@@ -4994,6 +5178,11 @@ export async function updateDocumentRecord(
     if (updates.isLearningMaterial !== undefined && canManageLearningContent(actor)) payload.isLearningMaterial = updates.isLearningMaterial;
     if (updates.learningPlan !== undefined && canManageLearningContent(actor)) payload.learningPlan = updates.learningPlan;
     if (updates.deadlineAt !== undefined) payload.deadlineAt = normalizeOptionalIsoDate(updates.deadlineAt);
+    if (updates.isLocked !== undefined && canManageLearningContent(actor)) {
+      payload.isLocked = Boolean(updates.isLocked);
+      payload.lockedAt = payload.isLocked ? new Date().toISOString() : undefined;
+      payload.lockedByUserId = payload.isLocked ? actor.user.id : undefined;
+    }
 
     if (isAdminActor) {
       if (updates.visibility !== undefined) payload.visibility = updates.visibility;
@@ -5045,6 +5234,11 @@ export async function updateDocumentRecord(
   }
   if (updates.deadlineAt !== undefined) {
     payload.deadlineAt = normalizeOptionalIsoDate(updates.deadlineAt);
+  }
+  if (updates.isLocked !== undefined && canManageLearningContent(actor)) {
+    payload.isLocked = Boolean(updates.isLocked);
+    payload.lockedAt = payload.isLocked ? new Date().toISOString() : undefined;
+    payload.lockedByUserId = payload.isLocked ? actor.user.id : undefined;
   }
   if (isAdminActor) {
     if (updates.visibility !== undefined) payload.visibility = updates.visibility;
@@ -5705,11 +5899,23 @@ export async function submitQuizAttempt(
   if (actor.user.role === "store_trainer") throw new Error("Forbidden");
 
   if (shouldUseSupabasePhaseA()) {
-    const existingAttempt = await pgQuery(
-      "select id from quiz_attempts where document_id = $1 and person_id = $2 limit 1",
-      [documentId, actor.person.id]
-    );
-    if (existingAttempt.rows[0]) throw new Error("Bạn đã hoàn thành bài kiểm tra này rồi.");
+    await ensureQuizAttemptResetSchemaReady();
+
+    const [latestAttemptRes, latestResetRes] = await Promise.all([
+      pgQuery(
+        "select submitted_at from quiz_attempts where document_id = $1 and person_id = $2 order by submitted_at desc nulls last limit 1",
+        [documentId, actor.person.id]
+      ),
+      pgQuery(
+        "select reset_at from quiz_attempt_resets where document_id = $1 and person_id = $2 order by reset_at desc nulls last limit 1",
+        [documentId, actor.person.id]
+      ),
+    ]);
+    const latestAttemptAt = toIsoStringOrUndefined(latestAttemptRes.rows[0]?.submitted_at);
+    const latestResetAt = toIsoStringOrUndefined(latestResetRes.rows[0]?.reset_at);
+    if (latestAttemptAt && (!latestResetAt || new Date(latestAttemptAt).getTime() > new Date(latestResetAt).getTime())) {
+      throw new Error("Bạn đã hoàn thành bài kiểm tra này rồi.");
+    }
 
     const quizRes = await pgQuery("select * from learning_quizzes where document_id = $1 limit 1", [documentId]);
     const quizRow = quizRes.rows[0];
@@ -5749,15 +5955,22 @@ export async function submitQuizAttempt(
       correctIndex: q.correctIndex,
       explanation: q.explanation,
     }));
-    return mapDbQuizAttempt(attempt, actor.person.name, actor.person.role, reviewQuestions);
+    const roundRes = await pgQuery(
+      "select count(*)::int as count from quiz_attempt_resets where document_id = $1 and person_id = $2 and reset_at < $3::timestamptz",
+      [documentId, actor.person.id, attempt.submittedAt]
+    );
+    const attemptRound = Number(roundRes.rows[0]?.count ?? 0) + 1;
+    return mapDbQuizAttempt(attempt, actor.person.name, actor.person.role, reviewQuestions, attemptRound, true);
   }
 
   const db = await getMongoDb();
-  const existingAttempt = await db.collection<DbQuizAttempt>("quiz_attempts").findOne({
-    documentId,
-    personId: actor.person.id,
-  });
-  if (existingAttempt) throw new Error("Bạn đã hoàn thành bài kiểm tra này rồi.");
+  const [latestAttempt, latestReset] = await Promise.all([
+    db.collection<DbQuizAttempt>("quiz_attempts").find({ documentId, personId: actor.person.id }, { sort: { submittedAt: -1 } }).limit(1).next(),
+    db.collection<DbQuizAttemptReset>("quiz_attempt_resets").find({ documentId, personId: actor.person.id }, { sort: { resetAt: -1 } }).limit(1).next(),
+  ]);
+  if (latestAttempt && (!latestReset || new Date(latestAttempt.submittedAt).getTime() > new Date(latestReset.resetAt).getTime())) {
+    throw new Error("Bạn đã hoàn thành bài kiểm tra này rồi.");
+  }
 
   const quiz = await db.collection<DbLearningQuiz>("learning_quizzes").findOne({ documentId });
   if (!quiz) throw new Error("Không tìm thấy bài kiểm tra.");
@@ -5791,7 +6004,12 @@ export async function submitQuizAttempt(
     explanation: q.explanation,
   }));
 
-  return mapDbQuizAttempt(attempt, actor.person.name, actor.person.role, reviewQuestions);
+  const resetCount = await db.collection<DbQuizAttemptReset>("quiz_attempt_resets").countDocuments({
+    documentId,
+    personId: actor.person.id,
+    resetAt: { $lt: attempt.submittedAt },
+  });
+  return mapDbQuizAttempt(attempt, actor.person.name, actor.person.role, reviewQuestions, resetCount + 1, true);
 }
 
 export async function getMyQuizAttempt(
@@ -5802,20 +6020,45 @@ export async function getMyQuizAttempt(
   if (!actor) throw new Error("Unauthorized");
 
   if (shouldUseSupabasePhaseA()) {
-    const result = await pgQuery(
-      "select * from quiz_attempts where document_id = $1 and person_id = $2 limit 1",
-      [documentId, actor.person.id]
-    );
+    await ensureQuizAttemptResetSchemaReady();
+    const [result, latestResetRes] = await Promise.all([
+      pgQuery(
+        "select * from quiz_attempts where document_id = $1 and person_id = $2 order by submitted_at desc nulls last limit 1",
+        [documentId, actor.person.id]
+      ),
+      pgQuery(
+        "select reset_at from quiz_attempt_resets where document_id = $1 and person_id = $2 order by reset_at desc nulls last limit 1",
+        [documentId, actor.person.id]
+      ),
+    ]);
     const row = result.rows[0];
-    return row ? mapDbQuizAttempt(mapPgQuizAttemptRow(row)) : null;
+    if (!row) return null;
+    const attempt = mapPgQuizAttemptRow(row);
+    const latestResetAt = toIsoStringOrUndefined(latestResetRes.rows[0]?.reset_at);
+    if (latestResetAt && new Date(attempt.submittedAt).getTime() < new Date(latestResetAt).getTime()) {
+      return null;
+    }
+    const roundRes = await pgQuery(
+      "select count(*)::int as count from quiz_attempt_resets where document_id = $1 and person_id = $2 and reset_at < $3::timestamptz",
+      [documentId, actor.person.id, attempt.submittedAt]
+    );
+    const attemptRound = Number(roundRes.rows[0]?.count ?? 0) + 1;
+    return mapDbQuizAttempt(attempt, undefined, undefined, undefined, attemptRound, true);
   }
 
   const db = await getMongoDb();
-  const attempt = await db.collection<DbQuizAttempt>("quiz_attempts").findOne({
+  const [attempt, latestReset] = await Promise.all([
+    db.collection<DbQuizAttempt>("quiz_attempts").find({ documentId, personId: actor.person.id }, { sort: { submittedAt: -1 } }).limit(1).next(),
+    db.collection<DbQuizAttemptReset>("quiz_attempt_resets").find({ documentId, personId: actor.person.id }, { sort: { resetAt: -1 } }).limit(1).next(),
+  ]);
+  if (!attempt) return null;
+  if (latestReset && new Date(attempt.submittedAt).getTime() < new Date(latestReset.resetAt).getTime()) return null;
+  const resetCount = await db.collection<DbQuizAttemptReset>("quiz_attempt_resets").countDocuments({
     documentId,
     personId: actor.person.id,
+    resetAt: { $lt: attempt.submittedAt },
   });
-  return attempt ? mapDbQuizAttempt(attempt) : null;
+  return mapDbQuizAttempt(attempt, undefined, undefined, undefined, resetCount + 1, true);
 }
 
 export async function getTeamQuizAttempts(
@@ -5827,15 +6070,26 @@ export async function getTeamQuizAttempts(
   if (!canViewTeamLearningReports(actor)) throw new Error("Forbidden");
 
   if (shouldUseSupabasePhaseA()) {
-    const [documentRes, attemptsRes, peopleRes] = await Promise.all([
+    await ensureQuizAttemptResetSchemaReady();
+    const [documentRes, attemptsRes, peopleRes, resetRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [documentId]),
       pgQuery("select * from quiz_attempts where document_id = $1 order by submitted_at desc nulls last", [documentId]),
       pgQuery("select * from people"),
+      pgQuery("select * from quiz_attempt_resets where document_id = $1", [documentId]),
     ]);
     const documentRow = documentRes.rows[0];
     if (!documentRow || attemptsRes.rows.length === 0) return [];
     const document = mapPgDocumentRow(documentRow);
     const attempts = attemptsRes.rows.map((row) => mapPgQuizAttemptRow(row));
+    const resets = resetRes.rows.map((row) => mapPgQuizAttemptResetRow(row));
+    const attemptRounds = computeAttemptRoundByPerson(attempts, resets);
+    const latestResetAtByPerson = new Map<string, string>();
+    for (const reset of resets) {
+      const prev = latestResetAtByPerson.get(reset.personId);
+      if (!prev || new Date(reset.resetAt).getTime() > new Date(prev).getTime()) {
+        latestResetAtByPerson.set(reset.personId, reset.resetAt);
+      }
+    }
     const people = peopleRes.rows.map((row) => mapPgPersonRow(row));
     const peopleById = new Map(people.map((person) => [person._id, mapDbPerson(person)]));
     const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
@@ -5863,17 +6117,29 @@ export async function getTeamQuizAttempts(
           })
         : visibleAttempts;
     return scopedAttempts.map((attempt) =>
-      mapDbQuizAttempt(attempt, peopleById.get(attempt.personId)?.name ?? "Unknown", peopleById.get(attempt.personId)?.role)
+      mapDbQuizAttempt(
+        attempt,
+        peopleById.get(attempt.personId)?.name ?? "Unknown",
+        peopleById.get(attempt.personId)?.role,
+        undefined,
+        attemptRounds.get(attempt._id),
+        (() => {
+          const latestResetAt = latestResetAtByPerson.get(attempt.personId);
+          if (!latestResetAt) return true;
+          return new Date(attempt.submittedAt).getTime() > new Date(latestResetAt).getTime();
+        })()
+      )
     );
   }
 
   const db = await getMongoDb();
-  const [document, attempts] = await Promise.all([
+  const [document, attempts, resets] = await Promise.all([
     db.collection<DbDocument>("documents").findOne({ _id: documentId }),
     db
       .collection<DbQuizAttempt>("quiz_attempts")
       .find({ documentId }, { sort: { submittedAt: -1 } })
       .toArray(),
+    db.collection<DbQuizAttemptReset>("quiz_attempt_resets").find({ documentId }).toArray(),
   ]);
 
   if (!document || attempts.length === 0) return [];
@@ -5912,11 +6178,125 @@ export async function getTeamQuizAttempts(
         })
       : visibleAttempts;
 
+  const attemptRounds = computeAttemptRoundByPerson(attempts, resets);
+  const latestResetAtByPerson = new Map<string, string>();
+  for (const reset of resets) {
+    const prev = latestResetAtByPerson.get(reset.personId);
+    if (!prev || new Date(reset.resetAt).getTime() > new Date(prev).getTime()) {
+      latestResetAtByPerson.set(reset.personId, reset.resetAt);
+    }
+  }
   return scopedAttempts.map((attempt) =>
     mapDbQuizAttempt(
       attempt,
       peopleById.get(attempt.personId)?.name ?? "Unknown",
-      peopleById.get(attempt.personId)?.role
+      peopleById.get(attempt.personId)?.role,
+      undefined,
+      attemptRounds.get(attempt._id),
+      (() => {
+        const latestResetAt = latestResetAtByPerson.get(attempt.personId);
+        if (!latestResetAt) return true;
+        return new Date(attempt.submittedAt).getTime() > new Date(latestResetAt).getTime();
+      })()
+    )
+  );
+}
+
+export async function getTeamQuizAttemptResets(
+  sessionUserId: string | null | undefined,
+  documentId: string
+): Promise<QuizAttemptResetRecord[]> {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canViewTeamLearningReports(actor)) throw new Error("Forbidden");
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureQuizAttemptResetSchemaReady();
+    const [documentRes, resetRes, peopleRes] = await Promise.all([
+      pgQuery("select * from documents where id = $1 limit 1", [documentId]),
+      pgQuery("select * from quiz_attempt_resets where document_id = $1 order by reset_at desc nulls last", [documentId]),
+      pgQuery("select * from people"),
+    ]);
+    const documentRow = documentRes.rows[0];
+    if (!documentRow || resetRes.rows.length === 0) return [];
+    const document = mapPgDocumentRow(documentRow);
+    const resets = resetRes.rows.map((row) => mapPgQuizAttemptResetRow(row));
+    const people = peopleRes.rows.map((row) => mapPgPersonRow(row));
+    const peopleById = new Map(people.map((person) => [person._id, mapDbPerson(person)]));
+    const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
+    const visibleTeamMemberIds = new Set(actor.teamMembers.map((member) => member.id));
+    const visibleResets = resets.filter((reset) => {
+      const person = peopleById.get(reset.personId);
+      if (!person) return false;
+      if (!visibleTeamMemberIds.has(person.id)) return false;
+      if (!canPersonAccessDocument(person, document, ownerTeamByPersonId)) return false;
+      return !normalizeIdentityValue(person.role).includes("trainer");
+    });
+    const scopedResets =
+      actor.user.role === "store_lead"
+        ? visibleResets.filter((reset) => {
+            const person = peopleById.get(reset.personId);
+            if (!person) return false;
+            if (reset.personId === actor.person.id) return true;
+            const normalizedRole = normalizeIdentityValue(person.role);
+            return (
+              normalizedRole.includes("kỹ thuật viên") ||
+              normalizedRole.includes("ky thuat vien") ||
+              normalizedRole.includes("nhân viên cửa hàng") ||
+              normalizedRole.includes("nhan vien cua hang")
+            );
+          })
+        : visibleResets;
+    return scopedResets.map((reset) =>
+      mapDbQuizAttemptReset(
+        reset,
+        peopleById.get(reset.personId)?.name ?? "Unknown",
+        peopleById.get(reset.resetByPersonId)?.name ?? "Unknown"
+      )
+    );
+  }
+
+  const db = await getMongoDb();
+  const [document, resets] = await Promise.all([
+    db.collection<DbDocument>("documents").findOne({ _id: documentId }),
+    db
+      .collection<DbQuizAttemptReset>("quiz_attempt_resets")
+      .find({ documentId }, { sort: { resetAt: -1 } })
+      .toArray(),
+  ]);
+  if (!document || resets.length === 0) return [];
+  const personIds = [...new Set(resets.flatMap((r) => [r.personId, r.resetByPersonId]))];
+  const people = await db.collection<DbPerson>("people").find({ _id: { $in: personIds } }).toArray();
+  const peopleById = new Map(people.map((person) => [person._id, mapDbPerson(person)]));
+  const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
+  const visibleTeamMemberIds = new Set(actor.teamMembers.map((member) => member.id));
+  const visibleResets = resets.filter((reset) => {
+    const person = peopleById.get(reset.personId);
+    if (!person) return false;
+    if (!visibleTeamMemberIds.has(person.id)) return false;
+    if (!canPersonAccessDocument(person, document, ownerTeamByPersonId)) return false;
+    return !normalizeIdentityValue(person.role).includes("trainer");
+  });
+  const scopedResets =
+    actor.user.role === "store_lead"
+      ? visibleResets.filter((reset) => {
+          const person = peopleById.get(reset.personId);
+          if (!person) return false;
+          if (reset.personId === actor.person.id) return true;
+          const normalizedRole = normalizeIdentityValue(person.role);
+          return (
+            normalizedRole.includes("kỹ thuật viên") ||
+            normalizedRole.includes("ky thuat vien") ||
+            normalizedRole.includes("nhân viên cửa hàng") ||
+            normalizedRole.includes("nhan vien cua hang")
+          );
+        })
+      : visibleResets;
+  return scopedResets.map((reset) =>
+    mapDbQuizAttemptReset(
+      reset,
+      peopleById.get(reset.personId)?.name ?? "Unknown",
+      peopleById.get(reset.resetByPersonId)?.name ?? "Unknown"
     )
   );
 }
@@ -5930,6 +6310,7 @@ export async function resetQuizAttemptForPerson(
   if (actor.user.role !== "store_trainer") throw new Error("Forbidden");
 
   if (shouldUseSupabasePhaseA()) {
+    await ensureQuizAttemptResetSchemaReady();
     const [personRes, documentRes] = await Promise.all([
       pgQuery("select id,name from people where id = $1 limit 1", [input.personId]),
       pgQuery("select id,name,owner_id,visibility,visible_to_person_ids from documents where id = $1 limit 1", [input.documentId]),
@@ -5938,9 +6319,27 @@ export async function resetQuizAttemptForPerson(
     const document = documentRes.rows[0];
     if (!target || !document) throw new Error("Not found");
     if (!canAccessPerson(actor, String(target.id))) throw new Error("Forbidden");
-    const result = await pgQuery("delete from quiz_attempts where document_id = $1 and person_id = $2", [input.documentId, input.personId]);
+    const now = new Date().toISOString();
+    const reset: DbQuizAttemptReset = {
+      _id: `attempt_reset_${Date.now()}`,
+      documentId: input.documentId,
+      personId: input.personId,
+      resetByPersonId: actor.person.id,
+      resetAt: now,
+    };
+    await pgQuery(
+      `insert into quiz_attempt_resets
+      (id, document_id, person_id, reset_by_person_id, reset_at, raw_json)
+      values ($1, $2, $3, $4, $5, $6::jsonb)`,
+      [reset._id, reset.documentId, reset.personId, reset.resetByPersonId, reset.resetAt, JSON.stringify(reset)]
+    );
+    const result = await pgQuery(
+      "select id from quiz_attempts where document_id = $1 and person_id = $2 order by submitted_at desc nulls last limit 1",
+      [input.documentId, input.personId]
+    );
     return {
       deleted: (result.rowCount ?? 0) > 0,
+      resetAt: now,
       documentName: String(document.name),
       personName: String(target.name),
     };
@@ -5959,13 +6358,19 @@ export async function resetQuizAttemptForPerson(
     throw new Error("Forbidden");
   }
 
-  const result = await db.collection<DbQuizAttempt>("quiz_attempts").deleteOne({
+  const now = new Date().toISOString();
+  await db.collection<DbQuizAttemptReset>("quiz_attempt_resets").insertOne({
+    _id: `attempt_reset_${Date.now()}`,
     documentId: input.documentId,
     personId: input.personId,
+    resetByPersonId: actor.person.id,
+    resetAt: now,
   });
+  const latestAttempt = await db.collection<DbQuizAttempt>("quiz_attempts").find({ documentId: input.documentId, personId: input.personId }, { sort: { submittedAt: -1 } }).limit(1).next();
 
   return {
-    deleted: result.deletedCount > 0,
+    deleted: Boolean(latestAttempt),
+    resetAt: now,
     documentName: document.name,
     personName: targetPerson.name,
   };
