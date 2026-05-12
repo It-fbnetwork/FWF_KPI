@@ -1425,6 +1425,40 @@ function isDocumentLockedForActor(actor: SessionActor, document: DbDocument) {
   return !canBypassDocumentLock(actor, document);
 }
 
+function canActorViewDocument(
+  actor: SessionActor,
+  document: DbDocument,
+  personTeamMap: Map<string, string>,
+  personRolesMap: Map<string, Set<UserRole>>
+) {
+  if (actor.isAdmin) return true;
+
+  const visibility = document.visibility ?? "team";
+  const ownerTeam = personTeamMap.get(document.ownerId);
+  if (ownerTeam && actor.person.team !== ownerTeam) return false;
+
+  const ownerRoles = personRolesMap.get(document.ownerId);
+  const ownerIsLeaderCreator =
+    Boolean(ownerRoles?.has("leader")) &&
+    !Boolean(ownerRoles?.has("admin") || ownerRoles?.has("ceo"));
+  const isVanHanhLeader = actor.isLeader && !actor.isAdmin && actor.person.team === "product";
+
+  if (ownerIsLeaderCreator) {
+    if (visibility === "specific") {
+      return (
+        document.ownerId === actor.person.id ||
+        (actor.person.team === ownerTeam && (document.visibleToPersonIds ?? []).includes(actor.person.id))
+      );
+    }
+    return actor.person.team === ownerTeam || document.ownerId === actor.person.id;
+  }
+
+  if (visibility === "team") return actor.person.team === ownerTeam || document.ownerId === actor.person.id;
+  if (visibility === "office") return actor.person.team !== "store";
+  if (visibility === "store") return actor.person.team === "store" || isVanHanhLeader;
+  return document.ownerId === actor.person.id || actor.isLeader || (document.visibleToPersonIds ?? []).includes(actor.person.id);
+}
+
 function documentContainsFileId(document: DbDocument, fileId: string) {
   const pickFileId = (url?: string) => url?.match(/\/api\/files\/([^/?#]+)/)?.[1];
   if (pickFileId(document.url) === fileId) return true;
@@ -1445,19 +1479,44 @@ export async function canAccessFileById(
   if (!actor) return false;
 
   if (shouldUseSupabasePhaseA()) {
-    const docsRes = await pgQuery("select * from documents");
+    const [docsRes, peopleRes, usersRes] = await Promise.all([
+      pgQuery("select * from documents"),
+      pgQuery("select id, team_id from people"),
+      pgQuery("select person_id, role from users where person_id is not null"),
+    ]);
     const documents = docsRes.rows.map((row) => mapPgDocumentRow(row));
     const target = documents.find((document) => documentContainsFileId(document, fileId));
     if (!target) return true;
-    if (!canAccessPerson(actor, target.ownerId)) return false;
+    const personTeamMap = new Map(peopleRes.rows.map((row) => [String(row.id), String(row.team_id)]));
+    const personRolesMap = new Map<string, Set<UserRole>>();
+    for (const row of usersRes.rows) {
+      const personId = row.person_id ? String(row.person_id) : "";
+      if (!personId) continue;
+      const roles = personRolesMap.get(personId) ?? new Set<UserRole>();
+      roles.add(normalizeUserRole(String(row.role ?? "employee") as StoredUserRole));
+      personRolesMap.set(personId, roles);
+    }
+    if (!canActorViewDocument(actor, target, personTeamMap, personRolesMap)) return false;
     return !isDocumentLockedForActor(actor, target);
   }
 
   const db = await getMongoDb();
-  const docs = await db.collection<DbDocument>("documents").find().toArray();
+  const [docs, allPeople, allUsers] = await Promise.all([
+    db.collection<DbDocument>("documents").find().toArray(),
+    db.collection<DbPerson>("people").find({}, { projection: { _id: 1, teamId: 1 } }).toArray(),
+    db.collection<DbUser>("users").find({}, { projection: { personId: 1, role: 1 } }).toArray(),
+  ]);
   const target = docs.find((document) => documentContainsFileId(document, fileId));
   if (!target) return true;
-  if (!canAccessPerson(actor, target.ownerId)) return false;
+  const personTeamMap = new Map(allPeople.map((person) => [person._id, person.teamId]));
+  const personRolesMap = new Map<string, Set<UserRole>>();
+  for (const user of allUsers) {
+    if (!user.personId) continue;
+    const roles = personRolesMap.get(user.personId) ?? new Set<UserRole>();
+    roles.add(normalizeUserRole(user.role));
+    personRolesMap.set(user.personId, roles);
+  }
+  if (!canActorViewDocument(actor, target, personTeamMap, personRolesMap)) return false;
   return !isDocumentLockedForActor(actor, target);
 }
 
