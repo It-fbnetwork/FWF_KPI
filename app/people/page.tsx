@@ -561,9 +561,9 @@ export default function PeoplePage() {
     )
 
     return (
-        <div className="p-6">
+        <div className="p-3 sm:p-4 lg:p-6">
             <div className="mb-6">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
                     <div>
                         <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">People</h1>
                         <p className="text-gray-600 dark:text-gray-400">
@@ -571,14 +571,14 @@ export default function PeoplePage() {
                         </p>
                     </div>
                     {canManagePeople ? (
-                        <div className="flex items-center gap-2">
+                        <div className="flex w-full items-center gap-2 sm:w-auto">
                             {isAdmin ? (
                                 <Button variant="outline" onClick={() => setIsHistoryDialogOpen(true)}>
                                     <History className="mr-2 h-4 w-4" />
                                     Lịch sử tài khoản
                                 </Button>
                             ) : null}
-                            <Button onClick={openCreateDialog}>
+                            <Button onClick={openCreateDialog} className="w-full sm:w-auto">
                                 <UserPlus className="mr-2 h-4 w-4" />
                                 Thêm nhân sự
                             </Button>
@@ -600,12 +600,12 @@ export default function PeoplePage() {
                     </div>
                 </div>
 
-                <div className="flex items-center space-x-2">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <Button
                                 variant="outline"
-                                className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-transparent"
+                                className="w-full border-gray-300 bg-transparent text-gray-700 dark:border-gray-600 dark:text-gray-300 sm:w-auto"
                             >
                                 <Filter className="w-4 h-4 mr-2" />
                                 {selectedTeam === "all"
@@ -635,7 +635,7 @@ export default function PeoplePage() {
                         </DropdownMenuContent>
                     </DropdownMenu>
 
-                    <div className="flex items-center border border-gray-300 dark:border-gray-600 rounded-lg p-1 bg-white dark:bg-gray-800">
+                    <div className="flex w-full items-center border border-gray-300 dark:border-gray-600 rounded-lg p-1 bg-white dark:bg-gray-800 sm:w-auto">
                         <Button variant={viewMode === "list" ? "default" : "ghost"} size="sm" onClick={() => setViewMode("list")} className="h-8 px-3">
                             <List className="w-4 h-4" />
                         </Button>
@@ -773,7 +773,7 @@ export default function PeoplePage() {
                             <div className="grid gap-2">
                                 <Label htmlFor="history-filter">Lọc theo thời gian</Label>
                                 <Select value={historyFilter} onValueChange={(value: AccountHistoryFilter) => setHistoryFilter(value)}>
-                                    <SelectTrigger id="history-filter" className="w-[180px]">
+                                    <SelectTrigger id="history-filter" className="w-full sm:w-[180px]">
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -809,7 +809,7 @@ export default function PeoplePage() {
                         </div>
 
                         <div className="rounded-xl border border-gray-200 dark:border-gray-700">
-                            <div className="grid grid-cols-[minmax(0,1.6fr)_160px_180px] gap-4 border-b border-gray-200 bg-gray-50 px-4 py-3 text-sm font-medium text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                            <div className="hidden grid-cols-[minmax(0,1.6fr)_160px_180px] gap-4 border-b border-gray-200 bg-gray-50 px-4 py-3 text-sm font-medium text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 sm:grid">
                                 <span>Tài khoản</span>
                                 <span>Trạng thái</span>
                                 <span>Thời điểm xử lý</span>
@@ -828,7 +828,7 @@ export default function PeoplePage() {
                                     filteredAccountHistory.map((item) => (
                                         <div
                                             key={item.id}
-                                            className="grid grid-cols-[minmax(0,1.6fr)_160px_180px] gap-4 border-b border-gray-100 px-4 py-4 last:border-b-0 dark:border-gray-800"
+                                            className="grid grid-cols-1 gap-2 border-b border-gray-100 px-4 py-4 last:border-b-0 dark:border-gray-800 sm:grid-cols-[minmax(0,1.6fr)_160px_180px] sm:gap-4"
                                         >
                                             <div className="min-w-0">
                                                 <p className="truncate font-medium text-gray-900 dark:text-white">{item.name}</p>
@@ -837,7 +837,8 @@ export default function PeoplePage() {
                                                     {item.role.toUpperCase()} · {item.department}
                                                 </p>
                                             </div>
-                                            <div className="flex items-center">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-xs text-gray-500 dark:text-gray-400 sm:hidden">Trạng thái:</span>
                                                 {(() => {
                                                     const statusMeta = getHistoryStatusMeta(item.status)
                                                     const StatusIcon = statusMeta.icon
@@ -853,6 +854,7 @@ export default function PeoplePage() {
                                                 })()}
                                             </div>
                                             <div className="text-sm text-gray-600 dark:text-gray-400">
+                                                <span className="mr-1 text-xs text-gray-500 dark:text-gray-400 sm:hidden">Thời điểm:</span>
                                                 {formatHistoryDate(getHistoryActionDate(item))}
                                             </div>
                                         </div>

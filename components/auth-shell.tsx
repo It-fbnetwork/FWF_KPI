@@ -400,7 +400,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
   return (
     <div className="grid min-h-screen gap-6 p-4 lg:grid-cols-[1.1fr_0.9fr] lg:p-6">
       <section
-        className={`relative overflow-hidden rounded-[32px] bg-cover bg-center bg-no-repeat p-8 text-white shadow-float lg:p-10 ${
+        className={`relative hidden overflow-hidden rounded-[32px] bg-cover bg-center bg-no-repeat p-8 text-white shadow-float lg:block lg:p-10 ${
           mode === "login" ? "bg-[url('/cao_kpi.jpg')]" : "bg-[url('/cao_register.jpg')]"
         }`}
       >
@@ -418,11 +418,11 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
         </div>
       </section>
 
-      <section className="rounded-[32px] border border-[rgba(55,45,33,0.12)] bg-[rgba(255,252,247,0.8)] p-8 shadow-float backdrop-blur-xl lg:p-10">
+      <section className="rounded-[28px] border border-[rgba(55,45,33,0.12)] bg-[rgba(255,252,247,0.8)] p-4 shadow-float backdrop-blur-xl sm:p-6 lg:rounded-[32px] lg:p-10">
         <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">
           {mode === "login" ? "Sign In" : "Sign Up"}
         </p>
-        <h2 className="text-3xl font-semibold text-text">
+        <h2 className="text-2xl font-semibold text-text sm:text-3xl">
           {mode === "login"
             ? loginStep === "form"
               ? "Đăng nhập tài khoản"
@@ -441,7 +441,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
               : "Tài khoản chỉ được tạo sau khi OTP được xác nhận thành công."}
         </p>
 
-        <form onSubmit={handleSubmit} className="mt-8 grid gap-5">
+        <form onSubmit={handleSubmit} className="mt-6 grid gap-4 sm:mt-8 sm:gap-5">
           {mode === "register" && registerStep === "form" ? (
             <InputField
               label="Họ và tên"
@@ -618,13 +618,13 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
 
           {isOtpStep ? (
             <>
-              <div className="overflow-hidden rounded-[28px] border border-[rgba(123,145,199,0.18)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(247,249,255,0.96))] shadow-[0_28px_90px_rgba(120,146,220,0.18)]">
-                <div className="px-8 pb-8 pt-8 text-center">
-                  <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-[rgba(92,126,255,0.12)]">
+              <div className="overflow-hidden rounded-[24px] border border-[rgba(123,145,199,0.18)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(247,249,255,0.96))] shadow-[0_18px_48px_rgba(120,146,220,0.16)] sm:rounded-[28px] sm:shadow-[0_28px_90px_rgba(120,146,220,0.18)]">
+                <div className="px-4 pb-5 pt-5 text-center sm:px-8 sm:pb-8 sm:pt-8">
+                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[rgba(92,126,255,0.12)] sm:mb-6 sm:h-20 sm:w-20">
                     <svg
                       viewBox="0 0 24 24"
                       fill="none"
-                      className="h-10 w-10 text-[#3b6af5]"
+                      className="h-7 w-7 text-[#3b6af5] sm:h-10 sm:w-10"
                       stroke="currentColor"
                       strokeWidth="1.8"
                     >
@@ -632,27 +632,27 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                       <path d="m5 7 7 5 7-5" />
                     </svg>
                   </div>
-                  <h3 className="text-[3rem] font-semibold tracking-[-0.04em] text-[#151b2f]">Verification Code</h3>
-                  <p className="mt-3 text-[15px] text-[#7080a0]">
+                  <h3 className="text-[2rem] font-semibold leading-tight tracking-[-0.03em] text-[#151b2f] sm:text-[3rem] sm:tracking-[-0.04em]">Verification Code</h3>
+                  <p className="mt-2 text-[14px] text-[#7080a0] sm:mt-3 sm:text-[15px]">
                     Chúng tôi đã gửi mã xác minh 6 số tới <span className="font-medium text-[#51648f]">{maskedEmail}</span>
                   </p>
                 </div>
 
-                <div className="px-6 pb-8">
+                <div className="px-2 pb-5 sm:px-6 sm:pb-8">
                   <div className="flex justify-center">
                     <InputOTP
                       maxLength={6}
                       value={otp}
                       onChange={setOtp}
-                      containerClassName="gap-4"
+                      containerClassName="w-full justify-center gap-2 sm:gap-4"
                       className="justify-center"
                     >
-                      <InputOTPGroup className="gap-4">
+                      <InputOTPGroup className="grid w-full grid-cols-6 gap-2 sm:flex sm:w-auto sm:gap-4">
                         {Array.from({ length: 6 }).map((_, index) => (
                           <InputOTPSlot
                             key={index}
                             index={index}
-                            className="h-24 w-[4.6rem] rounded-[18px] border border-[rgba(135,150,190,0.2)] bg-white text-3xl font-semibold text-[#151b2f] shadow-[0_10px_24px_rgba(120,146,220,0.08)] first:rounded-[18px] first:border last:rounded-[18px]"
+                            className="h-16 w-full min-w-0 rounded-[14px] border border-[rgba(135,150,190,0.2)] bg-white text-2xl font-semibold text-[#151b2f] shadow-[0_8px_18px_rgba(120,146,220,0.08)] first:rounded-[14px] first:border last:rounded-[14px] sm:h-24 sm:w-[4.6rem] sm:rounded-[18px] sm:text-3xl sm:shadow-[0_10px_24px_rgba(120,146,220,0.08)] sm:first:rounded-[18px] sm:last:rounded-[18px]"
                           />
                         ))}
                       </InputOTPGroup>
@@ -704,7 +704,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
         </form>
 
         {isOtpStep ? (
-          <div className="mx-[-2rem] mt-6 border-t border-[rgba(123,145,199,0.14)] px-8 pt-8 text-center text-[15px] text-[#7080a0]">
+          <div className="mt-4 border-t border-[rgba(123,145,199,0.14)] px-0 pt-5 text-center text-sm text-[#7080a0] sm:mt-6 sm:px-8 sm:pt-8 sm:text-[15px]">
             Didn't receive the code?{" "}
             <button
               type="button"

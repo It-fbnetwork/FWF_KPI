@@ -57,6 +57,9 @@ import {
     Lock,
     Unlock,
     Loader2,
+    PanelLeft,
+    Maximize2,
+    Minimize2,
 } from "lucide-react"
 
 type LearningQuizQuestion = {
@@ -355,6 +358,7 @@ export default function DocumentsPage() {
     const [quizResetPersonFilter, setQuizResetPersonFilter] = useState<string>("all")
     const [quizResetTimeFilter, setQuizResetTimeFilter] = useState<"all" | "today" | "7d" | "30d" | "90d">("all")
     const [selectedLearningDoc, setSelectedLearningDoc] = useState<Document | null>(null)
+    const [isLearningSidebarCollapsed, setIsLearningSidebarCollapsed] = useState(false)
     const [failedLearningPreviewKeys, setFailedLearningPreviewKeys] = useState<Record<string, true>>({})
     const [loadedLearningPreviewKeys, setLoadedLearningPreviewKeys] = useState<Record<string, true>>({})
     const [learningProgress, setLearningProgress] = useState<LearningProgressState>({
@@ -364,11 +368,13 @@ export default function DocumentsPage() {
     const [learningPlanProgress, setLearningPlanProgress] = useState<LearningPlanProgressMap>({})
     const [learningRemainingSeconds, setLearningRemainingSeconds] = useState(LEARNING_REQUIRED_SECONDS)
     const [videoProgressByDocId, setVideoProgressByDocId] = useState<Record<string, { current: number; duration: number }>>({})
+    const [isLearningFullscreen, setIsLearningFullscreen] = useState(false)
 
     const contextMenuRef = useRef<HTMLDivElement>(null)
     const quizTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const learningTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const quizTakeModalRef = useRef<QuizTakeState>(defaultQuizTake())
+    const learningViewerRef = useRef<HTMLDivElement>(null)
 
     const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null
     const currentPerson = people.find((person) => person.id === user?.personId) ?? null
@@ -389,6 +395,46 @@ export default function DocumentsPage() {
     const officeSelectablePeople = currentPerson
         ? people.filter((person) => person.team === currentPerson.team)
         : []
+
+    useEffect(() => {
+        if (isMobile) setIsLearningSidebarCollapsed(false)
+    }, [isMobile])
+
+    useEffect(() => {
+        const onFullscreenChange = () => {
+            setIsLearningFullscreen(document.fullscreenElement === learningViewerRef.current)
+        }
+        document.addEventListener("fullscreenchange", onFullscreenChange)
+        return () => document.removeEventListener("fullscreenchange", onFullscreenChange)
+    }, [])
+
+    const handleToggleLearningFullscreen = useCallback(async (fallbackUrl?: string) => {
+        try {
+            if (document.fullscreenElement === learningViewerRef.current) {
+                await document.exitFullscreen()
+                return
+            }
+            if (!learningViewerRef.current) return
+            if (typeof learningViewerRef.current.requestFullscreen !== "function") {
+                if (fallbackUrl) {
+                    window.open(fallbackUrl, "_blank", "noopener,noreferrer")
+                    return
+                }
+                throw new Error("fullscreen-not-supported")
+            }
+            await learningViewerRef.current.requestFullscreen()
+        } catch {
+            if (fallbackUrl && isMobile) {
+                window.open(fallbackUrl, "_blank", "noopener,noreferrer")
+                return
+            }
+            toast({
+                title: "Không thể bật toàn màn hình.",
+                description: "Trình duyệt hiện tại không hỗ trợ hoặc đã chặn thao tác này.",
+                variant: "destructive",
+            })
+        }
+    }, [isMobile])
     const officeRoleOptions = useMemo(() => {
         const roles = new Set(officeSelectablePeople.map((person) => person.role))
         if (currentPerson?.team === "store") {
@@ -2209,28 +2255,46 @@ export default function DocumentsPage() {
                         style={{ minHeight: isMobile ? "auto" : "calc(100vh - 220px)" }}
                     >
                         {/* ── Left Sidebar ─────────────────────────────────── */}
-                        <div className="w-full flex-shrink-0 border-b border-gray-200 dark:border-gray-800 lg:w-72 lg:border-b-0 lg:border-r xl:w-80">
+                        <div className={`w-full flex-shrink-0 border-b border-gray-200 transition-all duration-200 dark:border-gray-800 lg:border-b-0 lg:border-r ${
+                            isLearningSidebarCollapsed ? "lg:w-16 xl:w-16" : "lg:w-72 xl:w-80"
+                        }`}>
                             {/* Sidebar header */}
-                            <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-800">
+                            <div className={`border-b border-gray-200 dark:border-gray-800 ${isLearningSidebarCollapsed ? "px-3 py-4" : "px-5 py-4"}`}>
                                 <div className="flex items-center justify-between mb-1">
-                                    <h2 className="font-semibold text-gray-900 dark:text-white">
-                                        {isLeaderOrAdmin ? "Bài Kiểm Tra" : "Học liệu"}
-                                    </h2>
-                                    {isLeaderOrAdmin && (
-                                        <Button size="sm" variant="ghost" className="h-7 text-xs px-2"
-                                            onClick={() => setQuizCreateDialog({
-                                                open: true, documentId: "", documentName: "", existingQuizId: null,
-                                                title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30", deadlineAt: "",
-                                                questions: [{ text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
-                                                isNewDocument: true,
-                                            })}>
-                                            <Plus className="w-3 h-3 mr-1" />Thêm
-                                        </Button>
+                                    {isLearningSidebarCollapsed ? <div /> : (
+                                        <h2 className="font-semibold text-gray-900 dark:text-white">
+                                            {isLeaderOrAdmin ? "Bài Kiểm Tra" : "Học liệu"}
+                                        </h2>
                                     )}
+                                    <div className="flex items-center gap-1">
+                                        {isLeaderOrAdmin && !isLearningSidebarCollapsed && (
+                                            <Button size="sm" variant="ghost" className="h-7 text-xs px-2"
+                                                onClick={() => setQuizCreateDialog({
+                                                    open: true, documentId: "", documentName: "", existingQuizId: null,
+                                                    title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30", deadlineAt: "",
+                                                    questions: [{ text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
+                                                    isNewDocument: true,
+                                                })}>
+                                                <Plus className="w-3 h-3 mr-1" />Thêm
+                                            </Button>
+                                        )}
+                                        <Button
+                                            size="icon"
+                                            variant="ghost"
+                                            className="hidden h-8 w-8 lg:inline-flex"
+                                            onClick={() => setIsLearningSidebarCollapsed((prev) => !prev)}
+                                            aria-label={isLearningSidebarCollapsed ? "Mở danh sách học liệu" : "Thu gọn danh sách học liệu"}
+                                            title={isLearningSidebarCollapsed ? "Mở danh sách" : "Thu gọn danh sách"}
+                                        >
+                                            {isLearningSidebarCollapsed ? <PanelLeft className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+                                        </Button>
+                                    </div>
                                 </div>
-                                <p className="text-xs text-gray-500 dark:text-gray-400">{learningDocs.length} bài học</p>
+                                {!isLearningSidebarCollapsed && (
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">{learningDocs.length} bài học</p>
+                                )}
                                 {/* Employee progress bar */}
-                                {!isLeaderOrAdmin && (
+                                {!isLeaderOrAdmin && !isLearningSidebarCollapsed && (
                                     <div className="mt-3">
                                         <div className="flex justify-between text-xs text-gray-400 dark:text-gray-500 mb-1">
                                             <span>Tiến độ</span>
@@ -2247,7 +2311,8 @@ export default function DocumentsPage() {
                             </div>
 
                             {/* Doc list */}
-                            <div className="max-h-[42vh] overflow-y-auto lg:max-h-none lg:flex-1">
+                            {!isLearningSidebarCollapsed ? (
+                                <div className="max-h-[42vh] overflow-y-auto lg:max-h-none lg:flex-1">
                                 {learningDocs.map((doc) => {
                                     const quiz = quizzes[doc.id]
                                     const attempt = myAttempts[doc.id]
@@ -2292,11 +2357,12 @@ export default function DocumentsPage() {
                                         </button>
                                     )
                                 })}
-                            </div>
+                                </div>
+                            ) : null}
                         </div>
 
                         {/* ── Main Content ──────────────────────────────────── */}
-                        <div className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950">
+                        <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-gray-50 dark:bg-gray-950">
                             {!selectedLearningDoc ? (
                                 <div className="flex h-full items-center justify-center">
                                     <p className="text-sm text-gray-400">Chọn một bài học từ danh sách bên trái</p>
@@ -2335,9 +2401,16 @@ export default function DocumentsPage() {
                                     : false
 
                                 return (
-                                    <div className="mx-auto max-w-3xl space-y-4 px-3 py-4 sm:space-y-5 sm:px-5 sm:py-6 lg:px-6 lg:py-8">
+                                    <div className={`mx-auto space-y-4 px-3 py-4 sm:space-y-5 sm:px-5 sm:py-6 lg:px-6 lg:py-8 ${
+                                        isLearningFullscreen ? "max-w-none px-0 py-0 sm:px-0 sm:py-0 lg:px-0 lg:py-0" : isLearningSidebarCollapsed ? "max-w-5xl" : "max-w-3xl"
+                                    }`}>
                                         {/* Document viewer card */}
-                                        <div className="bg-white dark:bg-gray-900 rounded-2xl overflow-hidden shadow-sm border border-gray-200 dark:border-gray-800">
+                                        <div
+                                            ref={learningViewerRef}
+                                            className={`bg-white dark:bg-gray-900 rounded-2xl overflow-hidden shadow-sm border border-gray-200 dark:border-gray-800 ${
+                                                isLearningFullscreen ? "h-screen w-screen overflow-y-auto overflow-x-hidden rounded-none border-0" : ""
+                                            }`}
+                                        >
                                             {/* Preview area */}
                                             {hasLearningPlan && activePlanStep ? (
                                                 <div className="p-4 md:p-6 space-y-4 bg-[linear-gradient(180deg,rgba(241,245,249,0.85),rgba(248,250,252,0.95))] dark:bg-gray-900">
@@ -2360,7 +2433,7 @@ export default function DocumentsPage() {
                                                         const stepPreviewKey = `${doc.id}:${activePlanStep.id}:preview`
                                                         const isStepPreviewLoaded = Boolean(loadedLearningPreviewKeys[stepPreviewKey])
                                                         const currentPage = activePlanStep.pageNumber ?? 1
-                                                        const previewParams = "&view=FitH&zoom=page-fit&toolbar=0&navpanes=0&scrollbar=0&statusbar=0&messages=0"
+                                                        const previewParams = "&view=Fit&zoom=100&toolbar=0&navpanes=0&scrollbar=1&statusbar=0&messages=0"
 
                                                         if (canUsePdfPreview && !failedLearningPreviewKeys[stepPreviewKey]) {
                                                             const previewSrc = `${previewBaseUrl}#page=${currentPage}${previewParams}`
@@ -2372,7 +2445,7 @@ export default function DocumentsPage() {
                                                                         key={`${doc.id}-${activePlanStep.id}`}
                                                                         title={`${doc.name}-page-${activePlanStep.pageNumber}`}
                                                                         src={previewSrc}
-                                                                        className={`block h-full w-[calc(100%+18px)] -mr-[18px] pointer-events-none select-none transition-opacity duration-200 ${isStepPreviewLoaded ? "opacity-100" : "opacity-0"}`}
+                                                                        className={`block h-full w-full transition-opacity duration-200 ${isStepPreviewLoaded ? "opacity-100" : "opacity-0"}`}
                                                                         loading="lazy"
                                                                         scrolling="no"
                                                                         onLoad={() => {
@@ -2522,12 +2595,14 @@ export default function DocumentsPage() {
                                                         </div>
                                                     )}
 
-                                                    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-900/60 p-3">
-                                                        <div className="flex items-center justify-between gap-3">
+                                                    <div className={`rounded-xl border border-gray-200 dark:border-gray-700 bg-white/80 p-3 dark:bg-gray-900/60 ${
+                                                        isLearningFullscreen ? "sticky bottom-0 z-20 backdrop-blur supports-[backdrop-filter]:bg-white/75 dark:supports-[backdrop-filter]:bg-gray-900/70" : ""
+                                                    }`}>
+                                                        <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[auto_1fr_auto] sm:gap-3">
                                                             <Button
                                                                 type="button"
                                                                 variant="outline"
-                                                                className={`bg-transparent ${!prevPlanStep ? "invisible" : ""}`}
+                                                                className={`w-full sm:w-auto bg-transparent ${!prevPlanStep ? "invisible sm:invisible hidden sm:inline-flex" : ""}`}
                                                                 onClick={() => {
                                                                     if (!prevPlanStep) return
                                                                     setLearningPlanProgress((prev) => {
@@ -2546,7 +2621,7 @@ export default function DocumentsPage() {
                                                                 <ChevronLeft className="w-4 h-4 mr-2" />
                                                                 Trang trước
                                                             </Button>
-                                                            <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                                                            <p className="order-first text-xs text-gray-500 dark:text-gray-400 text-center sm:order-none">
                                                                 {activePlanStep.kind === "page" ? `Trang ${activePlanStep.pageNumber}` : `Slide ${activePlanStep.slideNumber}`}
                                                                 {" · "}
                                                                 {activePlanStepIndex + 1}/{learningPlanSteps.length}
@@ -2554,13 +2629,13 @@ export default function DocumentsPage() {
                                                             <Button
                                                                 type="button"
                                                                 variant={nextPlanStep && isActiveStepCompleted ? "default" : "outline"}
-                                                                className={
+                                                                className={`w-full sm:w-auto ${
                                                                     nextPlanStep
                                                                         ? isActiveStepCompleted
                                                                             ? "bg-violet-600 hover:bg-violet-700 text-white"
                                                                             : "bg-transparent"
-                                                                        : "bg-transparent invisible"
-                                                                }
+                                                                        : "bg-transparent invisible hidden sm:inline-flex"
+                                                                }`}
                                                                 onClick={() => {
                                                                     if (!nextPlanStep) return
                                                                     if (!isActiveStepCompleted) {
@@ -2656,6 +2731,20 @@ export default function DocumentsPage() {
                                                         )}
                                                     </div>
                                                     <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap sm:justify-end">
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            className="bg-transparent w-full sm:w-auto"
+                                                            onClick={() => void handleToggleLearningFullscreen(doc.url || doc.learningPlan?.previewUrl)}
+                                                        >
+                                                            {isLearningFullscreen ? (
+                                                                <Minimize2 className="w-4 h-4 mr-1.5" />
+                                                            ) : (
+                                                                <Maximize2 className="w-4 h-4 mr-1.5" />
+                                                            )}
+                                                            <span className="sm:hidden">Phóng to</span>
+                                                            <span className="hidden sm:inline">{isLearningFullscreen ? "Thoát toàn màn hình" : "Toàn màn hình"}</span>
+                                                        </Button>
                                                         {doc.url && isLeaderOrAdmin && (
                                                             <Button size="sm" variant="outline" className="bg-transparent"
                                                                 onClick={() => window.open(doc.url, "_blank")}>

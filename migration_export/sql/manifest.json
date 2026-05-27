@@ -1,0 +1,138 @@
+{
+  "generatedAt": "2026-05-08T04:31:49.510Z",
+  "summaries": [
+    {
+      "collection": "users",
+      "table": "users",
+      "input": 19,
+      "output": 19,
+      "file": "migration_export/sql/users.csv"
+    },
+    {
+      "collection": "people",
+      "table": "people",
+      "input": 18,
+      "output": 18,
+      "file": "migration_export/sql/people.csv"
+    },
+    {
+      "collection": "company_teams",
+      "table": "company_teams",
+      "input": 7,
+      "output": 7,
+      "file": "migration_export/sql/company_teams.csv"
+    },
+    {
+      "collection": "workspace_teams",
+      "table": "workspace_teams",
+      "input": 3,
+      "output": 3,
+      "file": "migration_export/sql/workspace_teams.csv"
+    },
+    {
+      "collection": "tasks",
+      "table": "tasks",
+      "input": 23,
+      "output": 23,
+      "file": "migration_export/sql/tasks.csv"
+    },
+    {
+      "collection": "documents",
+      "table": "documents",
+      "input": 3,
+      "output": 3,
+      "file": "migration_export/sql/documents.csv"
+    },
+    {
+      "collection": "document_folders",
+      "table": "document_folders",
+      "input": 4,
+      "output": 4,
+      "file": "migration_export/sql/document_folders.csv"
+    },
+    {
+      "collection": "learning_quizzes",
+      "table": "learning_quizzes",
+      "input": 5,
+      "output": 5,
+      "file": "migration_export/sql/learning_quizzes.csv"
+    },
+    {
+      "collection": "quiz_attempts",
+      "table": "quiz_attempts",
+      "input": 4,
+      "output": 4,
+      "file": "migration_export/sql/quiz_attempts.csv"
+    },
+    {
+      "collection": "learning_progress",
+      "table": "learning_progress",
+      "input": 7,
+      "output": 7,
+      "file": "migration_export/sql/learning_progress.csv"
+    },
+    {
+      "collection": "chat_threads",
+      "table": "chat_threads",
+      "input": 11,
+      "output": 11,
+      "file": "migration_export/sql/chat_threads.csv"
+    },
+    {
+      "collection": "chat_messages",
+      "table": "chat_messages",
+      "input": 10,
+      "output": 10,
+      "file": "migration_export/sql/chat_messages.csv"
+    },
+    {
+      "collection": "schedules",
+      "table": "schedules",
+      "input": 0,
+      "output": 0,
+      "file": "migration_export/sql/schedules.csv"
+    },
+    {
+      "collection": "tests",
+      "table": "tests",
+      "input": 0,
+      "output": 0,
+      "file": "migration_export/sql/tests.csv"
+    },
+    {
+      "collection": "person_notifications",
+      "table": "person_notifications",
+      "input": 411,
+      "output": 411,
+      "file": "migration_export/sql/person_notifications.csv"
+    },
+    {
+      "collection": "pending_registrations",
+      "table": "pending_registrations",
+      "input": 3,
+      "output": 3,
+      "file": "migration_export/sql/pending_registrations.csv"
+    },
+    {
+      "collection": "pending_login_otps",
+      "table": "pending_login_otps",
+      "input": 0,
+      "output": 0,
+      "file": "migration_export/sql/pending_login_otps.csv"
+    },
+    {
+      "collection": "role_approval_requests",
+      "table": "role_approval_requests",
+      "input": 5,
+      "output": 5,
+      "file": "migration_export/sql/role_approval_requests.csv"
+    },
+    {
+      "collection": "uploads_files",
+      "table": "uploads_files",
+      "input": 11,
+      "output": 11,
+      "file": "migration_export/sql/uploads_files.csv"
+    }
+  ]
+}

@@ -101,7 +101,7 @@ export default function TestsPage() {
 
   if (!canManageTests) {
     return (
-      <div className="p-6">
+      <div className="p-3 sm:p-4 lg:p-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Tạo bài kiểm tra</h1>
         <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
           Chức năng này chỉ dành cho Leader phòng Vận hành.
@@ -111,7 +111,7 @@ export default function TestsPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="space-y-6 p-3 sm:p-4 lg:p-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Tạo bài kiểm tra</h1>
         <p className="text-sm text-gray-600 dark:text-gray-400">
@@ -147,11 +147,11 @@ export default function TestsPage() {
             onChange={(event) => setQuestionsText(event.target.value)}
             rows={7}
           />
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-center">
             <span className="text-xs text-gray-500 dark:text-gray-400">
               Số câu hỏi: {parsedQuestions.length}
             </span>
-            <Button onClick={() => void handleCreateTest()} disabled={isSubmitting}>
+            <Button onClick={() => void handleCreateTest()} disabled={isSubmitting} className="w-full sm:w-auto">
               Tạo bài kiểm tra
             </Button>
           </div>

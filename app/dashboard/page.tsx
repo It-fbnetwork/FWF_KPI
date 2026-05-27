@@ -364,7 +364,7 @@ export default function DashboardPage() {
     )
 
     return (
-        <div className="min-h-full bg-gray-100/80 p-6 dark:bg-gray-950">
+        <div className="min-h-full bg-gray-100/80 p-3 sm:p-4 lg:p-6 dark:bg-gray-950">
             <div className="mx-auto max-w-7xl space-y-5">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
@@ -373,7 +373,7 @@ export default function DashboardPage() {
                 </div>
 
                 <Card className="border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
-                    <CardContent className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
+                    <CardContent className="flex flex-col gap-4 p-3 sm:p-4 lg:flex-row lg:items-center lg:justify-between lg:p-5">
                         <div className="flex flex-wrap items-center gap-6">
                             <div className="flex items-center gap-3">
                                 <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Xem theo</span>
@@ -400,7 +400,7 @@ export default function DashboardPage() {
                                     {viewMode === "employee" ? "Nhân viên" : "Mục tiêu/Chỉ tiêu"}
                                 </span>
                                 <Select value={selectedEntityId} onValueChange={setSelectedEntityId}>
-                                    <SelectTrigger className="w-[190px] bg-white dark:bg-gray-900">
+                                    <SelectTrigger className="w-full sm:w-[190px] bg-white dark:bg-gray-900">
                                         <SelectValue placeholder="Tất cả" />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -422,7 +422,7 @@ export default function DashboardPage() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-3">
-                            <div className="relative w-full min-w-[220px] flex-1 sm:w-[280px]">
+                            <div className="relative w-full min-w-0 flex-1 sm:w-[280px]">
                                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                                 <Input
                                     value={searchQuery}
@@ -435,7 +435,7 @@ export default function DashboardPage() {
                             <div className="flex items-center gap-3">
                                 <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Kỳ thực hiện</span>
                                 <Select value={selectedPeriod} onValueChange={(value: PeriodFilter) => setSelectedPeriod(value)}>
-                                    <SelectTrigger className="w-[170px] bg-white dark:bg-gray-900">
+                                    <SelectTrigger className="w-full sm:w-[170px] bg-white dark:bg-gray-900">
                                         <SelectValue placeholder="Tất cả" />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -462,7 +462,7 @@ export default function DashboardPage() {
                             </CardTitle>
                         </CardHeader>
                         <CardContent className="flex h-[90%] justify-center ">
-                            <div className=" flex h-full justify-center grid gap-8 xl:grid-cols-[0.7fr_1.3fr] xl:items-center">
+                            <div className="grid h-full justify-center gap-6 xl:grid-cols-[0.7fr_1.3fr] xl:items-center xl:gap-8">
                                 <div className="flex items-center justify-center">
                                     <ChartContainer
                                         config={chartConfig}
@@ -500,15 +500,12 @@ export default function DashboardPage() {
                                     </ChartContainer>
                                 </div>
 
-                                <div className=" flex justify-center items-center grid gap-4 sm:grid-cols-2">
+                                <div className="grid items-center justify-center gap-4 sm:grid-cols-2">
                                     {chartData.map((item) => {
                                         const percentage = totalTasks === 0 ? 0 : Math.round((item.value / totalTasks) * 100)
 
                                         return (
-                                            <div
-                                                key={item.key}
-                                                className=" min-h-[96px] items-center justify-center justify-between gap-4 rounded-xl border border-gray-200 px-5 py-4 dark:border-gray-800"
-                                            >
+                                            <div key={item.key} className="min-h-[96px] rounded-xl border border-gray-200 px-4 py-4 dark:border-gray-800 sm:px-5">
                                                 <div className="flex min-w-0 flex-1 items-center gap-3">
                                                     <span
                                                         className="h-3 w-3 shrink-0 rounded-full"
@@ -518,10 +515,7 @@ export default function DashboardPage() {
                                                         {item.label}
                                                     </span>
                                                 </div>
-                                                <Badge
-                                                    variant="secondary"
-                                                    className="shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-base font-semibold text-[14px]"
-                                                >
+                                                <Badge variant="secondary" className="mt-3 shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-semibold">
                                                     {item.value} task · {percentage}%
                                                 </Badge>
                                             </div>
@@ -680,7 +674,7 @@ export default function DashboardPage() {
                                     Báo cáo kết quả kiểm tra học liệu
                                 </CardTitle>
                             </div>
-                            <div className="relative w-full sm:w-[240px]">
+                            <div className="relative w-full min-w-0 sm:w-[240px]">
                                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                                 <Input
                                     value={quizSearchQuery}
