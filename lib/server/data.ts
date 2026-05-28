@@ -1429,13 +1429,23 @@ function canActorViewDocument(
   actor: SessionActor,
   document: DbDocument,
   personTeamMap: Map<string, string>,
-  personRolesMap: Map<string, Set<UserRole>>
+  personRolesMap: Map<string, Set<UserRole>>,
+  ownerUserByPersonId?: Map<string, UserAccount>
 ) {
   if (actor.isAdmin) return true;
 
+  // Technician can always view documents created by their direct manager (store lead or trainer),
+  // even if legacy team mapping data is inconsistent.
+  if (actor.user.role === "store_technician" && actor.user.storeLeadUserId && ownerUserByPersonId) {
+    const ownerUser = ownerUserByPersonId.get(document.ownerId);
+    if (ownerUser && ownerUser.id === actor.user.storeLeadUserId) {
+      return true;
+    }
+  }
+
   const visibility = document.visibility ?? "team";
   const ownerTeam = personTeamMap.get(document.ownerId);
-  if (ownerTeam && actor.person.team !== ownerTeam) return false;
+  const isSameOwnerTeam = !ownerTeam || actor.person.team === ownerTeam;
 
   const ownerRoles = personRolesMap.get(document.ownerId);
   const ownerIsLeaderCreator =
@@ -1444,6 +1454,7 @@ function canActorViewDocument(
   const isVanHanhLeader = actor.isLeader && !actor.isAdmin && actor.person.team === "product";
 
   if (ownerIsLeaderCreator) {
+    if (!isSameOwnerTeam) return false;
     if (visibility === "specific") {
       return (
         document.ownerId === actor.person.id ||
@@ -1453,9 +1464,10 @@ function canActorViewDocument(
     return actor.person.team === ownerTeam || document.ownerId === actor.person.id;
   }
 
-  if (visibility === "team") return actor.person.team === ownerTeam || document.ownerId === actor.person.id;
+  if (visibility === "team") return isSameOwnerTeam || document.ownerId === actor.person.id;
   if (visibility === "office") return actor.person.team !== "store";
   if (visibility === "store") return actor.person.team === "store" || isVanHanhLeader;
+  if (!isSameOwnerTeam) return document.ownerId === actor.person.id;
   return document.ownerId === actor.person.id || actor.isLeader || (document.visibleToPersonIds ?? []).includes(actor.person.id);
 }
 
@@ -2484,15 +2496,16 @@ export async function createRegistrationOtp(input: {
       }
       if (input.role === "store_technician") {
         if (!normalizedStoreLeadUserId) {
-          return { ok: false, message: "Vui lòng chọn Cửa hàng trưởng quản lý." };
+          return { ok: false, message: "Vui lòng chọn người quản lý (Cửa hàng trưởng hoặc Trainer)." };
         }
         const leadUserRes = await pgQuery("select * from users where id = $1 and verified = true limit 1", [normalizedStoreLeadUserId]);
         const leadRow = leadUserRes.rows[0];
         const leadUser = leadRow ? mapDbUser(mapPgUserRow(leadRow)) : null;
-        if (!leadUser || normalizeUserRole(leadUser.role) !== "store_lead" || leadUser.department !== "Cửa hàng") {
-          return { ok: false, message: "Cửa hàng trưởng đã chọn không hợp lệ." };
+        const normalizedLeadRole = leadUser ? normalizeUserRole(leadUser.role) : null;
+        if (!leadUser || (normalizedLeadRole !== "store_lead" && normalizedLeadRole !== "store_trainer") || leadUser.department !== "Cửa hàng") {
+          return { ok: false, message: "Người quản lý đã chọn không hợp lệ." };
         }
-        if (!leadUser.storeRegion || !leadUser.storeBranchIds || leadUser.storeBranchIds.length === 0) {
+        if (normalizedLeadRole === "store_lead" && (!leadUser.storeRegion || !leadUser.storeBranchIds || leadUser.storeBranchIds.length === 0)) {
           return { ok: false, message: "Cửa hàng trưởng chưa có cấu hình khu vực/chi nhánh." };
         }
       } else if (input.role !== "store_trainer") {
@@ -2637,13 +2650,14 @@ export async function createRegistrationOtp(input: {
     }
     if (input.role === "store_technician") {
       if (!normalizedStoreLeadUserId) {
-        return { ok: false, message: "Vui lòng chọn Cửa hàng trưởng quản lý." };
+        return { ok: false, message: "Vui lòng chọn người quản lý (Cửa hàng trưởng hoặc Trainer)." };
       }
       const leadUser = await db.collection<DbUser>("users").findOne({ _id: normalizedStoreLeadUserId, verified: true });
-      if (!leadUser || normalizeUserRole(leadUser.role) !== "store_lead" || leadUser.department !== "Cửa hàng") {
-        return { ok: false, message: "Cửa hàng trưởng đã chọn không hợp lệ." };
+      const normalizedLeadRole = leadUser ? normalizeUserRole(leadUser.role) : null;
+      if (!leadUser || (normalizedLeadRole !== "store_lead" && normalizedLeadRole !== "store_trainer") || leadUser.department !== "Cửa hàng") {
+        return { ok: false, message: "Người quản lý đã chọn không hợp lệ." };
       }
-      if (!leadUser.storeRegion || !leadUser.storeBranchIds || leadUser.storeBranchIds.length === 0) {
+      if (normalizedLeadRole === "store_lead" && (!leadUser.storeRegion || !leadUser.storeBranchIds || leadUser.storeBranchIds.length === 0)) {
         return { ok: false, message: "Cửa hàng trưởng chưa có cấu hình khu vực/chi nhánh." };
       }
     } else if (input.role !== "store_trainer") {
@@ -4973,7 +4987,7 @@ export async function getDocumentsData(sessionUserId?: string | null, folderId?:
         ? pgQuery("select * from documents order by modified_at desc nulls last")
         : pgQuery("select * from documents where folder_id is not distinct from $1 order by modified_at desc nulls last", [folderId ?? null]),
       pgQuery("select id, team_id from people"),
-      pgQuery("select person_id, role from users"),
+      pgQuery("select id, person_id, role, department, store_lead_user_id from users"),
     ]);
 
     const allDocs = docsResult.rows.map((row) => mapPgDocumentRow(row));
@@ -4986,34 +5000,26 @@ export async function getDocumentsData(sessionUserId?: string | null, folderId?:
       roles.add(normalizeUserRole(String(row.role ?? "employee") as StoredUserRole));
       personRolesMap.set(personId, roles);
     }
-    const isVanHanhLeader = actor.isLeader && !actor.isAdmin && actor.person.team === "product";
-
+    const ownerUserByPersonId = new Map<string, UserAccount>();
+    for (const row of usersResult.rows) {
+      const personId = row.person_id ? String(row.person_id) : "";
+      if (!personId) continue;
+      ownerUserByPersonId.set(personId, {
+        id: String(row.id ?? ""),
+        name: "",
+        email: "",
+        password: "",
+        personId,
+        role: normalizeUserRole(String(row.role ?? "employee") as StoredUserRole),
+        department: (row.department as Department | undefined) ?? "Vận hành",
+        storeRegion: undefined,
+        storeBranchIds: [],
+        storeLeadUserId: row.store_lead_user_id ? String(row.store_lead_user_id) : undefined,
+        verified: true,
+      });
+    }
     return allDocs
-      .filter((doc) => {
-        if (actor.isAdmin) return true;
-        const visibility = doc.visibility ?? "team";
-        const ownerTeam = personTeamMap.get(doc.ownerId);
-        if (ownerTeam && actor.person.team !== ownerTeam) return false;
-        const ownerRoles = personRolesMap.get(doc.ownerId);
-        const ownerIsLeaderCreator =
-          Boolean(ownerRoles?.has("leader")) &&
-          !Boolean(ownerRoles?.has("admin") || ownerRoles?.has("ceo"));
-
-        if (ownerIsLeaderCreator) {
-          if (visibility === "specific") {
-            return (
-              doc.ownerId === actor.person.id ||
-              (actor.person.team === ownerTeam && (doc.visibleToPersonIds ?? []).includes(actor.person.id))
-            );
-          }
-          return actor.person.team === ownerTeam || doc.ownerId === actor.person.id;
-        }
-
-        if (visibility === "team") return actor.person.team === ownerTeam || doc.ownerId === actor.person.id;
-        if (visibility === "office") return actor.person.team !== "store";
-        if (visibility === "store") return actor.person.team === "store" || isVanHanhLeader;
-        return doc.ownerId === actor.person.id || actor.isLeader || (doc.visibleToPersonIds ?? []).includes(actor.person.id);
-      })
+      .filter((doc) => canActorViewDocument(actor, doc, personTeamMap, personRolesMap, ownerUserByPersonId))
       .map((doc) => {
         if (isDocumentLockedForActor(actor, doc)) {
           return mapDbDocument({
@@ -5040,54 +5046,16 @@ export async function getDocumentsData(sessionUserId?: string | null, folderId?:
 
   const personTeamMap = new Map(allPeople.map((p) => [p._id, p.teamId]));
   const personRolesMap = new Map<string, Set<UserRole>>();
+  const ownerUserByPersonId = new Map<string, UserAccount>();
   for (const user of allUsers) {
     if (!user.personId) continue;
     const roles = personRolesMap.get(user.personId) ?? new Set<UserRole>();
     roles.add(normalizeUserRole(user.role));
     personRolesMap.set(user.personId, roles);
+    ownerUserByPersonId.set(user.personId, mapDbUser(user));
   }
-  // Vận hành leader: team "product" + isLeader
-  const isVanHanhLeader = actor.isLeader && !actor.isAdmin && actor.person.team === "product";
-
   return allDocs
-    .filter((doc) => {
-      if (actor.isAdmin) return true;
-
-      const visibility = doc.visibility ?? "team";
-      const ownerTeam = personTeamMap.get(doc.ownerId);
-      if (ownerTeam && actor.person.team !== ownerTeam) return false;
-      const ownerRoles = personRolesMap.get(doc.ownerId);
-      const ownerIsLeaderCreator =
-        Boolean(ownerRoles?.has("leader")) &&
-        !Boolean(ownerRoles?.has("admin") || ownerRoles?.has("ceo"));
-
-      // Tài liệu do leader tạo: chỉ trong phạm vi phòng ban của leader tạo.
-      if (ownerIsLeaderCreator) {
-        if (visibility === "specific") {
-          return (
-            doc.ownerId === actor.person.id ||
-            (actor.person.team === ownerTeam && (doc.visibleToPersonIds ?? []).includes(actor.person.id))
-          );
-        }
-        return actor.person.team === ownerTeam || doc.ownerId === actor.person.id;
-      }
-
-      if (visibility === "team") {
-        return actor.person.team === ownerTeam || doc.ownerId === actor.person.id;
-      }
-      if (visibility === "office") {
-        return actor.person.team !== "store";
-      }
-      if (visibility === "store") {
-        return actor.person.team === "store" || isVanHanhLeader;
-      }
-      // "specific"
-      return (
-        doc.ownerId === actor.person.id ||
-        actor.isLeader ||
-        (doc.visibleToPersonIds ?? []).includes(actor.person.id)
-      );
-    })
+    .filter((doc) => canActorViewDocument(actor, doc, personTeamMap, personRolesMap, ownerUserByPersonId))
     .map((doc) => {
       if (isDocumentLockedForActor(actor, doc)) {
         return mapDbDocument({

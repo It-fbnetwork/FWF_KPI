@@ -270,8 +270,9 @@ export async function POST(request: Request) {
       learningPlan = await buildPdfLearningPlan(buffer);
     } else if (lowerName.endsWith(".pptx")) {
       let previewUrl: string | undefined;
+      let previewPdfBuffer: Buffer | undefined;
       try {
-        const previewPdfBuffer = await convertPptxToPdfBuffer(buffer);
+        previewPdfBuffer = await convertPptxToPdfBuffer(buffer);
         const previewPdfId = await uploadBufferToStorage(
           `${inferBaseName(file.name)}-preview.pdf`,
           previewPdfBuffer,
@@ -281,7 +282,27 @@ export async function POST(request: Request) {
       } catch (conversionError) {
         console.error("PPTX to PDF conversion failed:", conversionError);
       }
-      learningPlan = await buildPptxLearningPlan(buffer, file.name, previewUrl);
+      // Prefer PDF-based slide preview for better PPTX fidelity.
+      if (previewUrl && previewPdfBuffer) {
+        const pageCount = countPdfPages(previewPdfBuffer);
+        learningPlan = {
+          sourceType: "pptx",
+          generatedAt: new Date().toISOString(),
+          previewUrl,
+          steps: Array.from({ length: pageCount }, (_, index) => ({
+            id: `slide-${index + 1}`,
+            title: `Slide ${index + 1}`,
+            kind: "slide" as const,
+            slideNumber: index + 1,
+            pageNumber: index + 1,
+            content: "",
+            estimatedSeconds: 25,
+            media: [],
+          })),
+        };
+      } else {
+        learningPlan = await buildPptxLearningPlan(buffer, file.name, previewUrl);
+      }
     }
 
     return NextResponse.json({ ok: true, fileId, url, learningPlan });

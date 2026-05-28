@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { COMPANY_DOMAIN, departments, registrationRoles, storeRegistrationRoles, type Department, type UserRole } from "@/lib/auth";
 import {
   STORE_AREA_OPTIONS,
@@ -31,6 +32,7 @@ const roleLabels: Record<UserRole, string> = {
   store_lead: "Cửa hàng trưởng",
   store_technician: "Kỹ thuật viên"
 };
+const NO_STORE_LEAD_FALLBACK_VALUE = "__no_store_lead_fallback__";
 
 type FieldProps = {
   label: string;
@@ -140,8 +142,11 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
   const [registerStep, setRegisterStep] = useState<"form" | "otp">("form");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const selectClassName =
+    "rounded-2xl border border-[rgba(55,45,33,0.14)] bg-white px-4 py-3 text-slate-900 shadow-sm outline-none transition focus:border-ink focus:ring-2 focus:ring-orange-200/60 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:ring-orange-400/20";
   const [resendCountdown, setResendCountdown] = useState(30);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isManagerPickerOpen, setIsManagerPickerOpen] = useState(false);
 
   const availableRoles = useMemo(() => {
     if (department === "Cửa hàng") return storeRegistrationRoles;
@@ -176,6 +181,53 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
     () => users.filter((user) => user.department === "Cửa hàng" && user.role === "store_lead" && user.verified),
     [users]
   );
+  const storeTrainerOptions = useMemo(
+    () => users.filter((user) => user.department === "Cửa hàng" && user.role === "store_trainer" && user.verified),
+    [users]
+  );
+  const preferredTrainerForFallback = useMemo(
+    () =>
+      storeTrainerOptions.find((item) => item.name.trim().toUpperCase() === "TRẦN THỊ AN HÒA") ??
+      storeTrainerOptions[0] ??
+      null,
+    [storeTrainerOptions]
+  );
+  const managerOptionsForTechnician = useMemo(() => {
+    if (storeLeadOptions.length > 0) return storeLeadOptions;
+    return storeTrainerOptions;
+  }, [storeLeadOptions, storeTrainerOptions]);
+  const validManagerOptionsForTechnician = useMemo(() => {
+    if (!preferredTrainerForFallback) return managerOptionsForTechnician;
+    if (managerOptionsForTechnician.some((item) => item.id === preferredTrainerForFallback.id)) {
+      return managerOptionsForTechnician;
+    }
+    return [...managerOptionsForTechnician, preferredTrainerForFallback];
+  }, [managerOptionsForTechnician, preferredTrainerForFallback]);
+  const isTechnicianUsingTrainerFallback = isStoreTechnicianRole && storeLeadOptions.length === 0;
+  const technicianManagerDisplay = useMemo(() => {
+    if (!storeLeadUserId) {
+      return isTechnicianUsingTrainerFallback ? "Chọn trainer quản lý" : "Chọn cửa hàng trưởng";
+    }
+
+    const selectedLead = managerOptionsForTechnician.find((item) => item.id === storeLeadUserId);
+    if (selectedLead) {
+      return `${selectedLead.name} (${selectedLead.email})`;
+    }
+
+    if (preferredTrainerForFallback && storeLeadUserId === preferredTrainerForFallback.id) {
+      return `Trainer - ${preferredTrainerForFallback.name} (Mặc định)`;
+    }
+
+    return isTechnicianUsingTrainerFallback ? "Chọn trainer quản lý" : "Chọn cửa hàng trưởng";
+  }, [isTechnicianUsingTrainerFallback, managerOptionsForTechnician, preferredTrainerForFallback, storeLeadUserId]);
+
+  useEffect(() => {
+    if (!isStoreTechnicianRole) return;
+    if (managerOptionsForTechnician.length === 0) return;
+    if (storeLeadUserId && managerOptionsForTechnician.some((item) => item.id === storeLeadUserId)) return;
+
+    setStoreLeadUserId(preferredTrainerForFallback?.id ?? managerOptionsForTechnician[0]!.id);
+  }, [isStoreTechnicianRole, managerOptionsForTechnician, preferredTrainerForFallback, storeLeadUserId]);
 
   useEffect(() => {
     if (isStoreManagerRole) {
@@ -325,14 +377,14 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
       }
     }
 
-    if (registerStep === "form" && isStoreTechnicianRole && storeLeadOptions.length === 0) {
-      setError("Chưa có tài khoản Cửa hàng trưởng nào khả dụng để gán quản lý.");
+    if (registerStep === "form" && isStoreTechnicianRole && validManagerOptionsForTechnician.length === 0) {
+      setError("Chưa có tài khoản Cửa hàng trưởng hoặc Trainer nào khả dụng để gán quản lý.");
       setIsSubmitting(false);
       return;
     }
 
-    if (registerStep === "form" && isStoreTechnicianRole && storeLeadUserId && !storeLeadOptions.some((item) => item.id === storeLeadUserId)) {
-      setError("Cửa hàng trưởng đã chọn không hợp lệ.");
+    if (registerStep === "form" && isStoreTechnicianRole && storeLeadUserId && !validManagerOptionsForTechnician.some((item) => item.id === storeLeadUserId)) {
+      setError("Người quản lý đã chọn không hợp lệ.");
         setIsSubmitting(false);
         return;
     }
@@ -495,7 +547,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                   <select
                     value={department}
                     onChange={(event) => setDepartment(event.target.value as Department)}
-                    className="rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 px-4 py-3 outline-none transition focus:border-ink"
+                    className={selectClassName}
                   >
                     {departments.map((item) => (
                       <option key={item} value={item}>
@@ -511,7 +563,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                 <select
                   value={role}
                   onChange={(event) => setRole(event.target.value as UserRole)}
-                  className="rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 px-4 py-3 outline-none transition focus:border-ink"
+                  className={selectClassName}
                 >
                   {availableRoles.map((item) => (
                     <option key={item} value={item}>
@@ -525,19 +577,69 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                 <>
                   {isStoreTechnicianRole ? (
                     <label className="grid gap-2">
-                      <span className="text-sm font-medium text-text">Cửa hàng trưởng quản lý</span>
-                      <select
-                        value={storeLeadUserId}
-                        onChange={(event) => setStoreLeadUserId(event.target.value)}
-                        className="rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 px-4 py-3 outline-none transition focus:border-ink"
+                      <span className="text-sm font-medium text-text">
+                        {isTechnicianUsingTrainerFallback ? "Trainer quản lý (fallback)" : "Cửa hàng trưởng quản lý"}
+                      </span>
+                      <button
+                        type="button"
+                        className={`${selectClassName} flex w-full items-center justify-between text-left`}
+                        onClick={() => setIsManagerPickerOpen(true)}
                       >
-                        <option value="">Chọn cửa hàng trưởng</option>
-                        {storeLeadOptions.map((lead) => (
-                          <option key={lead.id} value={lead.id}>
-                            {lead.name} ({lead.email})
-                          </option>
-                        ))}
-                      </select>
+                        <span className={storeLeadUserId ? "text-slate-900 dark:text-slate-100" : "text-slate-500 dark:text-slate-300"}>
+                          {technicianManagerDisplay}
+                        </span>
+                        <span className="text-lg leading-none text-slate-500">⌄</span>
+                      </button>
+                      <Dialog open={isManagerPickerOpen} onOpenChange={setIsManagerPickerOpen}>
+                        <DialogContent className="max-w-lg rounded-2xl border border-[rgba(55,45,33,0.15)] bg-white p-0">
+                          <DialogHeader className="border-b border-[rgba(55,45,33,0.12)] px-5 py-4">
+                            <DialogTitle className="text-base font-semibold text-slate-900">
+                              {isTechnicianUsingTrainerFallback ? "Chọn trainer quản lý" : "Chọn cửa hàng trưởng quản lý"}
+                            </DialogTitle>
+                          </DialogHeader>
+                          <div className="max-h-[60vh] space-y-2 overflow-y-auto px-3 py-3">
+                            {!isTechnicianUsingTrainerFallback && preferredTrainerForFallback ? (
+                              <button
+                                type="button"
+                                className="w-full rounded-xl border border-[rgba(55,45,33,0.12)] px-3 py-3 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                                onClick={() => {
+                                  setStoreLeadUserId(preferredTrainerForFallback.id);
+                                  setIsManagerPickerOpen(false);
+                                }}
+                              >
+                                Không có cửa hàng trưởng của bạn trong danh sách
+                              </button>
+                            ) : null}
+                            {managerOptionsForTechnician.map((lead) => (
+                              <button
+                                key={lead.id}
+                                type="button"
+                                className={`w-full rounded-xl border px-3 py-3 text-left text-sm transition ${
+                                  lead.id === storeLeadUserId
+                                    ? "border-orange-300 bg-orange-50 text-slate-900"
+                                    : "border-[rgba(55,45,33,0.12)] text-slate-800 hover:bg-slate-50"
+                                }`}
+                                onClick={() => {
+                                  setStoreLeadUserId(lead.id);
+                                  setIsManagerPickerOpen(false);
+                                }}
+                              >
+                                {lead.name} ({lead.email})
+                              </button>
+                            ))}
+                            {isTechnicianUsingTrainerFallback && managerOptionsForTechnician.length === 0 ? (
+                              <div className="rounded-xl border border-[rgba(55,45,33,0.12)] bg-slate-50 px-3 py-3 text-sm text-slate-500">
+                                Chưa có trainer khả dụng.
+                              </div>
+                            ) : null}
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                      {isTechnicianUsingTrainerFallback && (
+                        <p className="text-xs text-muted">
+                          Cửa hàng này chưa có Cửa hàng trưởng khả dụng, hệ thống đang dùng Trainer để quản lý tạm thời.
+                        </p>
+                      )}
                     </label>
                   ) : isStoreTrainerRole ? null : (
                     <>
@@ -548,7 +650,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                             <select
                               value={storeArea}
                               onChange={(event) => setStoreArea(event.target.value as StoreAreaId)}
-                              className="rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 px-4 py-3 outline-none transition focus:border-ink"
+                              className={selectClassName}
                             >
                               {STORE_AREA_OPTIONS.map((area) => (
                                 <option key={area.id} value={area.id}>
@@ -568,7 +670,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                             <select
                               value={storeRegion}
                               onChange={(event) => setStoreRegion(event.target.value as StoreRegion)}
-                              className="rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 px-4 py-3 outline-none transition focus:border-ink"
+                              className={selectClassName}
                             >
                               {STORE_REGIONS.map((region) => (
                                 <option key={region} value={region}>

@@ -407,7 +407,6 @@ export async function POST(request: Request) {
         learningPlan = buildPdfLearningPlan(buffer);
       } else {
         warnings.push(...(await inspectPptxRenderingRisk(buffer)));
-        const extractedPptxPlan = await buildPptxLearningPlan(buffer, filename);
         try {
           const previewPdfBuffer = await convertPptxToPdfBuffer(buffer);
           const previewStored = await saveFileBuffer(
@@ -422,14 +421,8 @@ export async function POST(request: Request) {
             }
           );
           const previewUrl = `/api/files/${previewStored.fileId}`;
-          if (extractedPptxPlan) {
-            learningPlan = {
-              ...extractedPptxPlan,
-              previewUrl,
-            };
-          } else {
-            learningPlan = buildPptxPreviewPlan(previewPdfBuffer, previewUrl);
-          }
+          // Prefer PDF-based preview for PPTX to preserve layout and typography fidelity.
+          learningPlan = buildPptxPreviewPlan(previewPdfBuffer, previewUrl);
         } catch (conversionError) {
           console.error("PPTX->PDF conversion failed in finalize:", conversionError);
           if (STRICT_PPTX_FIDELITY) {
@@ -440,7 +433,7 @@ export async function POST(request: Request) {
           warnings.push(
             "Không thể chuyển PPTX sang PDF preview trên môi trường hiện tại. Hệ thống đang dùng chế độ fallback (trích xuất text), nên bố cục có thể khác file gốc."
           );
-          learningPlan = extractedPptxPlan;
+          learningPlan = await buildPptxLearningPlan(buffer, filename);
         }
       }
     }
