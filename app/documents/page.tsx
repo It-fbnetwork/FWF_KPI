@@ -724,6 +724,8 @@ export default function DocumentsPage() {
         setCreateMemberSearch("")
     }
 
+    const selectedUploadExt = createDocumentDialog.file?.name.split(".").pop()?.toLowerCase()
+
     const handleCreateDocument = async () => {
         const { file, visibility } = createDocumentDialog
         const selectedOfficePersonIds = createDocumentDialog.selectedOfficePersonIds ?? []
@@ -803,10 +805,17 @@ export default function DocumentsPage() {
                 message?: string
                 url: string
                 learningPlan?: Document["learningPlan"]
+                warnings?: string[]
             }
             if (!uploadData.ok) throw new Error(uploadData.message || "Không thể upload file")
             uploadedFileUrl = uploadData.url
             generatedLearningPlan = uploadData.learningPlan
+            if (uploadData.warnings?.length) {
+                toast({
+                    title: "Tài liệu đã tải lên, nhưng có rủi ro hiển thị",
+                    description: `${uploadData.warnings[0]} Mẹo: xuất PDF chất lượng cao để hiển thị ổn định hơn.`,
+                })
+            }
 
             const requestPayload = {
                 name: normalizedName || file.name,
@@ -3473,6 +3482,19 @@ export default function DocumentsPage() {
                             <p className="text-xs text-gray-500 dark:text-gray-400">
                                 Chỉ nhận file định dạng PDF hoặc PPTX.
                             </p>
+                            {selectedUploadExt === "pptx" ? (
+                                <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+                                    Bạn đang tải file PPTX. Để hiển thị giống bản gốc nhất, nên xuất sang PDF chất lượng cao (embed font) rồi upload.
+                                </div>
+                            ) : selectedUploadExt === "pdf" ? (
+                                <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-2.5 text-xs text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">
+                                    Định dạng PDF thường cho kết quả hiển thị ổn định và ít lỗi font nhất trên mọi thiết bị.
+                                </div>
+                            ) : (
+                                <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-2.5 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300">
+                                    Mẹo: nếu tài liệu cần hiển thị chính xác tuyệt đối, hãy ưu tiên PDF.
+                                </div>
+                            )}
                         </div>
                         <VisibilityPicker
                             user={user}

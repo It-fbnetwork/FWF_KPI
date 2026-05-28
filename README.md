@@ -53,3 +53,168 @@ Nếu chưa cấu hình `ABLY_API_KEY`, chat vẫn hoạt động theo cơ chế
 - `director@facewashfox.com` / `facewashfox123`
 - `lan.tran@facewashfox.com` / `facewashfox123`
 - `trang.nguyen@facewashfox.com` / `facewashfox123`
+
+<!-- FRIGATE -->
+tls:
+  enabled: false
+
+auth:
+  enabled: true
+  reset_admin_password: false
+
+mqtt:
+  enabled: false
+
+ffmpeg:
+  input_args: preset-rtsp-restream
+
+go2rtc:
+  streams:
+    vista_Verde_cam_sofa:
+      - rtsp://vistaverde01:Fwfvista@fwfvista.ddns.net:1554/stream2
+    landmark81_letan_01:
+      - rtsp://landmark01:Fwf%40landmark@fwflandmark.ddns.net:1554/stream2
+    vista_Verde_cam_Letan:
+      - rtsp://vistaverde03:Fwf%40vistaverde@fwfvista.ddns.net:3554/stream2
+    vista_Verde_cam_bed:
+      - rtsp://vistaverde04:Fwf%40vistaverde@fwfvista.ddns.net:4554/stream2
+    vista_Verde_cam_kho:
+      - rtsp://vistaverde05:Fwf%40vistaverde@fwfvista.ddns.net:5554/stream2
+    vista_Verde_cam_cua:
+      - rtsp://vistaverde06:Fwf%40vistaverde@fwfvista.ddns.net:6554/stream2
+    vincom_thaodien_letan:
+      - rtsp://thaodien01:Fwf%40thaodien@fwfthaodien.ddns.net:1554/stream2
+    sun_avenue_bed:
+      - rtsp://sunavenue02:Fwf%40sunavenue@fwfsunavenue.ddns.net:2554/stream2
+    vincom_thaodien_bed:
+      - rtsp://thaodien02:Fwf%40thaodien@fwfthaodien.ddns.net:2554/stream2
+
+cameras:
+  vista_Verde_cam_sofa:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/vista_Verde_cam_sofa
+          roles:
+          
+            - record
+    detect:
+      enabled: false
+      
+    record:
+      enabled: true
+
+  landmark81_letan_01:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/landmark81_letan_01
+          roles:
+            - record
+    detect:
+      enabled: false
+    record:
+      enabled: true
+
+  vista_Verde_cam_Letan:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/vista_Verde_cam_Letan
+          roles:
+            - record
+    detect:
+      enabled: false
+    record:
+      enabled: true
+
+  vista_Verde_cam_bed:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/vista_Verde_cam_bed
+          roles:
+            - record
+    detect:
+      enabled: false
+    record:
+      enabled: true
+
+  vista_Verde_cam_kho:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/vista_Verde_cam_kho
+          roles:
+            - record
+    detect:
+      enabled: false
+    record:
+      enabled: true
+
+  vista_Verde_cam_cua:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/vista_Verde_cam_cua
+          roles:
+            - record
+    detect:
+      enabled: false
+    record:
+      enabled: true
+
+  vincom_thaodien_letan:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/vincom_thaodien_letan
+          roles:
+            - record
+    detect:
+      enabled: false
+    record:
+      enabled: true
+
+  sun_avenue_bed:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/sun_avenue_bed
+          roles:
+            - record
+    detect:
+      enabled: false
+    record:
+      enabled: true
+
+  vincom_thaodien_bed:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/vincom_thaodien_bed
+          roles:
+            - record
+    detect:
+      enabled: false
+    record:
+      enabled: true
+
+version: 0.17-0
+
+camera_groups:
+  Vista_Verde:
+    order: 1
+    icon: LuListVideo
+    cameras:
+      - vista_Verde_cam_sofa
+      - vista_Verde_cam_bed_2
+      - vista_Verde_cam_Letan
+      - vista_Verde_cam_bed
+      - vista_Verde_cam_kho
+      - vista_Verde_cam_cua
+  vincom_thảo_điền:
+    order: 2
+    icon: LuListVideo
+    cameras:
+      - vincom_thaodien_letan
+      - vincom_thaodien_bed
+  landmark_81:
+    order: 3
+    icon: LuListVideo
+    cameras: landmark81_letan_01
+  sun_avenue:
+    order: 4
+    icon: LuListVideo
+    cameras: sun_avenue_bed

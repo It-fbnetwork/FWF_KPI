@@ -14,6 +14,20 @@ import { getSupabaseStorageConfig, saveFileBuffer, saveSupabaseStorageReference,
 
 export const maxDuration = 180;
 const execFileAsync = promisify(execFile);
+const WEB_SAFE_FONT_SET = new Set([
+  "arial",
+  "arial black",
+  "calibri",
+  "cambria",
+  "candara",
+  "courier new",
+  "georgia",
+  "helvetica",
+  "tahoma",
+  "times new roman",
+  "trebuchet ms",
+  "verdana",
+]);
 
 function inferMimeType(fileName: string) {
   const lower = fileName.toLowerCase();
@@ -68,6 +82,68 @@ function collectSlideTextNodes(node: unknown, collector: string[]) {
     }
     collectSlideTextNodes(value, collector);
   }
+}
+
+function gcd(a: number, b: number): number {
+  let x = Math.abs(a);
+  let y = Math.abs(b);
+  while (y !== 0) {
+    const t = y;
+    y = x % y;
+    x = t;
+  }
+  return x || 1;
+}
+
+async function inspectPptxRenderingRisk(buffer: Buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const warnings: string[] = [];
+
+  const presentationXml = await zip.file("ppt/presentation.xml")?.async("text");
+  if (presentationXml) {
+    const sizeMatch = presentationXml.match(/<p:sldSz[^>]*cx="(\d+)"[^>]*cy="(\d+)"/);
+    if (sizeMatch?.[1] && sizeMatch?.[2]) {
+      const cx = Number(sizeMatch[1]);
+      const cy = Number(sizeMatch[2]);
+      if (Number.isFinite(cx) && Number.isFinite(cy) && cx > 0 && cy > 0) {
+        const ratio = cx / cy;
+        const ratioDiff = Math.abs(ratio - (16 / 9));
+        if (ratioDiff > 0.02) {
+          const divisor = gcd(cx, cy);
+          warnings.push(
+            `Slide hiện tại không theo tỉ lệ 16:9 (${Math.round(cx / divisor)}:${Math.round(cy / divisor)}). Khuyến nghị đổi sang 16:9 để tránh méo/cắt khi hiển thị web.`
+          );
+        }
+      }
+    }
+  }
+
+  const fontCandidates = new Set<string>();
+  const fontRegex = /typeface="([^"]+)"/g;
+  for (const filePath of Object.keys(zip.files)) {
+    if (!/^ppt\/(theme|slideMasters|slides|fontTable)\//.test(filePath) || !filePath.endsWith(".xml")) continue;
+    const xml = await zip.file(filePath)?.async("text");
+    if (!xml) continue;
+    let match: RegExpExecArray | null;
+    while ((match = fontRegex.exec(xml)) !== null) {
+      const fontName = (match[1] ?? "").trim();
+      if (fontName) fontCandidates.add(fontName);
+    }
+  }
+
+  const riskyFonts = [...fontCandidates].filter((font) => {
+    const normalized = font.toLowerCase();
+    if (normalized.startsWith("+")) return false; // theme placeholders
+    return !WEB_SAFE_FONT_SET.has(normalized);
+  });
+
+  if (riskyFonts.length > 0) {
+    warnings.push(
+      `Phát hiện font có nguy cơ lệch khi render web: ${riskyFonts.slice(0, 6).join(", ")}${riskyFonts.length > 6 ? "..." : ""}. Nên export PDF và/hoặc embed font trước khi upload.`
+    );
+  }
+
+  return warnings;
 }
 
 async function extractPptxSlideText(zip: JSZip, parser: XMLParser, slidePath: string) {
@@ -309,11 +385,13 @@ export async function POST(request: Request) {
     const url = `/api/files/${fileId}`;
 
     let learningPlan: LearningPlan | undefined;
+    const warnings: string[] = [];
     if (filename.toLowerCase().endsWith(".pdf") || filename.toLowerCase().endsWith(".pptx")) {
       const buffer = await downloadStorageObject(storage);
       if (filename.toLowerCase().endsWith(".pdf")) {
         learningPlan = buildPdfLearningPlan(buffer);
       } else {
+        warnings.push(...(await inspectPptxRenderingRisk(buffer)));
         const extractedPptxPlan = await buildPptxLearningPlan(buffer, filename);
         try {
           const previewPdfBuffer = await convertPptxToPdfBuffer(buffer);
@@ -349,6 +427,7 @@ export async function POST(request: Request) {
       fileId,
       url,
       learningPlan,
+      warnings,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Không thể hoàn tất upload";
