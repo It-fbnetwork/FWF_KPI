@@ -417,6 +417,9 @@ export async function POST(request: Request) {
           }
         } catch (conversionError) {
           console.error("PPTX->PDF conversion failed in finalize:", conversionError);
+          warnings.push(
+            "Không thể chuyển PPTX sang PDF preview trên môi trường hiện tại. Hệ thống đang dùng chế độ fallback (trích xuất text), nên bố cục có thể khác file gốc."
+          );
           learningPlan = extractedPptxPlan;
         }
       }

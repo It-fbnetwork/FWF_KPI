@@ -218,6 +218,12 @@ interface CreateDocumentDialogState {
     deadlineAt: string
 }
 
+interface UploadRecoveryDialogState {
+    open: boolean
+    message: string
+    suggestedName: string
+}
+
 interface VisibilityDialogState {
     open: boolean
     docId: string
@@ -276,6 +282,11 @@ function toDatetimeLocalInputValue(value?: string) {
     return new Date(date.getTime() - timezoneOffset).toISOString().slice(0, 16)
 }
 
+function inferBaseName(fileName: string) {
+    const idx = fileName.lastIndexOf(".")
+    return idx > 0 ? fileName.slice(0, idx) : fileName
+}
+
 function buildDefaultVisibilityDialog(user: UserAccount | null): VisibilityDialogState {
     return {
         open: false,
@@ -316,6 +327,11 @@ export default function DocumentsPage() {
     )
     const [createRoleFilter, setCreateRoleFilter] = useState<string[]>([])
     const [createMemberSearch, setCreateMemberSearch] = useState("")
+    const [uploadRecoveryDialog, setUploadRecoveryDialog] = useState<UploadRecoveryDialogState>({
+        open: false,
+        message: "",
+        suggestedName: "",
+    })
     const [visibilityDialog, setVisibilityDialog] = useState<VisibilityDialogState>(
         buildDefaultVisibilityDialog(user)
     )
@@ -811,10 +827,20 @@ export default function DocumentsPage() {
             uploadedFileUrl = uploadData.url
             generatedLearningPlan = uploadData.learningPlan
             if (uploadData.warnings?.length) {
+                const conversionFallbackWarning = uploadData.warnings.find((item) =>
+                    item.toLowerCase().includes("fallback") || item.toLowerCase().includes("không thể chuyển pptx sang pdf")
+                )
                 toast({
                     title: "Tài liệu đã tải lên, nhưng có rủi ro hiển thị",
                     description: `${uploadData.warnings[0]} Mẹo: xuất PDF chất lượng cao để hiển thị ổn định hơn.`,
                 })
+                if (conversionFallbackWarning) {
+                    setUploadRecoveryDialog({
+                        open: true,
+                        message: conversionFallbackWarning,
+                        suggestedName: `${inferBaseName(file.name)}.pdf`,
+                    })
+                }
             }
 
             const requestPayload = {
@@ -3645,6 +3671,45 @@ export default function DocumentsPage() {
                                     : isSubmitting
                                         ? "Đang tạo..."
                                         : "Tạo"}
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {uploadRecoveryDialog.open && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
+                    <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-xl dark:bg-gray-800 sm:p-6">
+                        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Định dạng hiển thị có thể chưa chuẩn</h2>
+                        <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">{uploadRecoveryDialog.message}</p>
+                        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300">
+                            <p className="font-medium">Cách xử lý nhanh (khuyến nghị)</p>
+                            <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-xs sm:text-sm">
+                                <li>Mở file PPTX gốc trên PowerPoint.</li>
+                                <li>Chọn Save As / Export → PDF (Quality: High, Embed fonts).</li>
+                                <li>Upload lại file PDF để hiển thị ổn định như bản gốc.</li>
+                            </ol>
+                        </div>
+                        <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                            <Button
+                                variant="outline"
+                                className="bg-transparent"
+                                onClick={() => setUploadRecoveryDialog({ open: false, message: "", suggestedName: "" })}
+                            >
+                                Để sau
+                            </Button>
+                            <Button
+                                onClick={() => {
+                                    setUploadRecoveryDialog({ open: false, message: "", suggestedName: "" })
+                                    setCreateDocumentDialog((prev) => ({
+                                        ...prev,
+                                        open: true,
+                                        name: uploadRecoveryDialog.suggestedName || prev.name,
+                                        file: null,
+                                    }))
+                                }}
+                            >
+                                Upload lại bằng PDF
                             </Button>
                         </div>
                     </div>
