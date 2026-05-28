@@ -14,6 +14,7 @@ import { getSupabaseStorageConfig, saveFileBuffer, saveSupabaseStorageReference,
 
 export const maxDuration = 180;
 const execFileAsync = promisify(execFile);
+const STRICT_PPTX_FIDELITY = (process.env.STRICT_PPTX_FIDELITY ?? "true").trim().toLowerCase() !== "false";
 const WEB_SAFE_FONT_SET = new Set([
   "arial",
   "arial black",
@@ -28,6 +29,19 @@ const WEB_SAFE_FONT_SET = new Set([
   "trebuchet ms",
   "verdana",
 ]);
+let sofficeAvailabilityChecked = false;
+
+async function ensureSofficeAvailable() {
+  if (sofficeAvailabilityChecked) return;
+  try {
+    await execFileAsync("soffice", ["--version"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+    sofficeAvailabilityChecked = true;
+  } catch {
+    throw new Error(
+      "Máy chủ production chưa cài LibreOffice headless (soffice). Không thể convert PPTX sang PDF để giữ đúng định dạng."
+    );
+  }
+}
 
 function inferMimeType(fileName: string) {
   const lower = fileName.toLowerCase();
@@ -304,6 +318,7 @@ async function buildPptxLearningPlan(buffer: Buffer, originalName: string): Prom
 }
 
 async function convertPptxToPdfBuffer(buffer: Buffer) {
+  await ensureSofficeAvailable();
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "fwf-pptx-finalize-"));
   const inputBase = `input-${randomUUID()}`;
   const inputPath = path.join(tempDir, `${inputBase}.pptx`);
@@ -417,6 +432,11 @@ export async function POST(request: Request) {
           }
         } catch (conversionError) {
           console.error("PPTX->PDF conversion failed in finalize:", conversionError);
+          if (STRICT_PPTX_FIDELITY) {
+            throw new Error(
+              "Không thể đảm bảo định dạng PPTX trên hệ thống hiện tại. Vui lòng xuất file sang PDF (High quality + Embed fonts) và upload lại."
+            );
+          }
           warnings.push(
             "Không thể chuyển PPTX sang PDF preview trên môi trường hiện tại. Hệ thống đang dùng chế độ fallback (trích xuất text), nên bố cục có thể khác file gốc."
           );

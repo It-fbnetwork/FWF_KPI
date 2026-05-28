@@ -3510,7 +3510,7 @@ export default function DocumentsPage() {
                             </p>
                             {selectedUploadExt === "pptx" ? (
                                 <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
-                                    Bạn đang tải file PPTX. Để hiển thị giống bản gốc nhất, nên xuất sang PDF chất lượng cao (embed font) rồi upload.
+                                    Bạn đang tải file PPTX. Hệ thống sẽ chỉ giữ bản có độ chính xác hiển thị cao; nếu PPTX không convert chuẩn sẽ bị từ chối. Khuyến nghị xuất PDF chất lượng cao (embed font) rồi upload.
                                 </div>
                             ) : selectedUploadExt === "pdf" ? (
                                 <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-2.5 text-xs text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">

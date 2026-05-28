@@ -11,6 +11,39 @@ npm run dev
 
 Mở `http://localhost:3000`.
 
+## Cài đặt production để giữ đúng định dạng PPTX
+
+Nếu muốn upload `.pptx` mà hiển thị giống file gốc, server **bắt buộc** có LibreOffice headless (`soffice`) và bộ font đầy đủ.
+
+### 1) Ubuntu / Debian
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libreoffice-core libreoffice-impress libreoffice-writer fonts-noto fonts-dejavu fonts-liberation
+soffice --version
+```
+
+### 2) Biến môi trường khuyến nghị
+
+```bash
+STRICT_PPTX_FIDELITY=true
+```
+
+- `true` (mặc định): nếu không convert được PPTX->PDF thì từ chối upload để tránh lệch định dạng.
+- `false`: cho phép fallback text (nhanh hơn nhưng có thể sai bố cục/font).
+
+### 3) Font thương hiệu riêng
+
+- Nếu slide dùng font không phổ biến, cần cài font đó vào server.
+- Khuyến nghị giảng viên export PDF chất lượng cao + embed font trước khi upload để đảm bảo fidelity.
+
+### 4) Kiểm tra sau deploy
+
+```bash
+# upload 1 file PPTX mẫu có nhiều font
+# xác nhận API /api/documents/upload/finalize không còn warning conversion fallback
+```
+
 ## Biến môi trường realtime
 
 Để bật realtime chat bằng Ably, thêm biến sau vào môi trường:
