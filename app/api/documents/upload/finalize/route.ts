@@ -337,7 +337,11 @@ async function convertPptxToPdfBuffer(buffer: Buffer) {
   }
 }
 
-function buildPptxPreviewPlan(previewPdfBuffer: Buffer, previewUrl: string): LearningPlan {
+function buildPptxPreviewPlan(
+  previewPdfBuffer: Buffer,
+  previewUrl: string,
+  mediaBySlideNumber?: Map<number, LearningStepMedia[]>
+): LearningPlan {
   const pageCount = countPdfPages(previewPdfBuffer);
   return {
     sourceType: "pptx",
@@ -351,7 +355,7 @@ function buildPptxPreviewPlan(previewPdfBuffer: Buffer, previewUrl: string): Lea
       pageNumber: index + 1,
       content: "",
       estimatedSeconds: 25,
-      media: [],
+      media: mediaBySlideNumber?.get(index + 1) ?? [],
     })),
   };
 }
@@ -407,6 +411,13 @@ export async function POST(request: Request) {
         learningPlan = buildPdfLearningPlan(buffer);
       } else {
         warnings.push(...(await inspectPptxRenderingRisk(buffer)));
+        const pptxFallbackPlan = await buildPptxLearningPlan(buffer, filename);
+        const mediaBySlideNumber = new Map<number, LearningStepMedia[]>();
+        for (const step of pptxFallbackPlan?.steps ?? []) {
+          if (typeof step.slideNumber === "number" && step.media?.length) {
+            mediaBySlideNumber.set(step.slideNumber, step.media);
+          }
+        }
         try {
           const previewPdfBuffer = await convertPptxToPdfBuffer(buffer);
           const previewStored = await saveFileBuffer(
@@ -422,7 +433,7 @@ export async function POST(request: Request) {
           );
           const previewUrl = `/api/files/${previewStored.fileId}`;
           // Prefer PDF-based preview for PPTX to preserve layout and typography fidelity.
-          learningPlan = buildPptxPreviewPlan(previewPdfBuffer, previewUrl);
+          learningPlan = buildPptxPreviewPlan(previewPdfBuffer, previewUrl, mediaBySlideNumber);
         } catch (conversionError) {
           console.error("PPTX->PDF conversion failed in finalize:", conversionError);
           if (STRICT_PPTX_FIDELITY) {
@@ -433,7 +444,7 @@ export async function POST(request: Request) {
           warnings.push(
             "Không thể chuyển PPTX sang PDF preview trên môi trường hiện tại. Hệ thống đang dùng chế độ fallback (trích xuất text), nên bố cục có thể khác file gốc."
           );
-          learningPlan = await buildPptxLearningPlan(buffer, filename);
+          learningPlan = pptxFallbackPlan;
         }
       }
     }

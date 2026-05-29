@@ -228,6 +228,29 @@ async function buildPptxLearningPlan(
   };
 }
 
+function buildPptxPreviewPlan(
+  previewPdfBuffer: Buffer,
+  previewUrl: string,
+  mediaBySlideNumber?: Map<number, LearningStepMedia[]>
+): LearningPlan {
+  const pageCount = countPdfPages(previewPdfBuffer);
+  return {
+    sourceType: "pptx",
+    generatedAt: new Date().toISOString(),
+    previewUrl,
+    steps: Array.from({ length: pageCount }, (_, index) => ({
+      id: `slide-${index + 1}`,
+      title: `Slide ${index + 1}`,
+      kind: "slide" as const,
+      slideNumber: index + 1,
+      pageNumber: index + 1,
+      content: "",
+      estimatedSeconds: 25,
+      media: mediaBySlideNumber?.get(index + 1) ?? [],
+    })),
+  };
+}
+
 async function convertPptxToPdfBuffer(buffer: Buffer) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "fwf-pptx-"));
   const inputBase = `input-${randomUUID()}`;
@@ -269,6 +292,13 @@ export async function POST(request: Request) {
     if (lowerName.endsWith(".pdf")) {
       learningPlan = await buildPdfLearningPlan(buffer);
     } else if (lowerName.endsWith(".pptx")) {
+      const pptxFallbackPlan = await buildPptxLearningPlan(buffer, file.name);
+      const mediaBySlideNumber = new Map<number, LearningStepMedia[]>();
+      for (const step of pptxFallbackPlan?.steps ?? []) {
+        if (typeof step.slideNumber === "number" && step.media?.length) {
+          mediaBySlideNumber.set(step.slideNumber, step.media);
+        }
+      }
       let previewUrl: string | undefined;
       let previewPdfBuffer: Buffer | undefined;
       try {
@@ -284,24 +314,9 @@ export async function POST(request: Request) {
       }
       // Prefer PDF-based slide preview for better PPTX fidelity.
       if (previewUrl && previewPdfBuffer) {
-        const pageCount = countPdfPages(previewPdfBuffer);
-        learningPlan = {
-          sourceType: "pptx",
-          generatedAt: new Date().toISOString(),
-          previewUrl,
-          steps: Array.from({ length: pageCount }, (_, index) => ({
-            id: `slide-${index + 1}`,
-            title: `Slide ${index + 1}`,
-            kind: "slide" as const,
-            slideNumber: index + 1,
-            pageNumber: index + 1,
-            content: "",
-            estimatedSeconds: 25,
-            media: [],
-          })),
-        };
+        learningPlan = buildPptxPreviewPlan(previewPdfBuffer, previewUrl, mediaBySlideNumber);
       } else {
-        learningPlan = await buildPptxLearningPlan(buffer, file.name, previewUrl);
+        learningPlan = pptxFallbackPlan;
       }
     }
 
