@@ -1471,6 +1471,40 @@ function canActorViewDocument(
   return document.ownerId === actor.person.id || actor.isLeader || (document.visibleToPersonIds ?? []).includes(actor.person.id);
 }
 
+function buildOwnerUserByPersonId(rows: Array<Record<string, unknown>>) {
+  const ownerUserByPersonId = new Map<string, UserAccount>();
+  for (const row of rows) {
+    const personId = row.person_id ? String(row.person_id) : "";
+    if (!personId) continue;
+    ownerUserByPersonId.set(personId, {
+      id: String(row.id ?? row._id ?? ""),
+      name: String(row.name ?? ""),
+      email: String(row.email ?? ""),
+      password: "",
+      personId,
+      role: normalizeUserRole(String(row.role ?? "employee") as StoredUserRole),
+      department: (row.department as Department | undefined) ?? "Vận hành",
+      storeRegion: undefined,
+      storeBranchIds: [],
+      storeLeadUserId: row.store_lead_user_id ? String(row.store_lead_user_id) : undefined,
+      verified: Boolean(row.verified ?? true),
+    });
+  }
+  return ownerUserByPersonId;
+}
+
+function buildPersonRolesMap(rows: Array<Record<string, unknown>>) {
+  const personRolesMap = new Map<string, Set<UserRole>>();
+  for (const row of rows) {
+    const personId = row.person_id ? String(row.person_id) : "";
+    if (!personId) continue;
+    const roles = personRolesMap.get(personId) ?? new Set<UserRole>();
+    roles.add(normalizeUserRole(String(row.role ?? "employee") as StoredUserRole));
+    personRolesMap.set(personId, roles);
+  }
+  return personRolesMap;
+}
+
 function documentContainsFileId(document: DbDocument, fileId: string) {
   const pickFileId = (url?: string) => url?.match(/\/api\/files\/([^/?#]+)/)?.[1];
   if (pickFileId(document.url) === fileId) return true;
@@ -1494,21 +1528,15 @@ export async function canAccessFileById(
     const [docsRes, peopleRes, usersRes] = await Promise.all([
       pgQuery("select * from documents"),
       pgQuery("select id, team_id from people"),
-      pgQuery("select person_id, role from users where person_id is not null"),
+      pgQuery("select id, name, email, person_id, role, department, store_lead_user_id, verified from users where person_id is not null"),
     ]);
     const documents = docsRes.rows.map((row) => mapPgDocumentRow(row));
     const target = documents.find((document) => documentContainsFileId(document, fileId));
     if (!target) return true;
     const personTeamMap = new Map(peopleRes.rows.map((row) => [String(row.id), String(row.team_id)]));
-    const personRolesMap = new Map<string, Set<UserRole>>();
-    for (const row of usersRes.rows) {
-      const personId = row.person_id ? String(row.person_id) : "";
-      if (!personId) continue;
-      const roles = personRolesMap.get(personId) ?? new Set<UserRole>();
-      roles.add(normalizeUserRole(String(row.role ?? "employee") as StoredUserRole));
-      personRolesMap.set(personId, roles);
-    }
-    if (!canActorViewDocument(actor, target, personTeamMap, personRolesMap)) return false;
+    const personRolesMap = buildPersonRolesMap(usersRes.rows);
+    const ownerUserByPersonId = buildOwnerUserByPersonId(usersRes.rows);
+    if (!canActorViewDocument(actor, target, personTeamMap, personRolesMap, ownerUserByPersonId)) return false;
     return !isDocumentLockedForActor(actor, target);
   }
 
@@ -1516,19 +1544,21 @@ export async function canAccessFileById(
   const [docs, allPeople, allUsers] = await Promise.all([
     db.collection<DbDocument>("documents").find().toArray(),
     db.collection<DbPerson>("people").find({}, { projection: { _id: 1, teamId: 1 } }).toArray(),
-    db.collection<DbUser>("users").find({}, { projection: { personId: 1, role: 1 } }).toArray(),
+    db.collection<DbUser>("users").find({}, { projection: { _id: 1, name: 1, email: 1, personId: 1, role: 1, department: 1, storeLeadUserId: 1, verified: 1 } }).toArray(),
   ]);
   const target = docs.find((document) => documentContainsFileId(document, fileId));
   if (!target) return true;
   const personTeamMap = new Map(allPeople.map((person) => [person._id, person.teamId]));
   const personRolesMap = new Map<string, Set<UserRole>>();
+  const ownerUserByPersonId = new Map<string, UserAccount>();
   for (const user of allUsers) {
     if (!user.personId) continue;
     const roles = personRolesMap.get(user.personId) ?? new Set<UserRole>();
     roles.add(normalizeUserRole(user.role));
     personRolesMap.set(user.personId, roles);
+    ownerUserByPersonId.set(user.personId, mapDbUser(user));
   }
-  if (!canActorViewDocument(actor, target, personTeamMap, personRolesMap)) return false;
+  if (!canActorViewDocument(actor, target, personTeamMap, personRolesMap, ownerUserByPersonId)) return false;
   return !isDocumentLockedForActor(actor, target);
 }
 
@@ -6604,15 +6634,24 @@ export async function upsertMyLearningProgress(
   if (!actor) throw new Error("Unauthorized");
 
   if (shouldUseSupabasePhaseA()) {
-    const [documentRes, peopleRes] = await Promise.all([
+    const [documentRes, peopleRes, usersRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [input.documentId]),
       pgQuery("select id,team_id from people"),
+      pgQuery("select id, name, email, person_id, role, department, store_lead_user_id, verified from users where person_id is not null"),
     ]);
     const documentRow = documentRes.rows[0];
     if (!documentRow) throw new Error("Document not found.");
     const document = mapPgDocumentRow(documentRow);
-    const ownerTeamByPersonId = new Map(peopleRes.rows.map((row) => [String(row.id), normalizeTeamId(String(row.team_id))]));
-    const canLearnViaPersonalVisibility = canPersonAccessDocument(actor.person, document, ownerTeamByPersonId);
+    const personTeamMap = new Map(peopleRes.rows.map((row) => [String(row.id), normalizeTeamId(String(row.team_id))]));
+    const personRolesMap = buildPersonRolesMap(usersRes.rows);
+    const ownerUserByPersonId = buildOwnerUserByPersonId(usersRes.rows);
+    const canLearnViaPersonalVisibility = canActorViewDocument(
+      actor,
+      document,
+      personTeamMap,
+      personRolesMap,
+      ownerUserByPersonId
+    );
     const canLearnViaManagementScope = canViewTeamLearningReports(actor) && canAccessPerson(actor, document.ownerId);
     if (!canLearnViaPersonalVisibility && !canLearnViaManagementScope) throw new Error("Forbidden");
 
@@ -6667,17 +6706,33 @@ export async function upsertMyLearningProgress(
   }
 
   const db = await getMongoDb();
-  const [document, people] = await Promise.all([
+  const [document, people, users] = await Promise.all([
     db.collection<DbDocument>("documents").findOne({ _id: input.documentId }),
     db.collection<DbPerson>("people").find({}, { projection: { _id: 1, teamId: 1 } }).toArray(),
+    db.collection<DbUser>("users").find({}, { projection: { _id: 1, name: 1, email: 1, personId: 1, role: 1, department: 1, storeLeadUserId: 1, verified: 1 } }).toArray(),
   ]);
 
   if (!document) throw new Error("Document not found.");
 
-  const ownerTeamByPersonId = new Map(
+  const personTeamMap = new Map(
     people.map((person) => [person._id, normalizeTeamId(person.teamId)])
   );
-  const canLearnViaPersonalVisibility = canPersonAccessDocument(actor.person, document, ownerTeamByPersonId);
+  const personRolesMap = new Map<string, Set<UserRole>>();
+  const ownerUserByPersonId = new Map<string, UserAccount>();
+  for (const user of users) {
+    if (!user.personId) continue;
+    const roles = personRolesMap.get(user.personId) ?? new Set<UserRole>();
+    roles.add(normalizeUserRole(user.role));
+    personRolesMap.set(user.personId, roles);
+    ownerUserByPersonId.set(user.personId, mapDbUser(user));
+  }
+  const canLearnViaPersonalVisibility = canActorViewDocument(
+    actor,
+    document,
+    personTeamMap,
+    personRolesMap,
+    ownerUserByPersonId
+  );
   const canLearnViaManagementScope =
     canViewTeamLearningReports(actor) && canAccessPerson(actor, document.ownerId);
   if (!canLearnViaPersonalVisibility && !canLearnViaManagementScope) {

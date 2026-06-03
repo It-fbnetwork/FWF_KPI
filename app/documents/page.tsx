@@ -418,19 +418,38 @@ export default function DocumentsPage() {
 
     useEffect(() => {
         const onFullscreenChange = () => {
-            setIsLearningFullscreen(document.fullscreenElement === learningViewerRef.current)
+            const isNative = document.fullscreenElement === learningViewerRef.current
+            if (!isNative && !isMobile) {
+                setIsLearningFullscreen(false)
+            }
         }
         document.addEventListener("fullscreenchange", onFullscreenChange)
         return () => document.removeEventListener("fullscreenchange", onFullscreenChange)
-    }, [])
+    }, [isMobile])
+
+    useEffect(() => {
+        if (!isLearningFullscreen) return
+        const previousOverflow = document.body.style.overflow
+        document.body.style.overflow = "hidden"
+        return () => {
+            document.body.style.overflow = previousOverflow
+        }
+    }, [isLearningFullscreen])
 
     const handleToggleLearningFullscreen = useCallback(async (fallbackUrl?: string) => {
         try {
-            if (document.fullscreenElement === learningViewerRef.current) {
-                await document.exitFullscreen()
+            if (isLearningFullscreen) {
+                if (document.fullscreenElement === learningViewerRef.current) {
+                    await document.exitFullscreen()
+                }
+                setIsLearningFullscreen(false)
                 return
             }
             if (!learningViewerRef.current) return
+            if (isMobile) {
+                setIsLearningFullscreen(true)
+                return
+            }
             if (typeof learningViewerRef.current.requestFullscreen !== "function") {
                 if (fallbackUrl) {
                     window.open(fallbackUrl, "_blank", "noopener,noreferrer")
@@ -439,6 +458,7 @@ export default function DocumentsPage() {
                 throw new Error("fullscreen-not-supported")
             }
             await learningViewerRef.current.requestFullscreen()
+            setIsLearningFullscreen(true)
         } catch {
             if (fallbackUrl && isMobile) {
                 window.open(fallbackUrl, "_blank", "noopener,noreferrer")
@@ -450,7 +470,7 @@ export default function DocumentsPage() {
                 variant: "destructive",
             })
         }
-    }, [isMobile])
+    }, [isLearningFullscreen, isMobile])
     const officeRoleOptions = useMemo(() => {
         const roles = new Set(officeSelectablePeople.map((person) => person.role))
         if (currentPerson?.team === "store") {
@@ -2443,7 +2463,7 @@ export default function DocumentsPage() {
                                         <div
                                             ref={learningViewerRef}
                                             className={`bg-white dark:bg-gray-900 rounded-2xl overflow-hidden shadow-sm border border-gray-200 dark:border-gray-800 ${
-                                                isLearningFullscreen ? "h-screen w-screen overflow-y-auto overflow-x-hidden rounded-none border-0" : ""
+                                                isLearningFullscreen ? "fixed inset-0 z-50 h-[100dvh] w-screen overflow-y-auto overflow-x-hidden rounded-none border-0" : ""
                                             }`}
                                         >
                                             {/* Preview area */}

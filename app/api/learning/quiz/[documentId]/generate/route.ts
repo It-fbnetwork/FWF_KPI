@@ -28,6 +28,9 @@ type NormalizedQuestion = {
   explanation: string;
 };
 
+const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+const MIN_DOCUMENT_TEXT_CHARS = 500;
+
 function normalizeTextForPrompt(text: string) {
   return text
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, " ")
@@ -193,7 +196,8 @@ export async function POST(request: Request, { params }: Params) {
     const previewFile = await getFileByApiUrl(doc.learningPlan?.previewUrl);
     const previewFileBuffer = previewFile?.buffer ?? null;
 
-    const textFromPlanLooksBad = isLikelyMojibake(textContent);
+    const textFromPlanLooksBad =
+      textContent.length < MIN_DOCUMENT_TEXT_CHARS || isLikelyMojibake(textContent);
     if (textFromPlanLooksBad) textContent = "";
 
     // PPTX->PDF pipeline: when slides in learningPlan don't contain text, use preview PDF text.
@@ -236,7 +240,7 @@ Trả về JSON theo đúng cấu trúc:
     if (!rawContent && doc.type === "pdf" && originalFileBuffer && geminiApiKey) {
       try {
         const genAI = new GoogleGenerativeAI(geminiApiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
         const pdfResult = await model.generateContent([
           {
             text: `${baseSystemPrompt}\n\n${baseUserPrompt}\n\nTên tài liệu: "${doc.name}". Dựa vào file PDF đính kèm, chỉ trả về JSON.`,
@@ -339,7 +343,7 @@ ${cleanedText}`,
     if (!rawContent && geminiApiKey && textContent) {
       try {
         const genAI = new GoogleGenerativeAI(geminiApiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
         const cleanedText = normalizeTextForPrompt(textContent).slice(0, 25000);
         const geminiPrompt = `${baseSystemPrompt}
 
