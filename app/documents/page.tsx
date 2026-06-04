@@ -69,6 +69,10 @@ type LearningQuizQuestion = {
     explanation?: string
 }
 
+type LockableScreenOrientation = ScreenOrientation & {
+    lock?: (orientation: "landscape" | "portrait" | "any" | "natural") => Promise<void>
+}
+
 type LearningQuizRecord = {
     id: string
     documentId: string
@@ -232,6 +236,7 @@ interface VisibilityDialogState {
 }
 
 const LEARNING_REQUIRED_SECONDS = 10
+const LANDSCAPE_HINT_DURATION_MS = 4500
 
 type LearningProgressState = {
     completedDocIds: string[]
@@ -385,6 +390,7 @@ export default function DocumentsPage() {
     const [learningRemainingSeconds, setLearningRemainingSeconds] = useState(LEARNING_REQUIRED_SECONDS)
     const [videoProgressByDocId, setVideoProgressByDocId] = useState<Record<string, { current: number; duration: number }>>({})
     const [isLearningFullscreen, setIsLearningFullscreen] = useState(false)
+    const [showLandscapeHint, setShowLandscapeHint] = useState(false)
 
     const contextMenuRef = useRef<HTMLDivElement>(null)
     const quizTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -416,16 +422,71 @@ export default function DocumentsPage() {
         if (isMobile) setIsLearningSidebarCollapsed(false)
     }, [isMobile])
 
+    const unlockLearningOrientation = useCallback(() => {
+        if (typeof screen === "undefined") return
+        try {
+            screen.orientation?.unlock?.()
+        } catch {
+            // Some browsers expose the API but throw when orientation was not locked.
+        }
+    }, [])
+
+    const lockLearningLandscape = useCallback(async () => {
+        const orientation = typeof screen === "undefined" ? undefined : (screen.orientation as LockableScreenOrientation | undefined)
+        if (!isMobile || typeof orientation?.lock !== "function") {
+            return false
+        }
+        try {
+            await orientation.lock("landscape")
+            return true
+        } catch {
+            return false
+        }
+    }, [isMobile])
+
+    const isLandscapeViewport = useCallback(() => {
+        if (typeof window === "undefined") return false
+        return window.matchMedia?.("(orientation: landscape)").matches || window.innerWidth > window.innerHeight
+    }, [])
+
+    useEffect(() => {
+        if (!isMobile || !isLearningFullscreen) return
+
+        setShowLandscapeHint(!isLandscapeViewport())
+
+        const onOrientationChange = () => {
+            setShowLandscapeHint(!isLandscapeViewport())
+        }
+        window.addEventListener("orientationchange", onOrientationChange)
+        window.addEventListener("resize", onOrientationChange)
+        const timer = window.setTimeout(() => setShowLandscapeHint(false), LANDSCAPE_HINT_DURATION_MS)
+
+        return () => {
+            window.clearTimeout(timer)
+            window.removeEventListener("orientationchange", onOrientationChange)
+            window.removeEventListener("resize", onOrientationChange)
+        }
+    }, [isLandscapeViewport, isLearningFullscreen, isMobile])
+
     useEffect(() => {
         const onFullscreenChange = () => {
             const isNative = document.fullscreenElement === learningViewerRef.current
-            if (!isNative && !isMobile) {
+            if (!document.fullscreenElement && isLearningFullscreen) {
                 setIsLearningFullscreen(false)
+                setShowLandscapeHint(false)
+                unlockLearningOrientation()
+                return
+            }
+            if (isNative && isMobile) {
+                setShowLandscapeHint(!isLandscapeViewport())
+                void lockLearningLandscape().then(() => {
+                    if (isLandscapeViewport()) setShowLandscapeHint(false)
+                })
             }
         }
         document.addEventListener("fullscreenchange", onFullscreenChange)
         return () => document.removeEventListener("fullscreenchange", onFullscreenChange)
-    }, [isMobile])
+    }, [isLandscapeViewport, isLearningFullscreen, isMobile, lockLearningLandscape, unlockLearningOrientation])
 
     useEffect(() => {
         if (!isLearningFullscreen) return
@@ -433,8 +494,10 @@ export default function DocumentsPage() {
         document.body.style.overflow = "hidden"
         return () => {
             document.body.style.overflow = previousOverflow
+            setShowLandscapeHint(false)
+            unlockLearningOrientation()
         }
-    }, [isLearningFullscreen])
+    }, [isLearningFullscreen, unlockLearningOrientation])
 
     const handleToggleLearningFullscreen = useCallback(async (fallbackUrl?: string) => {
         try {
@@ -443,11 +506,23 @@ export default function DocumentsPage() {
                     await document.exitFullscreen()
                 }
                 setIsLearningFullscreen(false)
+                setShowLandscapeHint(false)
+                unlockLearningOrientation()
                 return
             }
             if (!learningViewerRef.current) return
             if (isMobile) {
+                if (typeof learningViewerRef.current.requestFullscreen === "function" && !document.fullscreenElement) {
+                    try {
+                        await learningViewerRef.current.requestFullscreen()
+                    } catch {
+                        // iOS Safari commonly rejects Fullscreen API for regular elements.
+                    }
+                }
                 setIsLearningFullscreen(true)
+                setShowLandscapeHint(!isLandscapeViewport())
+                await lockLearningLandscape()
+                if (isLandscapeViewport()) setShowLandscapeHint(false)
                 return
             }
             if (typeof learningViewerRef.current.requestFullscreen !== "function") {
@@ -470,7 +545,7 @@ export default function DocumentsPage() {
                 variant: "destructive",
             })
         }
-    }, [isLearningFullscreen, isMobile])
+    }, [isLandscapeViewport, isLearningFullscreen, isMobile, lockLearningLandscape, unlockLearningOrientation])
     const officeRoleOptions = useMemo(() => {
         const roles = new Set(officeSelectablePeople.map((person) => person.role))
         if (currentPerson?.team === "store") {
@@ -2462,10 +2537,18 @@ export default function DocumentsPage() {
                                         {/* Document viewer card */}
                                         <div
                                             ref={learningViewerRef}
-                                            className={`bg-white dark:bg-gray-900 rounded-2xl overflow-hidden shadow-sm border border-gray-200 dark:border-gray-800 ${
+                                            className={`relative bg-white dark:bg-gray-900 rounded-2xl overflow-hidden shadow-sm border border-gray-200 dark:border-gray-800 ${
                                                 isLearningFullscreen ? "fixed inset-0 z-50 h-[100dvh] w-screen overflow-y-auto overflow-x-hidden rounded-none border-0" : ""
                                             }`}
                                         >
+                                            {isMobile && isLearningFullscreen && showLandscapeHint && (
+                                                <div className="pointer-events-none fixed left-1/2 top-3 z-[60] -translate-x-1/2 rounded-full bg-gray-950/85 px-3 py-2 text-xs font-medium text-white shadow-lg backdrop-blur">
+                                                    <span className="inline-flex items-center gap-1.5">
+                                                        <RotateCcw className="h-3.5 w-3.5" />
+                                                        Xoay ngang để xem rộng hơn
+                                                    </span>
+                                                </div>
+                                            )}
                                             {/* Preview area */}
                                             {hasLearningPlan && activePlanStep ? (
                                                 <div className="p-4 md:p-6 space-y-4 bg-[linear-gradient(180deg,rgba(241,245,249,0.85),rgba(248,250,252,0.95))] dark:bg-gray-900">
