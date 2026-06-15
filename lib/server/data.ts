@@ -1631,31 +1631,15 @@ function mapDbQuizAttemptReset(
 }
 
 function computeAttemptRoundByPerson(attempts: DbQuizAttempt[], resets: DbQuizAttemptReset[]) {
-  const personResetMap = new Map<string, string[]>();
-  for (const reset of resets) {
-    const arr = personResetMap.get(reset.personId) ?? [];
-    arr.push(reset.resetAt);
-    personResetMap.set(reset.personId, arr);
-  }
-  for (const [personId, resetAts] of personResetMap) {
-    resetAts.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-    personResetMap.set(personId, resetAts);
-  }
-
   const rounds = new Map<string, number>();
+  const personAttemptCounts = new Map<string, number>();
   const ordered = [...attempts].sort(
     (a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime()
   );
   for (const attempt of ordered) {
-    const resetAts = personResetMap.get(attempt.personId) ?? [];
-    const attemptAt = new Date(attempt.submittedAt).getTime();
-    let round = 1;
-    for (const resetAt of resetAts) {
-      if (attemptAt > new Date(resetAt).getTime()) {
-        round += 1;
-      }
-    }
-    rounds.set(attempt._id, round);
+    const nextRound = (personAttemptCounts.get(attempt.personId) ?? 0) + 1;
+    personAttemptCounts.set(attempt.personId, nextRound);
+    rounds.set(attempt._id, nextRound);
   }
   return rounds;
 }
@@ -5951,6 +5935,7 @@ export async function submitQuizAttempt(
   answers: number[],
   startedAt: string
 ): Promise<QuizAttemptRecord> {
+  const passScore = 90;
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
   if (actor.user.role === "store_trainer") throw new Error("Forbidden");
@@ -5960,7 +5945,7 @@ export async function submitQuizAttempt(
 
     const [latestAttemptRes, latestResetRes] = await Promise.all([
       pgQuery(
-        "select submitted_at from quiz_attempts where document_id = $1 and person_id = $2 order by submitted_at desc nulls last limit 1",
+        "select submitted_at, score from quiz_attempts where document_id = $1 and person_id = $2 order by submitted_at desc nulls last limit 1",
         [documentId, actor.person.id]
       ),
       pgQuery(
@@ -5969,8 +5954,13 @@ export async function submitQuizAttempt(
       ),
     ]);
     const latestAttemptAt = toIsoStringOrUndefined(latestAttemptRes.rows[0]?.submitted_at);
+    const latestAttemptScore = Number(latestAttemptRes.rows[0]?.score ?? 0);
     const latestResetAt = toIsoStringOrUndefined(latestResetRes.rows[0]?.reset_at);
-    if (latestAttemptAt && (!latestResetAt || new Date(latestAttemptAt).getTime() > new Date(latestResetAt).getTime())) {
+    if (
+      latestAttemptAt &&
+      latestAttemptScore >= passScore &&
+      (!latestResetAt || new Date(latestAttemptAt).getTime() > new Date(latestResetAt).getTime())
+    ) {
       throw new Error("Bạn đã hoàn thành bài kiểm tra này rồi.");
     }
 
@@ -6013,10 +6003,10 @@ export async function submitQuizAttempt(
       explanation: q.explanation,
     }));
     const roundRes = await pgQuery(
-      "select count(*)::int as count from quiz_attempt_resets where document_id = $1 and person_id = $2 and reset_at < $3::timestamptz",
+      "select count(*)::int as count from quiz_attempts where document_id = $1 and person_id = $2 and submitted_at <= $3::timestamptz",
       [documentId, actor.person.id, attempt.submittedAt]
     );
-    const attemptRound = Number(roundRes.rows[0]?.count ?? 0) + 1;
+    const attemptRound = Math.max(1, Number(roundRes.rows[0]?.count ?? 1));
     return mapDbQuizAttempt(attempt, actor.person.name, actor.person.role, reviewQuestions, attemptRound, true);
   }
 
@@ -6025,7 +6015,11 @@ export async function submitQuizAttempt(
     db.collection<DbQuizAttempt>("quiz_attempts").find({ documentId, personId: actor.person.id }, { sort: { submittedAt: -1 } }).limit(1).next(),
     db.collection<DbQuizAttemptReset>("quiz_attempt_resets").find({ documentId, personId: actor.person.id }, { sort: { resetAt: -1 } }).limit(1).next(),
   ]);
-  if (latestAttempt && (!latestReset || new Date(latestAttempt.submittedAt).getTime() > new Date(latestReset.resetAt).getTime())) {
+  if (
+    latestAttempt &&
+    latestAttempt.score >= passScore &&
+    (!latestReset || new Date(latestAttempt.submittedAt).getTime() > new Date(latestReset.resetAt).getTime())
+  ) {
     throw new Error("Bạn đã hoàn thành bài kiểm tra này rồi.");
   }
 
@@ -6061,18 +6055,19 @@ export async function submitQuizAttempt(
     explanation: q.explanation,
   }));
 
-  const resetCount = await db.collection<DbQuizAttemptReset>("quiz_attempt_resets").countDocuments({
+  const attemptRound = await db.collection<DbQuizAttempt>("quiz_attempts").countDocuments({
     documentId,
     personId: actor.person.id,
-    resetAt: { $lt: attempt.submittedAt },
+    submittedAt: { $lte: attempt.submittedAt },
   });
-  return mapDbQuizAttempt(attempt, actor.person.name, actor.person.role, reviewQuestions, resetCount + 1, true);
+  return mapDbQuizAttempt(attempt, actor.person.name, actor.person.role, reviewQuestions, Math.max(1, attemptRound), true);
 }
 
 export async function getMyQuizAttempt(
   sessionUserId: string | null | undefined,
   documentId: string
 ): Promise<QuizAttemptRecord | null> {
+  const passScore = 90;
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
 
@@ -6095,11 +6090,12 @@ export async function getMyQuizAttempt(
     if (latestResetAt && new Date(attempt.submittedAt).getTime() < new Date(latestResetAt).getTime()) {
       return null;
     }
+    if (attempt.score < passScore) return null;
     const roundRes = await pgQuery(
-      "select count(*)::int as count from quiz_attempt_resets where document_id = $1 and person_id = $2 and reset_at < $3::timestamptz",
+      "select count(*)::int as count from quiz_attempts where document_id = $1 and person_id = $2 and submitted_at <= $3::timestamptz",
       [documentId, actor.person.id, attempt.submittedAt]
     );
-    const attemptRound = Number(roundRes.rows[0]?.count ?? 0) + 1;
+    const attemptRound = Math.max(1, Number(roundRes.rows[0]?.count ?? 1));
     return mapDbQuizAttempt(attempt, undefined, undefined, undefined, attemptRound, true);
   }
 
@@ -6110,12 +6106,13 @@ export async function getMyQuizAttempt(
   ]);
   if (!attempt) return null;
   if (latestReset && new Date(attempt.submittedAt).getTime() < new Date(latestReset.resetAt).getTime()) return null;
-  const resetCount = await db.collection<DbQuizAttemptReset>("quiz_attempt_resets").countDocuments({
+  if (attempt.score < passScore) return null;
+  const attemptRound = await db.collection<DbQuizAttempt>("quiz_attempts").countDocuments({
     documentId,
     personId: actor.person.id,
-    resetAt: { $lt: attempt.submittedAt },
+    submittedAt: { $lte: attempt.submittedAt },
   });
-  return mapDbQuizAttempt(attempt, undefined, undefined, undefined, resetCount + 1, true);
+  return mapDbQuizAttempt(attempt, undefined, undefined, undefined, Math.max(1, attemptRound), true);
 }
 
 export async function getTeamQuizAttempts(
@@ -6145,6 +6142,20 @@ export async function getTeamQuizAttempts(
       const prev = latestResetAtByPerson.get(reset.personId);
       if (!prev || new Date(reset.resetAt).getTime() > new Date(prev).getTime()) {
         latestResetAtByPerson.set(reset.personId, reset.resetAt);
+      }
+    }
+    const latestActiveAttemptIdByPerson = new Map<string, string>();
+    for (const attempt of attempts) {
+      const latestResetAt = latestResetAtByPerson.get(attempt.personId);
+      if (latestResetAt && new Date(attempt.submittedAt).getTime() < new Date(latestResetAt).getTime()) continue;
+      const currentId = latestActiveAttemptIdByPerson.get(attempt.personId);
+      if (!currentId) {
+        latestActiveAttemptIdByPerson.set(attempt.personId, attempt._id);
+        continue;
+      }
+      const current = attempts.find((item) => item._id === currentId);
+      if (!current || new Date(attempt.submittedAt).getTime() > new Date(current.submittedAt).getTime()) {
+        latestActiveAttemptIdByPerson.set(attempt.personId, attempt._id);
       }
     }
     const people = peopleRes.rows.map((row) => mapPgPersonRow(row));
@@ -6180,11 +6191,7 @@ export async function getTeamQuizAttempts(
         peopleById.get(attempt.personId)?.role,
         undefined,
         attemptRounds.get(attempt._id),
-        (() => {
-          const latestResetAt = latestResetAtByPerson.get(attempt.personId);
-          if (!latestResetAt) return true;
-          return new Date(attempt.submittedAt).getTime() > new Date(latestResetAt).getTime();
-        })()
+        latestActiveAttemptIdByPerson.get(attempt.personId) === attempt._id
       )
     );
   }
@@ -6243,6 +6250,20 @@ export async function getTeamQuizAttempts(
       latestResetAtByPerson.set(reset.personId, reset.resetAt);
     }
   }
+  const latestActiveAttemptIdByPerson = new Map<string, string>();
+  for (const attempt of attempts) {
+    const latestResetAt = latestResetAtByPerson.get(attempt.personId);
+    if (latestResetAt && new Date(attempt.submittedAt).getTime() < new Date(latestResetAt).getTime()) continue;
+    const currentId = latestActiveAttemptIdByPerson.get(attempt.personId);
+    if (!currentId) {
+      latestActiveAttemptIdByPerson.set(attempt.personId, attempt._id);
+      continue;
+    }
+    const current = attempts.find((item) => item._id === currentId);
+    if (!current || new Date(attempt.submittedAt).getTime() > new Date(current.submittedAt).getTime()) {
+      latestActiveAttemptIdByPerson.set(attempt.personId, attempt._id);
+    }
+  }
   return scopedAttempts.map((attempt) =>
     mapDbQuizAttempt(
       attempt,
@@ -6250,11 +6271,7 @@ export async function getTeamQuizAttempts(
       peopleById.get(attempt.personId)?.role,
       undefined,
       attemptRounds.get(attempt._id),
-      (() => {
-        const latestResetAt = latestResetAtByPerson.get(attempt.personId);
-        if (!latestResetAt) return true;
-        return new Date(attempt.submittedAt).getTime() > new Date(latestResetAt).getTime();
-      })()
+      latestActiveAttemptIdByPerson.get(attempt.personId) === attempt._id
     )
   );
 }
@@ -6907,10 +6924,15 @@ export type QuizReportRow = {
   personName: string;
   teamId: string;
   teamName: string;
+  learningTotal: number;
+  learningCompleted: number;
+  learningInProgress: number;
+  learningNotStarted: number;
+  learningProgressPercent: number;
   totalAttempts: number;
   averageScore: number;
   highestScore: number;
-  lastAttemptAt: string;
+  lastAttemptAt?: string;
   attempts: QuizReportAttempt[];
 };
 
@@ -6921,30 +6943,42 @@ export async function getQuizReport(
   if (!actor) throw new Error("Unauthorized");
 
   if (shouldUseSupabasePhaseA()) {
-    let attemptRows;
-    if (actor.isAdmin) {
-      attemptRows = await pgQuery("select * from quiz_attempts order by submitted_at desc nulls last");
-    } else if (actor.isLeader) {
-      const ids = actor.teamMembers.map((m) => m.id);
-      attemptRows = ids.length
-        ? await pgQuery("select * from quiz_attempts where person_id = any($1::text[]) order by submitted_at desc nulls last", [ids])
-        : { rows: [] };
-    } else {
-      attemptRows = await pgQuery("select * from quiz_attempts where person_id = $1 order by submitted_at desc nulls last", [actor.person.id]);
-    }
-    const attempts = attemptRows.rows.map((row) => mapPgQuizAttemptRow(row));
-    if (attempts.length === 0) return [];
-
-    const [quizzesRes, docsRes, peopleRes, teamsRes] = await Promise.all([
+    const [attemptRows, quizzesRes, docsRes, peopleRes, teamsRes, progressRes] = await Promise.all([
+      pgQuery("select * from quiz_attempts order by submitted_at desc nulls last"),
       pgQuery("select id,title from learning_quizzes"),
-      pgQuery("select id,name from documents"),
-      pgQuery("select id,name,team_id from people"),
+      pgQuery("select * from documents"),
+      pgQuery("select * from people"),
       pgQuery("select id,name from company_teams"),
+      pgQuery("select * from learning_progress"),
     ]);
+    const allAttempts = attemptRows.rows.map((row) => mapPgQuizAttemptRow(row));
     const quizMap = new Map(quizzesRes.rows.map((q) => [String(q.id), String(q.title ?? "Quiz")]));
-    const docMap = new Map(docsRes.rows.map((d) => [String(d.id), String(d.name ?? "Tài liệu")]));
-    const personMap = new Map(peopleRes.rows.map((p) => [String(p.id), { name: String(p.name), teamId: String(p.team_id) }]));
+    const documents = docsRes.rows.map((row) => mapPgDocumentRow(row));
+    const docMap = new Map(documents.map((document) => [document._id, document.name]));
+    const learningDocuments = documents.filter((document) => document.isLearningMaterial);
+    const people = peopleRes.rows.map((row) => mapPgPersonRow(row));
+    const mappedPeople = people.map(mapDbPerson);
+    const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
     const teamNameMap = new Map(teamsRes.rows.map((t) => [String(t.id), String(t.name)]));
+    const progressRows = progressRes.rows.map((row) => mapPgLearningProgressRow(row));
+
+    const targetPeople = actor.isAdmin
+      ? mappedPeople
+      : actor.isLeader
+        ? actor.teamMembers
+        : [actor.person];
+    const targetPersonIds = new Set(targetPeople.map((person) => person.id));
+    const attempts = allAttempts.filter((attempt) => targetPersonIds.has(attempt.personId));
+    const attemptDocIdsByPerson = new Map<string, Set<string>>();
+    for (const attempt of attempts) {
+      const docIds = attemptDocIdsByPerson.get(attempt.personId) ?? new Set<string>();
+      docIds.add(attempt.documentId);
+      attemptDocIdsByPerson.set(attempt.personId, docIds);
+    }
+    const progressByPersonAndDocument = new Map<string, DbLearningProgress>();
+    for (const progress of progressRows) {
+      progressByPersonAndDocument.set(`${progress.personId}:${progress.documentId}`, progress);
+    }
 
     const grouped = new Map<string, DbQuizAttempt[]>();
     for (const attempt of attempts) {
@@ -6954,9 +6988,30 @@ export async function getQuizReport(
     }
 
     const rows: QuizReportRow[] = [];
-    for (const [personId, personAttempts] of grouped) {
-      const person = personMap.get(personId);
-      if (!person) continue;
+    for (const person of targetPeople) {
+      const personAttempts = grouped.get(person.id) ?? [];
+      const accessibleLearningDocuments = learningDocuments.filter((document) =>
+        canPersonAccessDocument(person, document, ownerTeamByPersonId) && !document.isLocked
+      );
+      const attemptedDocIds = attemptDocIdsByPerson.get(person.id) ?? new Set<string>();
+      let learningCompleted = 0;
+      let learningInProgress = 0;
+      for (const document of accessibleLearningDocuments) {
+        const progress = progressByPersonAndDocument.get(`${person.id}:${document._id}`);
+        const hasStarted =
+          Boolean(progress?.startedAt) ||
+          (progress?.activeStepIndex ?? 0) > 0 ||
+          (progress?.completedStepIds?.length ?? 0) > 0 ||
+          Object.keys(progress?.startedAtByStepId ?? {}).length > 0;
+        const completed = Boolean(progress?.completedAt) || attemptedDocIds.has(document._id);
+        if (completed) {
+          learningCompleted++;
+        } else if (hasStarted) {
+          learningInProgress++;
+        }
+      }
+      const learningTotal = accessibleLearningDocuments.length;
+      const learningNotStarted = Math.max(learningTotal - learningCompleted - learningInProgress, 0);
       const attemptDetails: QuizReportAttempt[] = personAttempts.map((a) => ({
         quizId: a.quizId,
         documentId: a.documentId,
@@ -6969,27 +7024,31 @@ export async function getQuizReport(
       }));
       const scores = personAttempts.map((a) => a.score);
       rows.push({
-        personId,
+        personId: person.id,
         personName: person.name,
-        teamId: person.teamId,
-        teamName: teamNameMap.get(person.teamId) ?? person.teamId,
+        teamId: person.team,
+        teamName: teamNameMap.get(person.team) ?? person.team,
+        learningTotal,
+        learningCompleted,
+        learningInProgress,
+        learningNotStarted,
+        learningProgressPercent: learningTotal > 0 ? Math.round((learningCompleted / learningTotal) * 100) : 0,
         totalAttempts: personAttempts.length,
-        averageScore: Math.round(scores.reduce((s, v) => s + v, 0) / scores.length),
-        highestScore: Math.max(...scores),
-        lastAttemptAt: personAttempts[0]!.submittedAt,
+        averageScore: scores.length > 0 ? Math.round(scores.reduce((s, v) => s + v, 0) / scores.length) : 0,
+        highestScore: scores.length > 0 ? Math.max(...scores) : 0,
+        lastAttemptAt: personAttempts[0]?.submittedAt,
         attempts: attemptDetails,
       });
     }
-    rows.sort((a, b) => b.averageScore - a.averageScore);
+    rows.sort((a, b) => b.learningProgressPercent - a.learningProgressPercent || b.averageScore - a.averageScore);
     return rows;
   }
 
   const db = await getMongoDb();
 
-  // Determine which personIds we can see
   let personIdFilter: string[] | null = null;
   if (actor.isAdmin) {
-    personIdFilter = null; // all
+    personIdFilter = null;
   } else if (actor.isLeader) {
     personIdFilter = actor.teamMembers.map((m) => m.id);
   } else {
@@ -7002,26 +7061,33 @@ export async function getQuizReport(
     .find(attemptQuery, { sort: { submittedAt: -1 } })
     .toArray();
 
-  if (attempts.length === 0) return [];
-
-  // Load quizzes and documents in parallel
   const quizIds = [...new Set(attempts.map((a) => a.quizId))];
-  const docIds = [...new Set(attempts.map((a) => a.documentId))];
-  const personIds = [...new Set(attempts.map((a) => a.personId))];
 
-  const [quizzes, documents, people, companyTeams] = await Promise.all([
+  const [quizzes, documents, people, companyTeams, progresses] = await Promise.all([
     db.collection<DbLearningQuiz>("learning_quizzes").find({ _id: { $in: quizIds } }).toArray(),
-    db.collection<DbDocument>("documents").find({ _id: { $in: docIds } }, { projection: { _id: 1, name: 1 } }).toArray(),
-    db.collection<DbPerson>("people").find({ _id: { $in: personIds } }).toArray(),
+    db.collection<DbDocument>("documents").find({}).toArray(),
+    db.collection<DbPerson>("people").find(personIdFilter ? { _id: { $in: personIdFilter } } : {}).toArray(),
     db.collection<DbCompanyTeam>("company_teams").find({}).toArray(),
+    db.collection<DbLearningProgress>("learning_progress").find(personIdFilter ? { personId: { $in: personIdFilter } } : {}).toArray(),
   ]);
 
   const quizMap = new Map(quizzes.map((q) => [q._id, q]));
   const docMap = new Map(documents.map((d) => [d._id, d.name]));
-  const personMap = new Map(people.map((p) => [p._id, p]));
   const teamNameMap = new Map(companyTeams.map((t) => [t._id, t.name]));
+  const mappedPeople = people.map(mapDbPerson);
+  const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
+  const learningDocuments = documents.filter((document) => document.isLearningMaterial);
+  const progressByPersonAndDocument = new Map<string, DbLearningProgress>();
+  for (const progress of progresses) {
+    progressByPersonAndDocument.set(`${progress.personId}:${progress.documentId}`, progress);
+  }
+  const attemptDocIdsByPerson = new Map<string, Set<string>>();
+  for (const attempt of attempts) {
+    const docIds = attemptDocIdsByPerson.get(attempt.personId) ?? new Set<string>();
+    docIds.add(attempt.documentId);
+    attemptDocIdsByPerson.set(attempt.personId, docIds);
+  }
 
-  // Group attempts by person
   const grouped = new Map<string, DbQuizAttempt[]>();
   for (const attempt of attempts) {
     const list = grouped.get(attempt.personId) ?? [];
@@ -7030,9 +7096,30 @@ export async function getQuizReport(
   }
 
   const rows: QuizReportRow[] = [];
-  for (const [personId, personAttempts] of grouped) {
-    const person = personMap.get(personId);
-    if (!person) continue;
+  for (const person of mappedPeople) {
+    const personAttempts = grouped.get(person.id) ?? [];
+    const accessibleLearningDocuments = learningDocuments.filter((document) =>
+      canPersonAccessDocument(person, document, ownerTeamByPersonId) && !document.isLocked
+    );
+    const attemptedDocIds = attemptDocIdsByPerson.get(person.id) ?? new Set<string>();
+    let learningCompleted = 0;
+    let learningInProgress = 0;
+    for (const document of accessibleLearningDocuments) {
+      const progress = progressByPersonAndDocument.get(`${person.id}:${document._id}`);
+      const hasStarted =
+        Boolean(progress?.startedAt) ||
+        (progress?.activeStepIndex ?? 0) > 0 ||
+        (progress?.completedStepIds?.length ?? 0) > 0 ||
+        Object.keys(progress?.startedAtByStepId ?? {}).length > 0;
+      const completed = Boolean(progress?.completedAt) || attemptedDocIds.has(document._id);
+      if (completed) {
+        learningCompleted++;
+      } else if (hasStarted) {
+        learningInProgress++;
+      }
+    }
+    const learningTotal = accessibleLearningDocuments.length;
+    const learningNotStarted = Math.max(learningTotal - learningCompleted - learningInProgress, 0);
 
     const attemptDetails: QuizReportAttempt[] = personAttempts.map((a) => ({
       quizId: a.quizId,
@@ -7047,20 +7134,24 @@ export async function getQuizReport(
 
     const scores = personAttempts.map((a) => a.score);
     rows.push({
-      personId,
+      personId: person.id,
       personName: person.name,
-      teamId: person.teamId,
-      teamName: teamNameMap.get(person.teamId) ?? person.teamId,
+      teamId: person.team,
+      teamName: teamNameMap.get(person.team) ?? person.team,
+      learningTotal,
+      learningCompleted,
+      learningInProgress,
+      learningNotStarted,
+      learningProgressPercent: learningTotal > 0 ? Math.round((learningCompleted / learningTotal) * 100) : 0,
       totalAttempts: personAttempts.length,
-      averageScore: Math.round(scores.reduce((s, v) => s + v, 0) / scores.length),
-      highestScore: Math.max(...scores),
-      lastAttemptAt: personAttempts[0]!.submittedAt,
+      averageScore: scores.length > 0 ? Math.round(scores.reduce((s, v) => s + v, 0) / scores.length) : 0,
+      highestScore: scores.length > 0 ? Math.max(...scores) : 0,
+      lastAttemptAt: personAttempts[0]?.submittedAt,
       attempts: attemptDetails,
     });
   }
 
-  // Sort by average score desc
-  rows.sort((a, b) => b.averageScore - a.averageScore);
+  rows.sort((a, b) => b.learningProgressPercent - a.learningProgressPercent || b.averageScore - a.averageScore);
   return rows;
 }
 

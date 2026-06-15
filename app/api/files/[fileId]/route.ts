@@ -101,7 +101,10 @@ export async function GET(
         "Content-Disposition": `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUnicodeName}`,
       },
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") {
+      return new Response("Unauthorized", { status: 401 });
+    }
     return new Response("Server error", { status: 500 });
   }
 }

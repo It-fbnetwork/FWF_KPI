@@ -799,7 +799,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             {/* Main Content */}
             <div className="flex flex-1 flex-col overflow-hidden">
                 {/* Header */}
-                <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-3 py-3 md:px-6 md:py-4">
+                <header className="app-shell-header bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-3 py-3 md:px-6 md:py-4">
                     <div className="flex items-center justify-between gap-2">
                         {/* Left: hamburger (mobile) + date (desktop) */}
                         <div className="flex items-center gap-3">
@@ -1053,11 +1053,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 </header>
 
                 {/* Page Content */}
-                <div className="flex-1 overflow-auto bg-gray-50 pb-16 dark:bg-gray-900 md:pb-0">{children}</div>
+                <div className="app-page-content flex-1 overflow-auto bg-gray-50 pb-16 dark:bg-gray-900 md:pb-0">{children}</div>
             </div>
 
             {/* Mobile Bottom Navigation */}
-            <nav className="fixed bottom-0 left-0 right-0 z-20 flex items-center justify-around border-t border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800 md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+            <nav className="app-mobile-bottom-nav fixed bottom-0 left-0 right-0 z-20 flex items-center justify-around border-t border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800 md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
                 {mobileBottomNavItems.map((item) => {
                     const isActive = item.path === "/" ? pathname === "/" && !selectedProjectId : pathname === item.path
                     return (

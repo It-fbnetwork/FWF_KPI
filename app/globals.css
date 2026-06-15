@@ -50,10 +50,31 @@
 }
 
 @layer base {
+  html {
+    min-height: 100%;
+    width: 100%;
+    background: #020617;
+    overflow-x: hidden;
+  }
+
   * {
     @apply border-border;
   }
   body {
     @apply bg-background text-foreground;
+    min-height: 100%;
+    width: 100%;
+    overflow-x: hidden;
+    overscroll-behavior-y: none;
+  }
+}
+
+@media (max-width: 767px) {
+  body[data-learning-reader-active="true"] .app-mobile-bottom-nav {
+    display: none;
+  }
+
+  body[data-learning-reader-active="true"] .app-page-content {
+    padding-bottom: 0;
   }
 }

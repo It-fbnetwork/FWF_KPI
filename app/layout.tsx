@@ -1,4 +1,5 @@
 import type React from "react"
+import type { Viewport } from "next"
 import "./globals.css"
 import ClientLayout from "./client-layout"
 import { AuthProvider } from "@/components/auth-provider"
@@ -32,3 +33,11 @@ export const metadata = {
 
 
 };
+
+export const viewport: Viewport = {
+    width: "device-width",
+    initialScale: 1,
+    maximumScale: 1,
+    userScalable: false,
+    viewportFit: "cover",
+}

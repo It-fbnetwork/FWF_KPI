@@ -36,10 +36,15 @@ type QuizReportRow = {
     personName: string
     teamId: string
     teamName: string
+    learningTotal: number
+    learningCompleted: number
+    learningInProgress: number
+    learningNotStarted: number
+    learningProgressPercent: number
     totalAttempts: number
     averageScore: number
     highestScore: number
-    lastAttemptAt: string
+    lastAttemptAt?: string
     attempts: QuizReportAttempt[]
 }
 
@@ -75,6 +80,8 @@ const chartConfig = {
     completed: { label: STATUS_META.completed.label, color: STATUS_META.completed.color },
     failed: { label: STATUS_META.failed.label, color: STATUS_META.failed.color },
 }
+
+const QUIZ_PASS_SCORE = 90
 
 function getProgressLabel(progress: number) {
     if (progress <= 20) {
@@ -354,9 +361,13 @@ export default function DashboardPage() {
         () => people.filter((p) => accessibleMemberIds.includes(p.id)),
         [people, accessibleMemberIds]
     )
-    const participantPersonIds = useMemo(
-        () => new Set(quizReport.map((r) => r.personId)),
+    const quizParticipants = useMemo(
+        () => quizReport.filter((row) => row.totalAttempts > 0),
         [quizReport]
+    )
+    const participantPersonIds = useMemo(
+        () => new Set(quizParticipants.map((r) => r.personId)),
+        [quizParticipants]
     )
     const nonParticipants = useMemo(
         () => accessiblePeople.filter((p) => !participantPersonIds.has(p.id)),
@@ -693,9 +704,9 @@ export default function DashboardPage() {
                         ) : quizReport.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-14 text-center">
                                 <GraduationCap className="h-10 w-10 text-gray-300 dark:text-gray-600 mb-3" />
-                                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Chưa có kết quả kiểm tra nào</p>
+                                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Chưa có dữ liệu học liệu nào</p>
                                 <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                                    Kết quả sẽ hiển thị khi nhân viên hoàn thành các bài kiểm tra học liệu.
+                                    Tiến độ học và kết quả kiểm tra sẽ hiển thị khi có học liệu trong phạm vi của bạn.
                                 </p>
                             </div>
                         ) : (() => {
@@ -707,8 +718,10 @@ export default function DashboardPage() {
 
                             // Summary stats
                             const totalDone = filtered.reduce((s, r) => s + r.totalAttempts, 0)
-                            const avgScore = filtered.length === 0 ? 0 : Math.round(filtered.reduce((s, r) => s + r.averageScore, 0) / filtered.length)
-                            const passCount = filtered.filter((r) => r.averageScore >= 80).length
+                            const rowsWithAttempts = filtered.filter((row) => row.totalAttempts > 0)
+                            const avgScore = rowsWithAttempts.length === 0 ? 0 : Math.round(rowsWithAttempts.reduce((s, r) => s + r.averageScore, 0) / rowsWithAttempts.length)
+                            const avgLearningProgress = filtered.length === 0 ? 0 : Math.round(filtered.reduce((s, r) => s + r.learningProgressPercent, 0) / filtered.length)
+                            const passCount = filtered.filter((r) => r.highestScore >= QUIZ_PASS_SCORE).length
 
                             return (
                                 <div className="space-y-4">
@@ -724,6 +737,13 @@ export default function DashboardPage() {
                                                 Xem chi tiết →
                                             </p>
                                         </button>
+                                        <div className="rounded-xl bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3">
+                                            <p className="text-xs text-emerald-600 dark:text-emerald-400">Tiến độ học liệu TB</p>
+                                            <p className="mt-1 text-2xl font-bold text-emerald-700 dark:text-emerald-300">{avgLearningProgress}%</p>
+                                            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-emerald-100 dark:bg-emerald-950">
+                                                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${avgLearningProgress}%` }} />
+                                            </div>
+                                        </div>
                                         <div className="rounded-xl bg-blue-50 dark:bg-blue-900/20 px-4 py-3">
                                             <p className="text-xs text-blue-600 dark:text-blue-400">Tổng lượt làm</p>
                                             <p className="mt-1 text-2xl font-bold text-blue-700 dark:text-blue-300">{totalDone}</p>
@@ -733,7 +753,7 @@ export default function DashboardPage() {
                                             <p className="mt-1 text-2xl font-bold text-amber-700 dark:text-amber-300">{avgScore}</p>
                                         </div>
                                         <div className="rounded-xl bg-green-50 dark:bg-green-900/20 px-4 py-3">
-                                            <p className="text-xs text-green-600 dark:text-green-400">Đạt ≥ 80 điểm</p>
+                                            <p className="text-xs text-green-600 dark:text-green-400">Đạt ≥ {QUIZ_PASS_SCORE} điểm</p>
                                             <p className="mt-1 text-2xl font-bold text-green-700 dark:text-green-300">{passCount}</p>
                                         </div>
                                     </div>
@@ -747,6 +767,7 @@ export default function DashboardPage() {
                                                         <th className="w-8 px-3 py-3" />
                                                         <th className="px-5 py-3 font-semibold">Nhân viên</th>
                                                         <th className="px-5 py-3 font-semibold">Phòng ban</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Tiến độ học</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Bài đã làm</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Điểm TB</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Điểm cao nhất</th>
@@ -757,25 +778,25 @@ export default function DashboardPage() {
                                                 <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
                                                     {filtered.length === 0 ? (
                                                         <tr>
-                                                            <td colSpan={8} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                                                            <td colSpan={9} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                                                                 Không tìm thấy nhân viên phù hợp.
                                                             </td>
                                                         </tr>
                                                     ) : filtered.map((row) => {
                                                         const isExpanded = expandedRows.has(row.personId)
-                                                        const scoreColor = row.averageScore >= 80
+                                                        const scoreColor = row.averageScore >= QUIZ_PASS_SCORE
                                                             ? "text-green-600 dark:text-green-400"
                                                             : row.averageScore >= 50
                                                                 ? "text-amber-600 dark:text-amber-400"
                                                                 : "text-red-500 dark:text-red-400"
-                                                        const rank = row.averageScore >= 80 ? "Xuất sắc" : row.averageScore >= 60 ? "Khá" : row.averageScore >= 40 ? "Trung bình" : "Cần cải thiện"
-                                                        const rankColor = row.averageScore >= 80
+                                                        const rank = row.highestScore >= QUIZ_PASS_SCORE ? "Đạt" : row.totalAttempts > 0 ? "Cần làm lại" : row.learningProgressPercent > 0 ? "Đang học" : "Chưa học"
+                                                        const rankColor = row.highestScore >= QUIZ_PASS_SCORE
                                                             ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
-                                                            : row.averageScore >= 60
+                                                            : row.totalAttempts > 0
+                                                                ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
+                                                            : row.learningProgressPercent > 0
                                                                 ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                                                                : row.averageScore >= 40
-                                                                    ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
-                                                                    : "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
+                                                                : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
 
                                                         return (
                                                             <Fragment key={row.personId}>
@@ -794,33 +815,52 @@ export default function DashboardPage() {
                                                                     </td>
                                                                     <td className="px-5 py-4 font-medium text-gray-900 dark:text-white">
                                                                         <div className="flex items-center gap-2.5">
-                                                                            <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold text-white ${row.averageScore >= 80 ? "bg-green-500" : row.averageScore >= 60 ? "bg-blue-500" : row.averageScore >= 40 ? "bg-amber-500" : "bg-red-500"}`}>
+                                                                            <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold text-white ${row.highestScore >= QUIZ_PASS_SCORE ? "bg-green-500" : row.learningProgressPercent > 0 ? "bg-blue-500" : "bg-gray-500"}`}>
                                                                                 {row.personName.split(" ").slice(-1)[0]?.[0] ?? "?"}
                                                                             </div>
                                                                             {row.personName}
                                                                         </div>
                                                                     </td>
                                                                     <td className="px-5 py-4 text-gray-500 dark:text-gray-400">{row.teamName || row.teamId}</td>
+                                                                    <td className="px-5 py-4">
+                                                                        <div className="mx-auto w-32">
+                                                                            <div className="mb-1 flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
+                                                                                <span>{row.learningCompleted}/{row.learningTotal}</span>
+                                                                                <span>{row.learningProgressPercent}%</span>
+                                                                            </div>
+                                                                            <div className="h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                                                                                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${row.learningProgressPercent}%` }} />
+                                                                            </div>
+                                                                        </div>
+                                                                    </td>
                                                                     <td className="px-5 py-4 text-center font-semibold text-gray-900 dark:text-white">{row.totalAttempts}</td>
-                                                                    <td className={`px-5 py-4 text-center text-lg font-bold ${scoreColor}`}>{row.averageScore}</td>
-                                                                    <td className={`px-5 py-4 text-center font-semibold ${scoreColor}`}>{row.highestScore}</td>
+                                                                    <td className={`px-5 py-4 text-center text-lg font-bold ${scoreColor}`}>{row.totalAttempts > 0 ? row.averageScore : "-"}</td>
+                                                                    <td className={`px-5 py-4 text-center font-semibold ${scoreColor}`}>{row.totalAttempts > 0 ? row.highestScore : "-"}</td>
                                                                     <td className="px-5 py-4">
                                                                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${rankColor}`}>
                                                                             {rank}
                                                                         </span>
                                                                     </td>
                                                                     <td className="px-5 py-4 text-gray-500 dark:text-gray-400 text-xs">
-                                                                        {new Date(row.lastAttemptAt).toLocaleDateString("vi-VN")}
+                                                                        {row.lastAttemptAt ? new Date(row.lastAttemptAt).toLocaleDateString("vi-VN") : "-"}
                                                                     </td>
                                                                 </tr>
 
                                                                 {/* Expanded detail rows */}
-                                                                {isExpanded && row.attempts.map((att, i) => (
+                                                                {isExpanded && (
+                                                                    <>
+                                                                    <tr className="bg-emerald-50/70 dark:bg-emerald-950/20">
+                                                                        <td className="px-3 py-3" />
+                                                                        <td colSpan={8} className="px-5 py-3 text-xs text-emerald-800 dark:text-emerald-200">
+                                                                            Học liệu: {row.learningCompleted} đã hoàn thành · {row.learningInProgress} đang học · {row.learningNotStarted} chưa học
+                                                                        </td>
+                                                                    </tr>
+                                                                    {row.attempts.map((att, i) => (
                                                                     <tr key={`${row.personId}-${i}`} className="bg-gray-50/80 dark:bg-gray-800/40">
                                                                         <td className="px-3 py-3" />
-                                                                        <td colSpan={2} className="px-5 py-3">
+                                                                        <td colSpan={3} className="px-5 py-3">
                                                                             <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                                                                                {att.score >= 80
+                                                                                {att.score >= QUIZ_PASS_SCORE
                                                                                     ? <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
                                                                                     : <XCircle className="h-4 w-4 text-red-400 flex-shrink-0" />}
                                                                                 <span className="font-medium truncate max-w-[200px]" title={att.documentName}>{att.documentName}</span>
@@ -830,14 +870,14 @@ export default function DashboardPage() {
                                                                         <td className="px-5 py-3 text-center text-xs text-gray-500 dark:text-gray-400">
                                                                             {att.correctAnswers}/{att.totalQuestions} câu
                                                                         </td>
-                                                                        <td className={`px-5 py-3 text-center font-bold ${att.score >= 80 ? "text-green-600" : att.score >= 50 ? "text-amber-500" : "text-red-500"}`}>
+                                                                        <td className={`px-5 py-3 text-center font-bold ${att.score >= QUIZ_PASS_SCORE ? "text-green-600" : att.score >= 50 ? "text-amber-500" : "text-red-500"}`}>
                                                                             {att.score}
                                                                         </td>
                                                                         <td className="px-5 py-3 text-center">
                                                                             <div className="flex items-center justify-center">
                                                                                 <div className="h-1.5 w-24 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
                                                                                     <div
-                                                                                        className={`h-full rounded-full ${att.score >= 80 ? "bg-green-500" : att.score >= 50 ? "bg-amber-400" : "bg-red-400"}`}
+                                                                                        className={`h-full rounded-full ${att.score >= QUIZ_PASS_SCORE ? "bg-green-500" : att.score >= 50 ? "bg-amber-400" : "bg-red-400"}`}
                                                                                         style={{ width: `${att.score}%` }}
                                                                                     />
                                                                                 </div>
@@ -848,7 +888,9 @@ export default function DashboardPage() {
                                                                             {new Date(att.submittedAt).toLocaleDateString("vi-VN")}
                                                                         </td>
                                                                     </tr>
-                                                                ))}
+                                                                    ))}
+                                                                    </>
+                                                                )}
                                                             </Fragment>
                                                         )
                                                     })}
@@ -872,7 +914,7 @@ export default function DashboardPage() {
                             <div>
                                 <h2 className="text-lg font-bold text-gray-900 dark:text-white">Chi tiết tham gia kiểm tra</h2>
                                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                                    {quizReport.length} đã tham gia · {nonParticipants.length} chưa tham gia
+                                    {quizParticipants.length} đã tham gia · {nonParticipants.length} chưa tham gia
                                 </p>
                             </div>
                             <button
@@ -888,11 +930,11 @@ export default function DashboardPage() {
                         {/* Body */}
                         <div className="overflow-y-auto flex-1 px-6 py-4 space-y-5">
                             {(() => {
-                                const officeParticipants = quizReport.filter((row) => {
+                                const officeParticipants = quizParticipants.filter((row) => {
                                     const p = people.find((p) => p.id === row.personId)
                                     return p?.role !== "Nhân viên cửa hàng"
                                 })
-                                const storeParticipants = quizReport.filter((row) => {
+                                const storeParticipants = quizParticipants.filter((row) => {
                                     const p = people.find((p) => p.id === row.personId)
                                     return p?.role === "Nhân viên cửa hàng"
                                 })
@@ -900,12 +942,12 @@ export default function DashboardPage() {
                                 const storeNonParticipants = nonParticipants.filter((p) => p.role === "Nhân viên cửa hàng")
 
                                 const renderParticipantRow = (row: QuizReportRow) => {
-                                    const scoreColor = row.averageScore >= 80
+                                    const scoreColor = row.highestScore >= QUIZ_PASS_SCORE
                                         ? "text-green-600 dark:text-green-400"
                                         : row.averageScore >= 50
                                             ? "text-amber-600 dark:text-amber-400"
                                             : "text-red-500 dark:text-red-400"
-                                    const avatarBg = row.averageScore >= 80 ? "bg-green-500" : row.averageScore >= 60 ? "bg-blue-500" : row.averageScore >= 40 ? "bg-amber-500" : "bg-red-500"
+                                    const avatarBg = row.highestScore >= QUIZ_PASS_SCORE ? "bg-green-500" : row.averageScore >= 60 ? "bg-blue-500" : row.averageScore >= 40 ? "bg-amber-500" : "bg-red-500"
                                     return (
                                         <div key={row.personId} className="flex items-center gap-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 px-4 py-2.5">
                                             <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 ${avatarBg}`}>
@@ -913,7 +955,9 @@ export default function DashboardPage() {
                                             </div>
                                             <div className="flex-1 min-w-0">
                                                 <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{row.personName}</p>
-                                                <p className="text-xs text-gray-500 dark:text-gray-400">{row.teamName || row.teamId} · {row.totalAttempts} bài</p>
+                                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                                    {row.teamName || row.teamId} · Học {row.learningCompleted}/{row.learningTotal} · {row.totalAttempts} lượt
+                                                </p>
                                             </div>
                                             <div className="text-right flex-shrink-0">
                                                 <p className={`text-base font-bold ${scoreColor}`}>{row.averageScore}<span className="text-xs font-normal text-gray-400">đ</span></p>
