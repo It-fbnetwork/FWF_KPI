@@ -12,6 +12,11 @@ export interface Person {
     timezone: string;
   };
   team: string;
+  userId?: string;
+  authRole?: UserAccount["role"];
+  department?: UserAccount["department"];
+  storeBranchIds?: number[];
+  storeLeadUserId?: string;
 }
 
 export const personDisplayRoles = [

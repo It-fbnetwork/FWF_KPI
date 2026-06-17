@@ -13,7 +13,7 @@ import {
   type UserAccount,
   type UserRole
 } from "@/lib/auth";
-import { STORE_BRANCH_ID_SET, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches";
+import { STORE_BRANCHES, STORE_BRANCH_ID_SET, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches";
 import type { Document, Folder } from "@/lib/documents";
 import { personDisplayRoles, teams as companyTeams, type Person } from "@/lib/people";
 import type { Project, Task, TaskAttachment, TaskGroups, TimePeriod } from "@/components/workspace-context";
@@ -35,7 +35,7 @@ type DbUser = {
   personId?: string | null;
   role: StoredUserRole;
   department: Department;
-  storeRegion?: StoreRegion;
+  storeRegion?: string;
   storeBranchIds?: number[];
   storeLeadUserId?: string;
   verified: boolean;
@@ -263,7 +263,7 @@ type PendingRegistration = {
   name: string;
   role: UserRole;
   department: Department;
-  storeRegion?: StoreRegion;
+  storeRegion?: string;
   storeBranchIds?: number[];
   storeLeadUserId?: string;
   otp: string;
@@ -285,7 +285,7 @@ type DbRoleApprovalRequest = {
   name: string;
   role: UserRole;
   department: Department;
-  storeRegion?: StoreRegion;
+  storeRegion?: string;
   storeBranchIds?: number[];
   storeLeadUserId?: string;
   status: "pending" | "approved" | "rejected";
@@ -322,6 +322,11 @@ function getManagedPersonIdsByHierarchy(
   const actorRole = actorUser.role;
   const actorIsStoreRole = isStoreRole(actorRole);
   const actorBranches = new Set(actorUser.storeBranchIds ?? []);
+  const userById = new Map(Array.from(userByPersonId.values()).map((user) => [user.id, user]));
+  const isStoreLeadManagedByActor = (user: UserAccount | undefined) => {
+    if (!user || user.role !== "store_lead" || user.department !== "Cửa hàng") return false;
+    return (user.storeBranchIds ?? []).some((branchId) => actorBranches.has(branchId));
+  };
 
   for (const candidate of allPeople) {
     const candidateUser = userByPersonId.get(candidate.id);
@@ -350,9 +355,17 @@ function getManagedPersonIdsByHierarchy(
     }
 
     if (actorRole === "store_manager") {
-      const candidateBranches = candidateUser.storeBranchIds ?? [];
-      const hasOverlap = candidateBranches.some((branchId) => actorBranches.has(branchId));
-      if (hasOverlap) managed.add(candidate.id);
+      if (isStoreLeadManagedByActor(candidateUser)) {
+        managed.add(candidate.id);
+        continue;
+      }
+
+      if (
+        candidateUser.role === "store_technician" &&
+        isStoreLeadManagedByActor(candidateUser.storeLeadUserId ? userById.get(candidateUser.storeLeadUserId) : undefined)
+      ) {
+        managed.add(candidate.id);
+      }
       continue;
     }
 
@@ -495,6 +508,7 @@ export type QuizAttemptRecord = {
   startedAt: string;
   submittedAt: string;
   attemptRound?: number;
+  retakeCount?: number;
   isActiveAttempt?: boolean;
   reviewQuestions?: QuizQuestion[];
 };
@@ -527,6 +541,12 @@ export type TeamLearningStatusRow = {
   personName: string;
   personRole?: string;
   team: string;
+  storeRegion?: string;
+  storeBranchIds?: number[];
+  storeBranchNames?: string[];
+  supervisorUserId?: string;
+  supervisorName?: string;
+  supervisorRole?: UserRole;
   status: "completed" | "in_progress" | "not_started";
 };
 
@@ -1152,6 +1172,28 @@ function mapDbPerson(person: DbPerson): Person {
   };
 }
 
+function attachUserProfileToPeople(people: Person[], users: UserAccount[]) {
+  const userByPersonId = new Map(
+    users
+      .filter((user) => Boolean(user.personId))
+      .map((user) => [user.personId as string, user])
+  );
+
+  return people.map((person) => {
+    const user = userByPersonId.get(person.id);
+    if (!user) return person;
+
+    return {
+      ...person,
+      userId: user.id,
+      authRole: user.role,
+      department: user.department,
+      storeBranchIds: user.storeBranchIds ?? [],
+      storeLeadUserId: user.storeLeadUserId,
+    };
+  });
+}
+
 function mapDbCompanyTeam(team: DbCompanyTeam): CompanyTeamRecord {
   return {
     id: team._id,
@@ -1264,6 +1306,7 @@ function mapDbQuizAttempt(
     startedAt: attempt.startedAt,
     submittedAt: attempt.submittedAt,
     attemptRound,
+    retakeCount: Math.max(0, (attemptRound ?? 1) - 1),
     isActiveAttempt,
     reviewQuestions,
   };
@@ -1452,6 +1495,10 @@ function canActorViewDocument(
     Boolean(ownerRoles?.has("leader")) &&
     !Boolean(ownerRoles?.has("admin") || ownerRoles?.has("ceo"));
   const isVanHanhLeader = actor.isLeader && !actor.isAdmin && actor.person.team === "product";
+  const isStoreLearningForTechnician =
+    document.isLearningMaterial === true &&
+    actor.user.role === "store_technician" &&
+    (ownerTeam === "store" || Boolean(ownerRoles?.has("store_trainer")));
 
   if (ownerIsLeaderCreator) {
     if (!isSameOwnerTeam) return false;
@@ -1464,6 +1511,7 @@ function canActorViewDocument(
     return actor.person.team === ownerTeam || document.ownerId === actor.person.id;
   }
 
+  if (isStoreLearningForTechnician) return true;
   if (visibility === "team") return isSameOwnerTeam || document.ownerId === actor.person.id;
   if (visibility === "office") return actor.person.team !== "store";
   if (visibility === "store") return actor.person.team === "store" || isVanHanhLeader;
@@ -1503,6 +1551,46 @@ function buildPersonRolesMap(rows: Array<Record<string, unknown>>) {
     personRolesMap.set(personId, roles);
   }
   return personRolesMap;
+}
+
+const storeBranchNameById = new Map(STORE_BRANCHES.map((branch) => [branch.id, branch.name]));
+
+function getStoreBranchNames(storeBranchIds: number[] | undefined) {
+  return (storeBranchIds ?? []).map((branchId) => storeBranchNameById.get(branchId) ?? `Cửa hàng ${branchId}`);
+}
+
+function getTechnicianSupervisorProfile(
+  user: UserAccount | undefined,
+  users: UserAccount[]
+): Pick<TeamLearningStatusRow, "supervisorUserId" | "supervisorName" | "supervisorRole"> {
+  if (!user || user.role !== "store_technician") return {};
+
+  const directSupervisor = user.storeLeadUserId
+    ? users.find((candidate) => candidate.id === user.storeLeadUserId)
+    : undefined;
+  if (directSupervisor) {
+    return {
+      supervisorUserId: directSupervisor.id,
+      supervisorName: directSupervisor.name,
+      supervisorRole: directSupervisor.role,
+    };
+  }
+
+  const branchIds = new Set(user.storeBranchIds ?? []);
+  const manager = users.find((candidate) =>
+    candidate.department === "Cửa hàng" &&
+    candidate.role === "store_manager" &&
+    (candidate.storeBranchIds ?? []).some((branchId) => branchIds.has(branchId))
+  );
+  if (manager) {
+    return {
+      supervisorUserId: manager.id,
+      supervisorName: manager.name,
+      supervisorRole: manager.role,
+    };
+  }
+
+  return {};
 }
 
 function documentContainsFileId(document: DbDocument, fileId: string) {
@@ -1639,6 +1727,21 @@ function computeAttemptRoundByPerson(attempts: DbQuizAttempt[], resets: DbQuizAt
   for (const attempt of ordered) {
     const nextRound = (personAttemptCounts.get(attempt.personId) ?? 0) + 1;
     personAttemptCounts.set(attempt.personId, nextRound);
+    rounds.set(attempt._id, nextRound);
+  }
+  return rounds;
+}
+
+function computeAttemptRoundByPersonAndDocument(attempts: DbQuizAttempt[]) {
+  const rounds = new Map<string, number>();
+  const counts = new Map<string, number>();
+  const ordered = [...attempts].sort(
+    (a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime()
+  );
+  for (const attempt of ordered) {
+    const key = `${attempt.personId}:${attempt.documentId}`;
+    const nextRound = (counts.get(key) ?? 0) + 1;
+    counts.set(key, nextRound);
     rounds.set(attempt._id, nextRound);
   }
   return rounds;
@@ -2282,6 +2385,12 @@ function isStorePerson(person: Person) {
   );
 }
 
+function isStoreTechnicianPerson(person: Person, roles?: Set<UserRole>) {
+  if (roles?.has("store_technician")) return true;
+  const normalizedRole = normalizeIdentityValue(person.role);
+  return normalizedRole.includes("ky thuat vien") || normalizedRole.includes("kỹ thuật viên");
+}
+
 function isEmployeePerson(person: Person) {
   const normalizedRole = normalizeIdentityValue(person.role);
   return (
@@ -2295,9 +2404,18 @@ function isEmployeePerson(person: Person) {
 function canPersonAccessDocument(
   person: Person,
   document: DbDocument,
-  ownerTeamByPersonId: Map<string, string>
+  ownerTeamByPersonId: Map<string, string>,
+  personRolesByPersonId?: Map<string, Set<UserRole>>
 ) {
   const ownerTeam = ownerTeamByPersonId.get(document.ownerId);
+  if (
+    document.isLearningMaterial === true &&
+    isStoreTechnicianPerson(person, personRolesByPersonId?.get(person.id)) &&
+    ownerTeam === "store"
+  ) {
+    return true;
+  }
+
   if (ownerTeam && person.team !== ownerTeam) {
     return false;
   }
@@ -3113,12 +3231,15 @@ export async function verifyLoginOtp(email: string, otp: string) {
 
 export async function getDirectory() {
   if (shouldUseSupabasePhaseA()) {
-    const [peopleRows, teamsRows] = await Promise.all([
+    const [peopleRows, teamsRows, userRows] = await Promise.all([
       pgQuery("select * from people order by name asc"),
-      pgQuery("select * from company_teams where id = any($1::text[]) order by name asc", [supportedTeamIds])
+      pgQuery("select * from company_teams where id = any($1::text[]) order by name asc", [supportedTeamIds]),
+      pgQuery("select id, name, email, person_id, role, department, store_region, store_branch_ids, store_lead_user_id, verified from users where person_id is not null")
     ]);
+    const mappedPeople = peopleRows.rows.map((row) => mapDbPerson(mapPgPersonRow(row)));
+    const mappedUsers = userRows.rows.map((row) => mapDbUser(mapPgUserRow(row)));
     return {
-      people: peopleRows.rows.map((row) => mapDbPerson(mapPgPersonRow(row))),
+      people: attachUserProfileToPeople(mappedPeople, mappedUsers),
       teams: teamsRows.rows.map((row) =>
         mapDbCompanyTeam({
           _id: String(row.id ?? ""),
@@ -3132,16 +3253,19 @@ export async function getDirectory() {
 
   const db = await getMongoDb();
   await ensureCompanyDirectorySynced(db);
-  const [people, teams] = await Promise.all([
+  const [people, teams, users] = await Promise.all([
     db.collection<DbPerson>("people").find({}, { sort: { name: 1 } }).toArray(),
     db.collection<DbCompanyTeam>("company_teams").find(
       { _id: { $in: supportedTeamIds } },
       { sort: { name: 1 } }
-    ).toArray()
+    ).toArray(),
+    db.collection<DbUser>("users").find({ personId: { $exists: true } }).toArray()
   ]);
 
+  const mappedPeople = people.map(mapDbPerson);
+  const mappedUsers = users.map(mapDbUser);
   return {
-    people: people.map(mapDbPerson),
+    people: attachUserProfileToPeople(mappedPeople, mappedUsers),
     teams: teams.map(mapDbCompanyTeam)
   };
 }
@@ -3152,6 +3276,8 @@ type PersonMutationInput = {
   email: string;
   imageURL?: string;
   team: string;
+  storeLeadUserId?: string;
+  storeManagerUserId?: string;
   workingHours: Person["workingHours"];
 };
 
@@ -3186,6 +3312,39 @@ async function requirePeopleManagerActor(sessionUserId?: string | null) {
   }
 
   throw new Error("Forbidden");
+}
+
+function canActorAssignStoreLead(actor: SessionActor, leadUser: UserAccount) {
+  if (actor.isAdmin || isStoreTrainerActor(actor)) return true;
+  if (!isStoreManagerActor(actor)) return false;
+
+  const actorBranches = new Set(actor.user.storeBranchIds ?? []);
+  return (leadUser.storeBranchIds ?? []).some((branchId) => actorBranches.has(branchId));
+}
+
+function assertCanAssignTechnicianStoreLead(actor: SessionActor, leadUser: UserAccount | null | undefined) {
+  if (!leadUser || leadUser.role !== "store_lead" || leadUser.department !== "Cửa hàng" || !leadUser.verified) {
+    throw new Error("Cửa hàng trưởng quản lí không hợp lệ.");
+  }
+
+  if (!canActorAssignStoreLead(actor, leadUser)) {
+    throw new Error("Bạn không có quyền gán kỹ thuật viên cho cửa hàng trưởng này.");
+  }
+}
+
+function canActorAssignStoreManager(actor: SessionActor, managerUser: UserAccount) {
+  if (actor.isAdmin || isStoreTrainerActor(actor)) return true;
+  return isStoreManagerActor(actor) && managerUser.id === actor.user.id;
+}
+
+function assertCanAssignStoreLeadManager(actor: SessionActor, managerUser: UserAccount | null | undefined) {
+  if (!managerUser || managerUser.role !== "store_manager" || managerUser.department !== "Cửa hàng" || !managerUser.verified) {
+    throw new Error("Quản lí cửa hàng phụ trách không hợp lệ.");
+  }
+
+  if (!canActorAssignStoreManager(actor, managerUser)) {
+    throw new Error("Bạn không có quyền gán cửa hàng trưởng cho quản lí cửa hàng này.");
+  }
 }
 
 export async function createPersonRecord(
@@ -3370,6 +3529,34 @@ export async function updatePersonRecord(
         throw new Error("Quản lí cửa hàng chỉ được chỉnh role Cửa hàng trưởng hoặc Kỹ thuật viên.");
       }
     }
+    let nextStoreLeadUser: UserAccount | null = null;
+    if (updates.storeLeadUserId !== undefined) {
+      const [targetUsersRes, leadUserRes] = await Promise.all([
+        pgQuery("select * from users where person_id = $1 or email = $2", [personId, existingPerson.email]),
+        pgQuery("select * from users where id = $1 limit 1", [updates.storeLeadUserId])
+      ]);
+      const targetUsers = targetUsersRes.rows.map((row) => mapDbUser(mapPgUserRow(row)));
+      if (!targetUsers.some((targetUser) => targetUser.role === "store_technician")) {
+        throw new Error("Chỉ được đổi cửa hàng trưởng quản lí cho tài khoản Kỹ thuật viên.");
+      }
+      nextStoreLeadUser = leadUserRes.rows[0] ? mapDbUser(mapPgUserRow(leadUserRes.rows[0])) : null;
+      assertCanAssignTechnicianStoreLead(actor, nextStoreLeadUser);
+    }
+    let targetStoreLeadUser: UserAccount | null = null;
+    let nextStoreManagerUser: UserAccount | null = null;
+    if (updates.storeManagerUserId !== undefined) {
+      const [targetUsersRes, managerUserRes] = await Promise.all([
+        pgQuery("select * from users where person_id = $1 or email = $2", [personId, existingPerson.email]),
+        pgQuery("select * from users where id = $1 limit 1", [updates.storeManagerUserId])
+      ]);
+      const targetUsers = targetUsersRes.rows.map((row) => mapDbUser(mapPgUserRow(row)));
+      targetStoreLeadUser = targetUsers.find((targetUser) => targetUser.role === "store_lead") ?? null;
+      if (!targetStoreLeadUser) {
+        throw new Error("Chỉ được đổi quản lí cửa hàng phụ trách cho tài khoản Cửa hàng trưởng.");
+      }
+      nextStoreManagerUser = managerUserRes.rows[0] ? mapDbUser(mapPgUserRow(managerUserRes.rows[0])) : null;
+      assertCanAssignStoreLeadManager(actor, nextStoreManagerUser);
+    }
 
     const now = new Date().toISOString();
     await pgQuery(
@@ -3403,6 +3590,44 @@ export async function updatePersonRecord(
        where person_id=$1 or email=$6`,
       [personId, updates.name.trim(), normalizedEmail, mapTeamIdToDepartment(updates.team), now, existingPerson.email]
     );
+    if (nextStoreLeadUser) {
+      await pgQuery(
+        `update users
+         set store_region=$2, store_branch_ids=$3::jsonb, store_lead_user_id=$4, updated_at=$5::timestamptz
+         where person_id=$1`,
+        [
+          personId,
+          nextStoreLeadUser.storeRegion ?? null,
+          JSON.stringify(nextStoreLeadUser.storeBranchIds ?? []),
+          nextStoreLeadUser.id,
+          now
+        ]
+      );
+    }
+    if (targetStoreLeadUser && nextStoreManagerUser) {
+      await pgQuery(
+        `update users
+         set store_region=$2, store_branch_ids=$3::jsonb, store_lead_user_id=null, updated_at=$4::timestamptz
+         where id=$1`,
+        [
+          targetStoreLeadUser.id,
+          nextStoreManagerUser.storeRegion ?? null,
+          JSON.stringify(nextStoreManagerUser.storeBranchIds ?? []),
+          now
+        ]
+      );
+      await pgQuery(
+        `update users
+         set store_region=$2, store_branch_ids=$3::jsonb, updated_at=$4::timestamptz
+         where store_lead_user_id=$1`,
+        [
+          targetStoreLeadUser.id,
+          nextStoreManagerUser.storeRegion ?? null,
+          JSON.stringify(nextStoreManagerUser.storeBranchIds ?? []),
+          now
+        ]
+      );
+    }
 
     const updatedRes = await pgQuery("select * from people where id = $1 limit 1", [personId]);
     return updatedRes.rows[0] ? mapDbPerson(mapPgPersonRow(updatedRes.rows[0])) : null;
@@ -3457,6 +3682,34 @@ export async function updatePersonRecord(
       throw new Error("Quản lí cửa hàng chỉ được chỉnh role Cửa hàng trưởng hoặc Kỹ thuật viên.");
     }
   }
+  let nextStoreLeadUser: UserAccount | null = null;
+  if (updates.storeLeadUserId !== undefined) {
+    const [targetUsers, leadUserDocument] = await Promise.all([
+      db.collection<DbUser>("users").find({ $or: [{ personId }, { email: existingPerson.email }] }).toArray(),
+      db.collection<DbUser>("users").findOne({ _id: updates.storeLeadUserId })
+    ]);
+    const mappedTargetUsers = targetUsers.map(mapDbUser);
+    if (!mappedTargetUsers.some((targetUser) => targetUser.role === "store_technician")) {
+      throw new Error("Chỉ được đổi cửa hàng trưởng quản lí cho tài khoản Kỹ thuật viên.");
+    }
+    nextStoreLeadUser = leadUserDocument ? mapDbUser(leadUserDocument) : null;
+    assertCanAssignTechnicianStoreLead(actor, nextStoreLeadUser);
+  }
+  let targetStoreLeadUser: UserAccount | null = null;
+  let nextStoreManagerUser: UserAccount | null = null;
+  if (updates.storeManagerUserId !== undefined) {
+    const [targetUsers, managerUserDocument] = await Promise.all([
+      db.collection<DbUser>("users").find({ $or: [{ personId }, { email: existingPerson.email }] }).toArray(),
+      db.collection<DbUser>("users").findOne({ _id: updates.storeManagerUserId })
+    ]);
+    const mappedTargetUsers = targetUsers.map(mapDbUser);
+    targetStoreLeadUser = mappedTargetUsers.find((targetUser) => targetUser.role === "store_lead") ?? null;
+    if (!targetStoreLeadUser) {
+      throw new Error("Chỉ được đổi quản lí cửa hàng phụ trách cho tài khoản Cửa hàng trưởng.");
+    }
+    nextStoreManagerUser = managerUserDocument ? mapDbUser(managerUserDocument) : null;
+    assertCanAssignStoreLeadManager(actor, nextStoreManagerUser);
+  }
 
   const nextPayload: Partial<DbPerson> = {
     name: updates.name.trim(),
@@ -3494,6 +3747,42 @@ export async function updatePersonRecord(
       }
     }
   );
+  if (nextStoreLeadUser) {
+    await db.collection<DbUser>("users").updateMany(
+      { personId },
+      {
+        $set: {
+          storeRegion: nextStoreLeadUser.storeRegion,
+          storeBranchIds: nextStoreLeadUser.storeBranchIds ?? [],
+          storeLeadUserId: nextStoreLeadUser.id,
+          updatedAt: new Date().toISOString()
+        }
+      }
+    );
+  }
+  if (targetStoreLeadUser && nextStoreManagerUser) {
+    await db.collection<DbUser>("users").updateOne(
+      { _id: targetStoreLeadUser.id },
+      {
+        $set: {
+          storeRegion: nextStoreManagerUser.storeRegion,
+          storeBranchIds: nextStoreManagerUser.storeBranchIds ?? [],
+          updatedAt: new Date().toISOString()
+        },
+        $unset: { storeLeadUserId: "" }
+      }
+    );
+    await db.collection<DbUser>("users").updateMany(
+      { storeLeadUserId: targetStoreLeadUser.id },
+      {
+        $set: {
+          storeRegion: nextStoreManagerUser.storeRegion,
+          storeBranchIds: nextStoreManagerUser.storeBranchIds ?? [],
+          updatedAt: new Date().toISOString()
+        }
+      }
+    );
+  }
 
   const updatedPerson = await db.collection<DbPerson>("people").findOne({ _id: personId });
   return updatedPerson ? mapDbPerson(updatedPerson) : null;
@@ -6803,9 +7092,10 @@ export async function getTeamLearningStatusesForDocument(
   if (!canViewTeamLearningReports(actor)) throw new Error("Forbidden");
 
   if (shouldUseSupabasePhaseA()) {
-    const [documentRes, peopleRes, progressesRes, attemptsRes] = await Promise.all([
+    const [documentRes, peopleRes, usersRes, progressesRes, attemptsRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [documentId]),
       pgQuery("select * from people"),
+      pgQuery("select * from users where person_id is not null"),
       pgQuery("select * from learning_progress where document_id = $1", [documentId]),
       pgQuery("select * from quiz_attempts where document_id = $1", [documentId]),
     ]);
@@ -6814,12 +7104,25 @@ export async function getTeamLearningStatusesForDocument(
     const document = mapPgDocumentRow(documentRow);
     const mappedPeople = peopleRes.rows.map((row) => mapDbPerson(mapPgPersonRow(row)));
     const ownerTeamByPersonId = new Map(mappedPeople.map((person) => [person.id, person.team]));
+    const personRolesByPersonId = buildPersonRolesMap(usersRes.rows);
+    const allUsers = usersRes.rows.map((row) => mapPgUserRow(row)).map(mapDbUser);
+    const userByPersonId = new Map(allUsers.filter((user) => Boolean(user.personId)).map((user) => [user.personId as string, user]));
+    const storeProfileByPersonId = new Map(
+      allUsers
+        .filter((user) => Boolean(user.personId))
+        .map((user) => [user.personId as string, {
+          storeRegion: user.storeRegion,
+          storeBranchIds: user.storeBranchIds ?? [],
+          storeBranchNames: getStoreBranchNames(user.storeBranchIds),
+          ...getTechnicianSupervisorProfile(user, allUsers),
+        }])
+    );
     const visibleTeamMemberIds = new Set(actor.teamMembers.map((member) => member.id));
     const targetPeople = mappedPeople.filter((person) => {
       if (!visibleTeamMemberIds.has(person.id)) return false;
       if (!isEmployeePerson(person)) return false;
       if (actor.user.role === "store_lead" && person.id === actor.person.id) return false;
-      return canPersonAccessDocument(person, document, ownerTeamByPersonId);
+      return canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId);
     });
     if (targetPeople.length === 0) return [];
     const targetPersonIdSet = new Set(targetPeople.map((person) => person.id));
@@ -6845,6 +7148,7 @@ export async function getTeamLearningStatusesForDocument(
           personName: person.name,
           personRole: person.role,
           team: person.team,
+          ...storeProfileByPersonId.get(person.id),
           status: completed ? "completed" : hasStarted ? "in_progress" : "not_started",
         } satisfies TeamLearningStatusRow;
       })
@@ -6852,9 +7156,10 @@ export async function getTeamLearningStatusesForDocument(
   }
 
   const db = await getMongoDb();
-  const [document, allPeople] = await Promise.all([
+  const [document, allPeople, allUsers] = await Promise.all([
     db.collection<DbDocument>("documents").findOne({ _id: documentId }),
     db.collection<DbPerson>("people").find({}).toArray(),
+    db.collection<DbUser>("users").find({ personId: { $exists: true } }).toArray(),
   ]);
   if (!document) return [];
 
@@ -6862,12 +7167,27 @@ export async function getTeamLearningStatusesForDocument(
   const ownerTeamByPersonId = new Map(
     mappedPeople.map((person) => [person.id, person.team])
   );
+  const personRolesByPersonId = new Map<string, Set<UserRole>>();
+  const storeProfileByPersonId = new Map<string, Pick<TeamLearningStatusRow, "storeRegion" | "storeBranchIds" | "storeBranchNames" | "supervisorUserId" | "supervisorName" | "supervisorRole">>();
+  const mappedUsers = allUsers.map(mapDbUser);
+  for (const user of mappedUsers) {
+    if (!user.personId) continue;
+    const roles = personRolesByPersonId.get(user.personId) ?? new Set<UserRole>();
+    roles.add(normalizeUserRole(user.role));
+    personRolesByPersonId.set(user.personId, roles);
+    storeProfileByPersonId.set(user.personId, {
+      storeRegion: user.storeRegion,
+      storeBranchIds: user.storeBranchIds ?? [],
+      storeBranchNames: getStoreBranchNames(user.storeBranchIds),
+      ...getTechnicianSupervisorProfile(user, mappedUsers),
+    });
+  }
   const visibleTeamMemberIds = new Set(actor.teamMembers.map((member) => member.id));
   const targetPeople = mappedPeople.filter((person) => {
     if (!visibleTeamMemberIds.has(person.id)) return false;
     if (!isEmployeePerson(person)) return false;
     if (actor.user.role === "store_lead" && person.id === actor.person.id) return false;
-    return canPersonAccessDocument(person, document, ownerTeamByPersonId);
+    return canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId);
   });
 
   if (targetPeople.length === 0) return [];
@@ -6902,6 +7222,7 @@ export async function getTeamLearningStatusesForDocument(
         personName: person.name,
         personRole: person.role,
         team: person.team,
+        ...storeProfileByPersonId.get(person.id),
         status: completed ? "completed" : hasStarted ? "in_progress" : "not_started",
       } satisfies TeamLearningStatusRow;
     })
@@ -6916,6 +7237,8 @@ export type QuizReportAttempt = {
   score: number;
   correctAnswers: number;
   totalQuestions: number;
+  attemptRound: number;
+  retakeCount: number;
   submittedAt: string;
 };
 
@@ -6930,6 +7253,7 @@ export type QuizReportRow = {
   learningNotStarted: number;
   learningProgressPercent: number;
   totalAttempts: number;
+  retakeCount: number;
   averageScore: number;
   highestScore: number;
   lastAttemptAt?: string;
@@ -6943,13 +7267,14 @@ export async function getQuizReport(
   if (!actor) throw new Error("Unauthorized");
 
   if (shouldUseSupabasePhaseA()) {
-    const [attemptRows, quizzesRes, docsRes, peopleRes, teamsRes, progressRes] = await Promise.all([
+    const [attemptRows, quizzesRes, docsRes, peopleRes, teamsRes, progressRes, usersRes] = await Promise.all([
       pgQuery("select * from quiz_attempts order by submitted_at desc nulls last"),
       pgQuery("select id,title from learning_quizzes"),
       pgQuery("select * from documents"),
       pgQuery("select * from people"),
       pgQuery("select id,name from company_teams"),
       pgQuery("select * from learning_progress"),
+      pgQuery("select person_id, role from users where person_id is not null"),
     ]);
     const allAttempts = attemptRows.rows.map((row) => mapPgQuizAttemptRow(row));
     const quizMap = new Map(quizzesRes.rows.map((q) => [String(q.id), String(q.title ?? "Quiz")]));
@@ -6959,6 +7284,7 @@ export async function getQuizReport(
     const people = peopleRes.rows.map((row) => mapPgPersonRow(row));
     const mappedPeople = people.map(mapDbPerson);
     const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
+    const personRolesByPersonId = buildPersonRolesMap(usersRes.rows);
     const teamNameMap = new Map(teamsRes.rows.map((t) => [String(t.id), String(t.name)]));
     const progressRows = progressRes.rows.map((row) => mapPgLearningProgressRow(row));
 
@@ -6969,6 +7295,7 @@ export async function getQuizReport(
         : [actor.person];
     const targetPersonIds = new Set(targetPeople.map((person) => person.id));
     const attempts = allAttempts.filter((attempt) => targetPersonIds.has(attempt.personId));
+    const attemptRounds = computeAttemptRoundByPersonAndDocument(attempts);
     const attemptDocIdsByPerson = new Map<string, Set<string>>();
     for (const attempt of attempts) {
       const docIds = attemptDocIdsByPerson.get(attempt.personId) ?? new Set<string>();
@@ -6991,7 +7318,7 @@ export async function getQuizReport(
     for (const person of targetPeople) {
       const personAttempts = grouped.get(person.id) ?? [];
       const accessibleLearningDocuments = learningDocuments.filter((document) =>
-        canPersonAccessDocument(person, document, ownerTeamByPersonId) && !document.isLocked
+        canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId) && !document.isLocked
       );
       const attemptedDocIds = attemptDocIdsByPerson.get(person.id) ?? new Set<string>();
       let learningCompleted = 0;
@@ -7013,6 +7340,10 @@ export async function getQuizReport(
       const learningTotal = accessibleLearningDocuments.length;
       const learningNotStarted = Math.max(learningTotal - learningCompleted - learningInProgress, 0);
       const attemptDetails: QuizReportAttempt[] = personAttempts.map((a) => ({
+        ...(() => {
+          const attemptRound = Math.max(1, attemptRounds.get(a._id) ?? 1);
+          return { attemptRound, retakeCount: Math.max(0, attemptRound - 1) };
+        })(),
         quizId: a.quizId,
         documentId: a.documentId,
         documentName: docMap.get(a.documentId) ?? "Tài liệu",
@@ -7023,6 +7354,7 @@ export async function getQuizReport(
         submittedAt: a.submittedAt,
       }));
       const scores = personAttempts.map((a) => a.score);
+      const retakeCount = attemptDetails.reduce((sum, attempt) => sum + attempt.retakeCount, 0);
       rows.push({
         personId: person.id,
         personName: person.name,
@@ -7034,6 +7366,7 @@ export async function getQuizReport(
         learningNotStarted,
         learningProgressPercent: learningTotal > 0 ? Math.round((learningCompleted / learningTotal) * 100) : 0,
         totalAttempts: personAttempts.length,
+        retakeCount,
         averageScore: scores.length > 0 ? Math.round(scores.reduce((s, v) => s + v, 0) / scores.length) : 0,
         highestScore: scores.length > 0 ? Math.max(...scores) : 0,
         lastAttemptAt: personAttempts[0]?.submittedAt,
@@ -7060,15 +7393,17 @@ export async function getQuizReport(
     .collection<DbQuizAttempt>("quiz_attempts")
     .find(attemptQuery, { sort: { submittedAt: -1 } })
     .toArray();
+  const attemptRounds = computeAttemptRoundByPersonAndDocument(attempts);
 
   const quizIds = [...new Set(attempts.map((a) => a.quizId))];
 
-  const [quizzes, documents, people, companyTeams, progresses] = await Promise.all([
+  const [quizzes, documents, people, companyTeams, progresses, users] = await Promise.all([
     db.collection<DbLearningQuiz>("learning_quizzes").find({ _id: { $in: quizIds } }).toArray(),
     db.collection<DbDocument>("documents").find({}).toArray(),
     db.collection<DbPerson>("people").find(personIdFilter ? { _id: { $in: personIdFilter } } : {}).toArray(),
     db.collection<DbCompanyTeam>("company_teams").find({}).toArray(),
     db.collection<DbLearningProgress>("learning_progress").find(personIdFilter ? { personId: { $in: personIdFilter } } : {}).toArray(),
+    db.collection<DbUser>("users").find({ personId: { $exists: true } }, { projection: { personId: 1, role: 1 } }).toArray(),
   ]);
 
   const quizMap = new Map(quizzes.map((q) => [q._id, q]));
@@ -7076,6 +7411,13 @@ export async function getQuizReport(
   const teamNameMap = new Map(companyTeams.map((t) => [t._id, t.name]));
   const mappedPeople = people.map(mapDbPerson);
   const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
+  const personRolesByPersonId = new Map<string, Set<UserRole>>();
+  for (const user of users) {
+    if (!user.personId) continue;
+    const roles = personRolesByPersonId.get(user.personId) ?? new Set<UserRole>();
+    roles.add(normalizeUserRole(user.role));
+    personRolesByPersonId.set(user.personId, roles);
+  }
   const learningDocuments = documents.filter((document) => document.isLearningMaterial);
   const progressByPersonAndDocument = new Map<string, DbLearningProgress>();
   for (const progress of progresses) {
@@ -7099,7 +7441,7 @@ export async function getQuizReport(
   for (const person of mappedPeople) {
     const personAttempts = grouped.get(person.id) ?? [];
     const accessibleLearningDocuments = learningDocuments.filter((document) =>
-      canPersonAccessDocument(person, document, ownerTeamByPersonId) && !document.isLocked
+      canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId) && !document.isLocked
     );
     const attemptedDocIds = attemptDocIdsByPerson.get(person.id) ?? new Set<string>();
     let learningCompleted = 0;
@@ -7122,6 +7464,10 @@ export async function getQuizReport(
     const learningNotStarted = Math.max(learningTotal - learningCompleted - learningInProgress, 0);
 
     const attemptDetails: QuizReportAttempt[] = personAttempts.map((a) => ({
+      ...(() => {
+        const attemptRound = Math.max(1, attemptRounds.get(a._id) ?? 1);
+        return { attemptRound, retakeCount: Math.max(0, attemptRound - 1) };
+      })(),
       quizId: a.quizId,
       documentId: a.documentId,
       documentName: docMap.get(a.documentId) ?? "Tài liệu",
@@ -7133,6 +7479,7 @@ export async function getQuizReport(
     }));
 
     const scores = personAttempts.map((a) => a.score);
+    const retakeCount = attemptDetails.reduce((sum, attempt) => sum + attempt.retakeCount, 0);
     rows.push({
       personId: person.id,
       personName: person.name,
@@ -7144,6 +7491,7 @@ export async function getQuizReport(
       learningNotStarted,
       learningProgressPercent: learningTotal > 0 ? Math.round((learningCompleted / learningTotal) * 100) : 0,
       totalAttempts: personAttempts.length,
+      retakeCount,
       averageScore: scores.length > 0 ? Math.round(scores.reduce((s, v) => s + v, 0) / scores.length) : 0,
       highestScore: scores.length > 0 ? Math.max(...scores) : 0,
       lastAttemptAt: personAttempts[0]?.submittedAt,

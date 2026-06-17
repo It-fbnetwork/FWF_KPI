@@ -49,6 +49,8 @@ type PersonFormState = {
     email: string
     team: string
     imageURL: string
+    storeLeadUserId: string
+    storeManagerUserId: string
     start: string
     end: string
     timezone: string
@@ -77,6 +79,8 @@ const DEFAULT_FORM: PersonFormState = {
     email: "",
     team: "marketing",
     imageURL: "",
+    storeLeadUserId: "",
+    storeManagerUserId: "",
     start: "09:00",
     end: "17:00",
     timezone: "UTC+7",
@@ -104,8 +108,69 @@ export default function PeoplePage() {
     const canManagePeople = isAdmin || isStoreTrainer || isStoreManager
     const currentUser = findPersonForAuthUser(user, people)
     const currentTeamId = currentUser?.team ?? ""
+    const managerBranchIds = new Set(user?.storeBranchIds ?? [])
+    const isManagedStoreLeadPerson = (person: Person) =>
+        isStoreManager &&
+        person.authRole === "store_lead" &&
+        person.department === "Cửa hàng" &&
+        (person.storeBranchIds ?? []).some((branchId) => managerBranchIds.has(branchId))
+    const managedStoreLeadUserIds = new Set(
+        people
+            .filter(isManagedStoreLeadPerson)
+            .map((person) => person.userId)
+            .filter((userId): userId is string => Boolean(userId))
+    )
+    const isTechnicianUnderManagedLead = (person: Person) =>
+        isStoreManager &&
+        person.authRole === "store_technician" &&
+        Boolean(person.storeLeadUserId && managedStoreLeadUserIds.has(person.storeLeadUserId))
+    const storeManagerOptions = people.filter((person) => {
+        if (!person.userId) {
+            return false
+        }
+        if (person.authRole !== "store_manager" || person.department !== "Cửa hàng") {
+            return false
+        }
+
+        if (isStoreManager) {
+            return person.userId === user?.id
+        }
+
+        return isAdmin || isStoreTrainer
+    })
+    const storeLeadOptions = people.filter((person) => {
+        if (!person.userId) {
+            return false
+        }
+        if (person.authRole !== "store_lead" || person.department !== "Cửa hàng") {
+            return false
+        }
+
+        if (isStoreManager) {
+            return isManagedStoreLeadPerson(person)
+        }
+
+        return isAdmin || isStoreTrainer
+    })
+    const canEditTechnicianSupervisor =
+        Boolean(editingPerson) &&
+        editingPerson?.authRole === "store_technician" &&
+        personForm.team === "store" &&
+        personForm.role === "Kỹ thuật viên"
+    const canEditStoreLeadManager =
+        Boolean(editingPerson) &&
+        editingPerson?.authRole === "store_lead" &&
+        personForm.team === "store" &&
+        personForm.role === "Cửa hàng trưởng"
     const accessiblePeople = isAdmin
         ? people
+        : isStoreManager
+            ? people.filter(
+                (person) =>
+                    person.id === currentUser?.id ||
+                    isManagedStoreLeadPerson(person) ||
+                    isTechnicianUnderManagedLead(person)
+            )
         : currentTeamId
             ? people.filter((person) => person.team === currentTeamId)
             : []
@@ -120,14 +185,15 @@ export default function PeoplePage() {
         person.id !== currentUser?.id &&
         trainerManagedRoleSet.has(person.role)
     const managerManagedRoleSet = useMemo(
-        () => new Set(["Cửa hàng trưởng", "Kỹ thuật viên", "Nhân viên cửa hàng"]),
+        () => new Set(["Cửa hàng trưởng", "Kỹ thuật viên"]),
         []
     )
     const canManagerManagePerson = (person: Person) =>
         isStoreManager &&
         person.team === "store" &&
         person.id !== currentUser?.id &&
-        managerManagedRoleSet.has(person.role)
+        managerManagedRoleSet.has(person.role) &&
+        (isManagedStoreLeadPerson(person) || isTechnicianUnderManagedLead(person))
     const canEditPerson = (person: Person) => isAdmin || canTrainerManagePerson(person) || canManagerManagePerson(person)
     const availablePersonRoles = useMemo(() => {
         if (isStoreTrainer) {
@@ -339,6 +405,10 @@ export default function PeoplePage() {
             email: person.email,
             team: person.team,
             imageURL: person.imageURL === "/placeholder.svg" ? "" : person.imageURL,
+            storeLeadUserId: person.storeLeadUserId ?? "",
+            storeManagerUserId: storeManagerOptions.find((manager) =>
+                (person.storeBranchIds ?? []).some((branchId) => (manager.storeBranchIds ?? []).includes(branchId))
+            )?.userId ?? "",
             start: person.workingHours.start,
             end: person.workingHours.end,
             timezone: person.workingHours.timezone,
@@ -351,6 +421,22 @@ export default function PeoplePage() {
             toast({
                 title: "Thiếu thông tin",
                 description: "Vui lòng nhập tên, email, vai trò và team.",
+                variant: "destructive",
+            })
+            return
+        }
+        if (canEditTechnicianSupervisor && !personForm.storeLeadUserId) {
+            toast({
+                title: "Thiếu cửa hàng trưởng",
+                description: "Vui lòng chọn cửa hàng trưởng quản lí kỹ thuật viên.",
+                variant: "destructive",
+            })
+            return
+        }
+        if (canEditStoreLeadManager && !personForm.storeManagerUserId) {
+            toast({
+                title: "Thiếu quản lí cửa hàng",
+                description: "Vui lòng chọn quản lí cửa hàng phụ trách cửa hàng trưởng.",
                 variant: "destructive",
             })
             return
@@ -369,6 +455,8 @@ export default function PeoplePage() {
                     email: personForm.email,
                     team: personForm.team,
                     imageURL: personForm.imageURL,
+                    storeLeadUserId: canEditTechnicianSupervisor ? personForm.storeLeadUserId : undefined,
+                    storeManagerUserId: canEditStoreLeadManager ? personForm.storeManagerUserId : undefined,
                     workingHours: {
                         start: personForm.start,
                         end: personForm.end,
@@ -728,6 +816,40 @@ export default function PeoplePage() {
                                 </Select>
                             </div>
                         </div>
+                        {canEditTechnicianSupervisor && (
+                            <div className="grid gap-2">
+                                <Label htmlFor="technician-supervisor">Cửa hàng trưởng quản lí</Label>
+                                <Select value={personForm.storeLeadUserId} onValueChange={(value) => updatePersonForm("storeLeadUserId", value)}>
+                                    <SelectTrigger id="technician-supervisor">
+                                        <SelectValue placeholder="Chọn cửa hàng trưởng" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {storeLeadOptions.map((lead) => (
+                                            <SelectItem key={lead.userId} value={lead.userId as string}>
+                                                {lead.name}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        )}
+                        {canEditStoreLeadManager && (
+                            <div className="grid gap-2">
+                                <Label htmlFor="store-lead-manager">Quản lí cửa hàng phụ trách</Label>
+                                <Select value={personForm.storeManagerUserId} onValueChange={(value) => updatePersonForm("storeManagerUserId", value)}>
+                                    <SelectTrigger id="store-lead-manager">
+                                        <SelectValue placeholder="Chọn quản lí cửa hàng" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {storeManagerOptions.map((manager) => (
+                                            <SelectItem key={manager.userId} value={manager.userId as string}>
+                                                {manager.name}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        )}
                         <div className="grid gap-2">
                             <Label htmlFor="person-image">Avatar URL</Label>
                             <Input id="person-image" value={personForm.imageURL} onChange={(event) => updatePersonForm("imageURL", event.target.value)} placeholder="https://..." />
