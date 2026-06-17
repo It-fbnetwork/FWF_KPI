@@ -28,6 +28,8 @@ type QuizReportAttempt = {
     score: number
     correctAnswers: number
     totalQuestions: number
+    attemptRound: number
+    retakeCount: number
     submittedAt: string
 }
 
@@ -42,6 +44,7 @@ type QuizReportRow = {
     learningNotStarted: number
     learningProgressPercent: number
     totalAttempts: number
+    retakeCount: number
     averageScore: number
     highestScore: number
     lastAttemptAt?: string
@@ -769,6 +772,7 @@ export default function DashboardPage() {
                                                         <th className="px-5 py-3 font-semibold">Phòng ban</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Tiến độ học</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Bài đã làm</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Làm lại</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Điểm TB</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Điểm cao nhất</th>
                                                         <th className="px-5 py-3 font-semibold">Xếp loại</th>
@@ -778,7 +782,7 @@ export default function DashboardPage() {
                                                 <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
                                                     {filtered.length === 0 ? (
                                                         <tr>
-                                                            <td colSpan={9} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                                                            <td colSpan={10} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                                                                 Không tìm thấy nhân viên phù hợp.
                                                             </td>
                                                         </tr>
@@ -834,6 +838,9 @@ export default function DashboardPage() {
                                                                         </div>
                                                                     </td>
                                                                     <td className="px-5 py-4 text-center font-semibold text-gray-900 dark:text-white">{row.totalAttempts}</td>
+                                                                    <td className={`px-5 py-4 text-center font-semibold ${row.retakeCount > 0 ? "text-red-600 dark:text-red-400" : "text-gray-500 dark:text-gray-400"}`}>
+                                                                        {row.retakeCount}
+                                                                    </td>
                                                                     <td className={`px-5 py-4 text-center text-lg font-bold ${scoreColor}`}>{row.totalAttempts > 0 ? row.averageScore : "-"}</td>
                                                                     <td className={`px-5 py-4 text-center font-semibold ${scoreColor}`}>{row.totalAttempts > 0 ? row.highestScore : "-"}</td>
                                                                     <td className="px-5 py-4">
@@ -851,7 +858,7 @@ export default function DashboardPage() {
                                                                     <>
                                                                     <tr className="bg-emerald-50/70 dark:bg-emerald-950/20">
                                                                         <td className="px-3 py-3" />
-                                                                        <td colSpan={8} className="px-5 py-3 text-xs text-emerald-800 dark:text-emerald-200">
+                                                                        <td colSpan={9} className="px-5 py-3 text-xs text-emerald-800 dark:text-emerald-200">
                                                                             Học liệu: {row.learningCompleted} đã hoàn thành · {row.learningInProgress} đang học · {row.learningNotStarted} chưa học
                                                                         </td>
                                                                     </tr>
@@ -869,6 +876,9 @@ export default function DashboardPage() {
                                                                         </td>
                                                                         <td className="px-5 py-3 text-center text-xs text-gray-500 dark:text-gray-400">
                                                                             {att.correctAnswers}/{att.totalQuestions} câu
+                                                                        </td>
+                                                                        <td className={`px-5 py-3 text-center text-xs font-semibold ${att.retakeCount > 0 ? "text-red-600 dark:text-red-400" : "text-gray-500 dark:text-gray-400"}`}>
+                                                                            Lần {att.attemptRound} · Làm lại {att.retakeCount}
                                                                         </td>
                                                                         <td className={`px-5 py-3 text-center font-bold ${att.score >= QUIZ_PASS_SCORE ? "text-green-600" : att.score >= 50 ? "text-amber-500" : "text-red-500"}`}>
                                                                             {att.score}

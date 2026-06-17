@@ -43,6 +43,7 @@ export async function getMongoClient() {
 }
 
 async function ensureMongoIndexes(db: Db) {
+  await db.collection("quiz_attempts").dropIndex("documentId_1_personId_1").catch(() => undefined);
   await Promise.all([
     db.collection("users").createIndex({ email: 1 }),
     db.collection("users").createIndex({ createdAt: 1 }),
@@ -57,7 +58,7 @@ async function ensureMongoIndexes(db: Db) {
     db.collection("tests").createIndex({ createdByPersonId: 1, createdAt: -1 }),
     db.collection("documents").createIndex({ ownerId: 1, modifiedAt: -1 }),
     db.collection("learning_quizzes").createIndex({ documentId: 1 }, { unique: true }),
-    db.collection("quiz_attempts").createIndex({ documentId: 1, personId: 1 }, { unique: true }),
+    db.collection("quiz_attempts").createIndex({ documentId: 1, personId: 1, submittedAt: -1 }),
     db.collection("quiz_attempts").createIndex({ documentId: 1, submittedAt: -1 }),
     db.collection("learning_progress").createIndex({ personId: 1, documentId: 1 }, { unique: true }),
     db.collection("learning_progress").createIndex({ documentId: 1, personId: 1 }),

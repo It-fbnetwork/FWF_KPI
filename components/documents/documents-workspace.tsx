@@ -113,9 +113,13 @@ type QuizAttemptRecord = {
     startedAt: string
     submittedAt: string
     attemptRound?: number
+    retakeCount?: number
     isActiveAttempt?: boolean
     reviewQuestions?: LearningQuizQuestion[]
 }
+
+const getQuizRetakeCount = (attempt: Pick<QuizAttemptRecord, "attemptRound" | "retakeCount">) =>
+    Math.max(0, attempt.retakeCount ?? ((attempt.attemptRound ?? 1) - 1))
 
 type QuizAttemptResetRecord = {
     id: string
@@ -187,7 +191,18 @@ type LearningStatusRow = {
     personName: string
     personRole?: string
     team: string
+    storeRegion?: string
+    storeBranchIds?: number[]
+    storeBranchNames?: string[]
+    supervisorUserId?: string
+    supervisorName?: string
+    supervisorRole?: string
     status: LearningStatusType
+}
+
+type LearningStatusListDetail = {
+    title: string
+    rows: LearningStatusRow[]
 }
 
 type ExcelCellValue = string | number | boolean | null | undefined
@@ -306,6 +321,7 @@ interface VisibilityDialogState {
 
 const LEARNING_REQUIRED_SECONDS = 10
 const LANDSCAPE_HINT_DURATION_MS = 4500
+const FULLSCREEN_VIEWPORT_SETTLE_DELAYS_MS = [80, 180, 360, 650]
 const QUIZ_PASS_SCORE = 90
 
 const MobilePdfPageCanvas = dynamic(
@@ -335,6 +351,8 @@ type LearningPlanProgressMap = Record<string, LearningPlanProgress>
 type LearningFullscreenViewport = {
     width: number
     height: number
+    offsetLeft: number
+    offsetTop: number
 }
 
 function buildDefaultPlanProgress(): LearningPlanProgress {
@@ -410,6 +428,7 @@ export default function DocumentsPage() {
     const [drawerPreviewImageFailed, setDrawerPreviewImageFailed] = useState(false)
     const [contextMenu, setContextMenu] = useState<{ document: Document; position: ContextMenuPosition } | null>(null)
     const [documentsData, setDocumentsData] = useState<Document[]>([])
+    const [documentsLoading, setDocumentsLoading] = useState(true)
     const [folders, setFolders] = useState<Folder[]>([])
     const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
     const [newFolderDialog, setNewFolderDialog] = useState<NewFolderDialogState>({ open: false, name: "" })
@@ -437,6 +456,7 @@ export default function DocumentsPage() {
     const [quizzes, setQuizzes] = useState<Record<string, LearningQuizRecord | null>>({})
     const [myAttempts, setMyAttempts] = useState<Record<string, QuizAttemptRecord | null>>({})
     const [learningDataLoaded, setLearningDataLoaded] = useState(false)
+    const [learningDataLoading, setLearningDataLoading] = useState(false)
 
     const defaultQuizCreate = (): QuizCreateState => ({
         open: false, documentId: "", documentName: "", existingQuizId: null,
@@ -461,6 +481,8 @@ export default function DocumentsPage() {
     })
     const [resettingAttemptPersonId, setResettingAttemptPersonId] = useState<string | null>(null)
     const [quizResultsRoleFilter, setQuizResultsRoleFilter] = useState<QuizResultsRoleFilter>("all")
+    const [quizResultsSupervisorFilter, setQuizResultsSupervisorFilter] = useState<string>("all")
+    const [selectedLearningStatusListDetail, setSelectedLearningStatusListDetail] = useState<LearningStatusListDetail | null>(null)
     const [quizResultsTab, setQuizResultsTab] = useState<QuizResultsTab>("results")
     const [quizResetPersonFilter, setQuizResetPersonFilter] = useState<string>("all")
     const [quizResetTimeFilter, setQuizResetTimeFilter] = useState<"all" | "today" | "7d" | "30d" | "90d">("all")
@@ -481,6 +503,7 @@ export default function DocumentsPage() {
     const [showLandscapeHint, setShowLandscapeHint] = useState(false)
     const [isLearningLandscape, setIsLearningLandscape] = useState(true)
     const [learningFullscreenViewport, setLearningFullscreenViewport] = useState<LearningFullscreenViewport | null>(null)
+    const [isLearningViewportSettling, setIsLearningViewportSettling] = useState(false)
     const [isBrowserOnline, setIsBrowserOnline] = useState(true)
     const [mobileLearningMode, setMobileLearningMode] = useState<"list" | "reader">("list")
 
@@ -490,6 +513,9 @@ export default function DocumentsPage() {
     const quizTakeModalRef = useRef<QuizTakeState>(defaultQuizTake())
     const learningViewerRef = useRef<HTMLDivElement>(null)
     const learningTouchStartRef = useRef<{ x: number; y: number } | null>(null)
+    const documentsLoadSeqRef = useRef(0)
+    const learningFullscreenTransitionRef = useRef(false)
+    const learningViewportSettleSeqRef = useRef(0)
 
     const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null
     const currentPerson = people.find((person) => person.id === user?.personId) ?? null
@@ -618,20 +644,44 @@ export default function DocumentsPage() {
 
     useEffect(() => {
         if (!isMobile || !isLearningFullscreen) return
+        const settleTimers = new Set<number>()
 
         const syncFullscreenViewport = () => {
             const viewport = window.visualViewport
             setLearningFullscreenViewport({
                 width: Math.round(viewport?.width ?? window.innerWidth),
                 height: Math.round(viewport?.height ?? window.innerHeight),
+                offsetLeft: Math.round(viewport?.pageLeft ?? 0),
+                offsetTop: Math.round(viewport?.pageTop ?? 0),
             })
+        }
+        const clearSettleTimers = () => {
+            settleTimers.forEach((settleTimer) => window.clearTimeout(settleTimer))
+            settleTimers.clear()
+        }
+        const settleFullscreenViewport = () => {
+            const settleSeq = learningViewportSettleSeqRef.current + 1
+            learningViewportSettleSeqRef.current = settleSeq
+            clearSettleTimers()
+            setIsLearningViewportSettling(true)
+            syncFullscreenViewport()
+            for (const delay of FULLSCREEN_VIEWPORT_SETTLE_DELAYS_MS) {
+                const timer = window.setTimeout(() => {
+                    settleTimers.delete(timer)
+                    syncFullscreenViewport()
+                    if (delay === FULLSCREEN_VIEWPORT_SETTLE_DELAYS_MS[FULLSCREEN_VIEWPORT_SETTLE_DELAYS_MS.length - 1] && learningViewportSettleSeqRef.current === settleSeq) {
+                        setIsLearningViewportSettling(false)
+                    }
+                }, delay)
+                settleTimers.add(timer)
+            }
         }
 
         const syncOrientationState = () => {
             const isLandscape = isLandscapeViewport()
             setIsLearningLandscape(isLandscape)
             setShowLandscapeHint(!isLandscape)
-            syncFullscreenViewport()
+            settleFullscreenViewport()
         }
 
         syncOrientationState()
@@ -641,17 +691,19 @@ export default function DocumentsPage() {
         }
         window.addEventListener("orientationchange", onOrientationChange)
         window.addEventListener("resize", onOrientationChange)
-        window.visualViewport?.addEventListener("resize", syncFullscreenViewport)
-        window.visualViewport?.addEventListener("scroll", syncFullscreenViewport)
+        window.visualViewport?.addEventListener("resize", settleFullscreenViewport)
+        window.visualViewport?.addEventListener("scroll", settleFullscreenViewport)
         const timer = window.setTimeout(() => setShowLandscapeHint(false), LANDSCAPE_HINT_DURATION_MS)
 
         return () => {
             window.clearTimeout(timer)
+            clearSettleTimers()
             window.removeEventListener("orientationchange", onOrientationChange)
             window.removeEventListener("resize", onOrientationChange)
-            window.visualViewport?.removeEventListener("resize", syncFullscreenViewport)
-            window.visualViewport?.removeEventListener("scroll", syncFullscreenViewport)
+            window.visualViewport?.removeEventListener("resize", settleFullscreenViewport)
+            window.visualViewport?.removeEventListener("scroll", settleFullscreenViewport)
             setLearningFullscreenViewport(null)
+            setIsLearningViewportSettling(false)
         }
     }, [isLandscapeViewport, isLearningFullscreen, isMobile])
 
@@ -660,12 +712,14 @@ export default function DocumentsPage() {
         const onKeyDown = (event: KeyboardEvent) => {
             if (event.key !== "Escape") return
             setIsLearningFullscreen(false)
+            setIsLearningViewportSettling(false)
             setShowLandscapeHint(false)
+            void exitNativeFullscreen()
             unlockLearningOrientation()
         }
         window.addEventListener("keydown", onKeyDown)
         return () => window.removeEventListener("keydown", onKeyDown)
-    }, [isLearningFullscreen, unlockLearningOrientation])
+    }, [exitNativeFullscreen, isLearningFullscreen, unlockLearningOrientation])
 
     useEffect(() => {
         const onFullscreenChange = () => {
@@ -673,6 +727,7 @@ export default function DocumentsPage() {
             const activeElement = document.fullscreenElement ?? fullscreenDocument.webkitFullscreenElement ?? null
             if (!activeElement && isLearningFullscreen) {
                 setIsLearningFullscreen(false)
+                setIsLearningViewportSettling(false)
                 setShowLandscapeHint(false)
                 unlockLearningOrientation()
             }
@@ -692,7 +747,7 @@ export default function DocumentsPage() {
         const previousTouchAction = document.body.style.touchAction
         document.body.style.overflow = "hidden"
         document.body.style.overscrollBehavior = "none"
-        document.body.style.touchAction = "none"
+        document.body.style.touchAction = "manipulation"
         return () => {
             document.body.style.overflow = previousOverflow
             document.body.style.overscrollBehavior = previousOverscrollBehavior
@@ -704,23 +759,27 @@ export default function DocumentsPage() {
     }, [isLearningFullscreen, unlockLearningOrientation])
 
     const handleToggleLearningFullscreen = useCallback(async (fallbackUrl?: string) => {
+        if (learningFullscreenTransitionRef.current) return
+        learningFullscreenTransitionRef.current = true
         try {
             if (isLearningFullscreen) {
                 setIsLearningFullscreen(false)
+                setIsLearningViewportSettling(false)
                 setShowLandscapeHint(false)
                 await exitNativeFullscreen()
                 unlockLearningOrientation()
                 return
             }
             setIsLearningFullscreen(true)
+            setIsLearningViewportSettling(isMobile)
             if (isMobile) {
                 setShowLandscapeHint(!isLandscapeViewport())
-                void requestNativeFullscreen()
-                await lockLearningLandscape()
-                if (isLandscapeViewport()) setShowLandscapeHint(false)
+                window.setTimeout(() => {
+                    if (isLandscapeViewport()) setShowLandscapeHint(false)
+                }, FULLSCREEN_VIEWPORT_SETTLE_DELAYS_MS[FULLSCREEN_VIEWPORT_SETTLE_DELAYS_MS.length - 1])
                 return
             }
-            void requestNativeFullscreen()
+            await requestNativeFullscreen()
         } catch {
             if (fallbackUrl && isMobile) {
                 window.open(fallbackUrl, "_blank", "noopener,noreferrer")
@@ -731,8 +790,12 @@ export default function DocumentsPage() {
                 description: "Trình duyệt hiện tại không hỗ trợ hoặc đã chặn thao tác này.",
                 variant: "destructive",
             })
+        } finally {
+            window.setTimeout(() => {
+                learningFullscreenTransitionRef.current = false
+            }, 450)
         }
-    }, [exitNativeFullscreen, isLandscapeViewport, isLearningFullscreen, isMobile, lockLearningLandscape, requestNativeFullscreen, unlockLearningOrientation])
+    }, [exitNativeFullscreen, isLandscapeViewport, isLearningFullscreen, isMobile, requestNativeFullscreen, unlockLearningOrientation])
     const officeRoleOptions = useMemo(() => {
         const roles = new Set(officeSelectablePeople.map((person) => person.role))
         if (currentPerson?.team === "store") {
@@ -968,6 +1031,9 @@ export default function DocumentsPage() {
     }
 
     const loadDocuments = async () => {
+        const loadSeq = documentsLoadSeqRef.current + 1
+        documentsLoadSeqRef.current = loadSeq
+        setDocumentsLoading(true)
         try {
             const url = activeFolderId
                 ? `/api/documents?folderId=${activeFolderId}`
@@ -979,6 +1045,10 @@ export default function DocumentsPage() {
             return payload.documents
         } catch {
             return []
+        } finally {
+            if (documentsLoadSeqRef.current === loadSeq) {
+                setDocumentsLoading(false)
+            }
         }
     }
 
@@ -1481,6 +1551,8 @@ export default function DocumentsPage() {
         ? documentsData.filter((d) => d.isLearningMaterial)
         : documentsData.filter((d) => !d.isLocked)
     ).sort((a, b) => new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime())
+    const learningDocsKey = learningDocs.map((doc) => doc.id).join("|")
+    const learningTabLoading = documentsLoading || learningDataLoading || (activeTab === "learning" && !learningDataLoaded)
     const completedLearningCount = learningDocs.filter((doc) => learningProgress.completedDocIds.includes(doc.id)).length
 
     useEffect(() => {
@@ -1654,30 +1726,45 @@ export default function DocumentsPage() {
     // ── Learning handlers ────────────────────────────────────────────
 
     const loadLearningData = async (docs: Document[]) => {
-        if (docs.length === 0) return
-        const results = await Promise.allSettled(
-            docs.map((doc) =>
-                Promise.all([
-                    fetch(`/api/learning/quiz/${doc.id}`, { credentials: "include", cache: "no-store" })
-                        .then((r) => r.json() as Promise<{ quiz: LearningQuizRecord | null }>),
-                    fetch(`/api/learning/quiz/${doc.id}/attempts`, { credentials: "include", cache: "no-store" })
-                        .then((r) => r.json() as Promise<{ attempt: QuizAttemptRecord | null }>),
-                ])
-            )
-        )
-        const newQuizzes: Record<string, LearningQuizRecord | null> = {}
-        const newAttempts: Record<string, QuizAttemptRecord | null> = {}
-        results.forEach((result, i) => {
-            const doc = docs[i]!
-            if (result.status === "fulfilled") {
-                newQuizzes[doc.id] = result.value[0].quiz ?? null
-                newAttempts[doc.id] = result.value[1].attempt ?? null
+        setLearningDataLoading(true)
+        try {
+            if (docs.length === 0) {
+                setQuizzes({})
+                setMyAttempts({})
+                setLearningDataLoaded(true)
+                return
             }
-        })
-        setQuizzes(newQuizzes)
-        setMyAttempts(newAttempts)
-        setLearningDataLoaded(true)
+            const results = await Promise.allSettled(
+                docs.map((doc) =>
+                    Promise.all([
+                        fetch(`/api/learning/quiz/${doc.id}`, { credentials: "include", cache: "no-store" })
+                            .then((r) => r.json() as Promise<{ quiz: LearningQuizRecord | null }>),
+                        fetch(`/api/learning/quiz/${doc.id}/attempts`, { credentials: "include", cache: "no-store" })
+                            .then((r) => r.json() as Promise<{ attempt: QuizAttemptRecord | null }>),
+                    ])
+                )
+            )
+            const newQuizzes: Record<string, LearningQuizRecord | null> = {}
+            const newAttempts: Record<string, QuizAttemptRecord | null> = {}
+            results.forEach((result, i) => {
+                const doc = docs[i]!
+                if (result.status === "fulfilled") {
+                    newQuizzes[doc.id] = result.value[0].quiz ?? null
+                    newAttempts[doc.id] = result.value[1].attempt ?? null
+                }
+            })
+            setQuizzes(newQuizzes)
+            setMyAttempts(newAttempts)
+            setLearningDataLoaded(true)
+        } finally {
+            setLearningDataLoading(false)
+        }
     }
+
+    useEffect(() => {
+        if (activeTab !== "learning" || documentsLoading) return
+        void loadLearningData(learningDocs)
+    }, [activeTab, documentsLoading, learningDocsKey])
 
     const refreshLearningRealtimeData = useCallback(async () => {
         await loadFolders()
@@ -1713,11 +1800,12 @@ export default function DocumentsPage() {
         })
     }, [refreshLearningRealtimeData, user?.personId])
 
-    const handleEnterLearningTab = () => {
+    const handleEnterLearningTab = async () => {
         setActiveTab("learning")
+        const sourceDocs = documentsLoading ? await loadDocuments() : documentsData
         const docs = isLeaderOrAdmin
-            ? documentsData.filter((d) => d.isLearningMaterial)
-            : documentsData.filter((d) => !d.isLocked)
+            ? sourceDocs.filter((d) => d.isLearningMaterial)
+            : sourceDocs.filter((d) => !d.isLocked)
         const targetDoc = selectedLearningDoc && docs.some((doc) => doc.id === selectedLearningDoc.id)
             ? selectedLearningDoc
             : docs[0] ?? null
@@ -1727,7 +1815,7 @@ export default function DocumentsPage() {
         } else if (isMobile) {
             setMobileLearningMode("list")
         }
-        void loadLearningData(docs)
+        await loadLearningData(docs)
     }
 
     const markDocumentAsCompleted = (docId: string) => {
@@ -2194,6 +2282,8 @@ export default function DocumentsPage() {
 
     const handleOpenQuizResults = async (doc: Document) => {
         setQuizResultsRoleFilter("all")
+        setQuizResultsSupervisorFilter("all")
+        setSelectedLearningStatusListDetail(null)
         setQuizResultsTab("results")
         setQuizResetPersonFilter("all")
         setQuizResetTimeFilter("all")
@@ -2269,8 +2359,12 @@ export default function DocumentsPage() {
         }
         const roleMatched = (personId: string) =>
             quizResultsRoleFilter === "all" || getRoleGroupByPersonId(personId) === quizResultsRoleFilter
-        const scopedLearningStatuses = quizResultsModal.learningStatuses.filter((item) => roleMatched(item.personId))
-        const scopedAttempts = quizResultsModal.attempts.filter((attempt) => roleMatched(attempt.personId))
+        const statusByPersonId = new Map(quizResultsModal.learningStatuses.map((item) => [item.personId, item]))
+        const supervisorMatched = (personId: string) =>
+            quizResultsSupervisorFilter === "all" ||
+            statusByPersonId.get(personId)?.supervisorUserId === quizResultsSupervisorFilter
+        const scopedLearningStatuses = quizResultsModal.learningStatuses.filter((item) => roleMatched(item.personId) && supervisorMatched(item.personId))
+        const scopedAttempts = quizResultsModal.attempts.filter((attempt) => roleMatched(attempt.personId) && supervisorMatched(attempt.personId))
         const activeAttempts = scopedAttempts.filter((attempt) => attempt.isActiveAttempt !== false)
         const submittedPersonIdSet = new Set(activeAttempts.map((attempt) => attempt.personId))
         const completed = scopedLearningStatuses.filter((item) => item.status === "completed")
@@ -2281,6 +2375,7 @@ export default function DocumentsPage() {
 
         return {
             getRoleGroupByPersonId,
+            statusByPersonId,
             scopedLearningStatuses,
             scopedAttempts,
             activeAttempts,
@@ -2290,12 +2385,13 @@ export default function DocumentsPage() {
             readyButNotSubmitted,
             notEligibleForQuiz,
         }
-    }, [getRoleGroup, people, quizResultsModal.attempts, quizResultsModal.learningStatuses, quizResultsRoleFilter])
+    }, [getRoleGroup, people, quizResultsModal.attempts, quizResultsModal.learningStatuses, quizResultsRoleFilter, quizResultsSupervisorFilter])
 
     const handleExportQuizResultsExcel = useCallback(() => {
         if (quizResultsModal.isLoading) return
         const {
             getRoleGroupByPersonId,
+            statusByPersonId,
             scopedLearningStatuses,
             scopedAttempts,
             activeAttempts,
@@ -2321,14 +2417,22 @@ export default function DocumentsPage() {
         const averageScore = activeAttempts.length > 0
             ? Math.round(activeAttempts.reduce((sum, attempt) => sum + attempt.score, 0) / activeAttempts.length)
             : 0
+        const needsRetakeAttempts = activeAttempts.filter((attempt) => attempt.score < QUIZ_PASS_SCORE)
+        const totalRetakeCount = activeAttempts.reduce((sum, attempt) => sum + getQuizRetakeCount(attempt), 0)
         const filename = `${sanitizeFilenamePart(quizResultsModal.documentName)}-tien-do-${new Date().toISOString().slice(0, 10)}.xls`
         const statusRows = (rows: LearningStatusRow[]) => rows.map((item) => [
             item.personName,
             item.personRole ?? "",
             roleLabelByGroup[getRoleGroupByPersonId(item.personId)],
             item.team,
+            item.supervisorName ?? "",
             statusLabel[item.status],
         ])
+        const attemptSupervisor = (personId: string) => statusByPersonId.get(personId)?.supervisorName ?? ""
+        const selectedSupervisorLabel =
+            quizResultsSupervisorFilter === "all"
+                ? "Tất cả"
+                : quizResultsModal.learningStatuses.find((item) => item.supervisorUserId === quizResultsSupervisorFilter)?.supervisorName ?? quizResultsSupervisorFilter
 
         downloadExcelWorkbook(filename, [
             {
@@ -2337,6 +2441,7 @@ export default function DocumentsPage() {
                     ["Báo cáo theo dõi tiến độ nhân viên"],
                     ["Tài liệu", quizResultsModal.documentName],
                     ["Bộ lọc vai trò", quizResultsRoleFilter === "all" ? "Tất cả" : roleLabelByGroup[quizResultsRoleFilter]],
+                    ["Bộ lọc người phụ trách", selectedSupervisorLabel],
                     ["Xuất lúc", new Date().toLocaleString("vi-VN")],
                     [],
                     ["Nhóm", "Số lượng"],
@@ -2348,62 +2453,77 @@ export default function DocumentsPage() {
                     ["Chưa đủ điều kiện làm quiz", notEligibleForQuiz.length],
                     ["Điểm trung bình", averageScore],
                     [`Đạt >=${QUIZ_PASS_SCORE}`, activeAttempts.filter((attempt) => attempt.score >= QUIZ_PASS_SCORE).length],
+                    [`Cần làm lại (<${QUIZ_PASS_SCORE})`, needsRetakeAttempts.length],
+                    ["Tổng số lần làm lại", totalRetakeCount],
                 ],
             },
             {
                 name: "Trang thai hoc",
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(scopedLearningStatuses),
                 ],
             },
             {
                 name: "Da hoc",
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(completed),
                 ],
             },
             {
                 name: "Dang hoc",
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(inProgress),
                 ],
             },
             {
                 name: "Chua hoc",
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(notStarted),
                 ],
             },
             {
                 name: "Tien do quiz",
                 rows: [
-                    ["Nhân viên", "Vai trò", "Trạng thái học", "Trạng thái quiz"],
+                    ["Nhân viên", "Vai trò", "Người phụ trách", "Trạng thái học", "Trạng thái quiz", "Điểm hiện tại", "Số lần làm lại"],
                     ...scopedLearningStatuses.map((item) => {
                         const activeAttempt = activeAttempts.find((attempt) => attempt.personId === item.personId)
                         const quizStatus = activeAttempt
-                            ? "Đã nộp"
+                            ? activeAttempt.score >= QUIZ_PASS_SCORE
+                                ? "Đạt"
+                                : "Cần làm lại"
                             : item.status === "completed"
                                 ? "Chưa nộp (đã học)"
                                 : "Chưa đủ điều kiện"
-                        return [item.personName, item.personRole ?? "", statusLabel[item.status], quizStatus]
+                        return [
+                            item.personName,
+                            item.personRole ?? "",
+                            item.supervisorName ?? "",
+                            statusLabel[item.status],
+                            quizStatus,
+                            activeAttempt?.score ?? "",
+                            activeAttempt ? getQuizRetakeCount(activeAttempt) : "",
+                        ]
                     }),
                 ],
             },
             {
                 name: "Ket qua quiz",
                 rows: [
-                    ["Nhân viên", "Vai trò", "Điểm", "Câu đúng", "Tổng câu", "Lần làm", "Trạng thái", "Bắt đầu", "Nộp lúc"],
+                    ["Nhân viên", "Vai trò", "Người phụ trách", "Điểm", "Câu đúng", "Tổng câu", "Lần làm", "Số lần làm lại", "Kết quả", "Trạng thái", "Bắt đầu", "Nộp lúc"],
                     ...scopedAttempts.map((attempt) => [
                         attempt.personName ?? "Unknown",
                         attempt.personRole ?? "",
+                        attemptSupervisor(attempt.personId),
                         attempt.score,
                         attempt.correctAnswers,
                         attempt.totalQuestions,
                         attempt.attemptRound ?? 1,
+                        getQuizRetakeCount(attempt),
+                        attempt.score >= QUIZ_PASS_SCORE ? "Đạt" : "Cần làm lại",
                         attempt.isActiveAttempt === false ? "Đã reset" : "Hiệu lực",
                         formatDateTime(attempt.startedAt),
                         formatDateTime(attempt.submittedAt),
@@ -2424,7 +2544,7 @@ export default function DocumentsPage() {
                 ],
             },
         ])
-    }, [buildQuizResultsScope, quizResultsModal.documentName, quizResultsModal.isLoading, quizResultsModal.resets, quizResultsRoleFilter])
+    }, [buildQuizResultsScope, quizResultsModal.documentName, quizResultsModal.isLoading, quizResultsModal.learningStatuses, quizResultsModal.resets, quizResultsRoleFilter, quizResultsSupervisorFilter])
 
     // ── Sub-components ───────────────────────────────────────────────
 
@@ -2813,7 +2933,15 @@ export default function DocumentsPage() {
 
             {/* ── Học liệu tab ── */}
             {activeTab === "learning" && (
-                learningDocs.length === 0 ? (
+                learningTabLoading ? (
+                    <div className="flex min-h-[45vh] flex-col items-center justify-center gap-3 py-20 text-center">
+                        <Loader2 className="h-7 w-7 animate-spin text-violet-600 dark:text-violet-400" />
+                        <div>
+                            <p className="text-sm font-medium text-gray-700 dark:text-gray-200">Đang tải học liệu...</p>
+                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Vui lòng chờ dữ liệu tài liệu hoàn tất.</p>
+                        </div>
+                    </div>
+                ) : learningDocs.length === 0 ? (
                     <div className="text-center py-20">
                         <GraduationCap className="w-12 h-12 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
                         <h3 className="text-base font-medium text-gray-700 dark:text-gray-300 mb-2">Chưa có học liệu</h3>
@@ -2826,22 +2954,25 @@ export default function DocumentsPage() {
                         )}
                     </div>
                 ) : (
-                    <div
-                        className={`flex flex-col overflow-hidden border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 lg:flex-row ${
-                            isLearningFullscreen
-                                ? "fixed left-0 top-0 z-[200] rounded-none border-0"
-                                : isMobile
-                                    ? "-mx-3 rounded-none border-x-0"
-                                    : "rounded-xl"
-                        }`}
-                        style={isLearningFullscreen
-                            ? {
-                                width: `${learningFullscreenViewport?.width ?? (typeof window !== "undefined" ? window.innerWidth : 0)}px`,
-                                height: `${learningFullscreenViewport?.height ?? (typeof window !== "undefined" ? window.innerHeight : 0)}px`,
-                                maxHeight: `${learningFullscreenViewport?.height ?? (typeof window !== "undefined" ? window.innerHeight : 0)}px`,
-                            }
-                            : { minHeight: isMobile ? "calc(100dvh - 190px)" : "calc(100vh - 220px)" }}
-                    >
+	                    <div
+	                        className={`flex flex-col overflow-hidden border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 lg:flex-row ${
+	                            isLearningFullscreen
+	                                ? "fixed z-[300] isolate rounded-none border-0 bg-black dark:bg-black"
+	                                : isMobile
+	                                    ? "-mx-3 rounded-none border-x-0"
+	                                    : "rounded-xl"
+	                        }`}
+	                        style={isLearningFullscreen
+	                            ? {
+	                                left: `${learningFullscreenViewport?.offsetLeft ?? 0}px`,
+	                                top: `${learningFullscreenViewport?.offsetTop ?? 0}px`,
+	                                width: `${learningFullscreenViewport?.width ?? (typeof window !== "undefined" ? window.innerWidth : 0)}px`,
+	                                height: `${learningFullscreenViewport?.height ?? (typeof window !== "undefined" ? window.innerHeight : 0)}px`,
+	                                maxHeight: `${learningFullscreenViewport?.height ?? (typeof window !== "undefined" ? window.innerHeight : 0)}px`,
+	                                minHeight: 0,
+	                            }
+	                            : { minHeight: isMobile ? "calc(100dvh - 190px)" : "calc(100vh - 220px)" }}
+	                    >
                         {/* ── Left Sidebar ─────────────────────────────────── */}
                         <div className={`${isLearningFullscreen ? "hidden " : ""}w-full flex-shrink-0 border-b border-gray-200 transition-all duration-200 dark:border-gray-800 lg:border-b-0 lg:border-r ${
                             isMobile && mobileLearningMode === "reader" ? "hidden" : ""
@@ -2993,11 +3124,12 @@ export default function DocumentsPage() {
                                         docPlanProgress.completedStepIds.includes(activePlanStep.id) ||
                                         learningRemainingSeconds <= 0
                                     : false
-                                const isMobileReader = isMobile && !isLearningFullscreen
-                                const previewFrameClass = isLearningFullscreen
-                                    ? "min-h-0 flex-1 !rounded-none !border-0"
-                                    : "aspect-video"
-                                const requiresLandscapeToView = isMobile && isLearningFullscreen && !isLearningLandscape
+		                                const isMobileReader = isMobile && !isLearningFullscreen
+		                                const isMobilePreviewSettling = isMobile && isLearningFullscreen && isLearningViewportSettling
+		                                const previewFrameClass = isLearningFullscreen
+		                                    ? "h-full min-h-0 w-full !rounded-none !border-0"
+		                                    : "aspect-video"
+	                                const requiresLandscapeToView = false
                                 const goToPrevStep = () => {
                                     if (!prevPlanStep) return
                                     setLearningPlanProgress((prev) => {
@@ -3141,10 +3273,10 @@ export default function DocumentsPage() {
                                                 </div>
                                             )}
                                             {/* Preview area */}
-                                            {hasLearningPlan && activePlanStep ? (
-                                                <div className={`bg-[linear-gradient(180deg,rgba(241,245,249,0.85),rgba(248,250,252,0.95))] dark:bg-gray-900 ${
-                                                    isLearningFullscreen ? "flex h-full min-h-0 flex-1 flex-col gap-0 overflow-hidden bg-black p-0 dark:bg-black" : isMobileReader ? "space-y-2 p-2" : "space-y-4 p-4 md:p-6"
-                                                }`}
+	                                            {hasLearningPlan && activePlanStep ? (
+	                                                <div className={`bg-[linear-gradient(180deg,rgba(241,245,249,0.85),rgba(248,250,252,0.95))] dark:bg-gray-900 ${
+	                                                    isLearningFullscreen ? "grid h-full min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-0 overflow-hidden bg-black p-0 dark:bg-black" : isMobileReader ? "space-y-2 p-2" : "space-y-4 p-4 md:p-6"
+	                                                }`}
                                                     onTouchStart={handleReaderTouchStart}
                                                     onTouchEnd={handleReaderTouchEnd}
                                                 >
@@ -3203,11 +3335,12 @@ export default function DocumentsPage() {
                                                                         <MobilePdfPageCanvas
                                                                             key={`${doc.id}-${activePlanStep.id}-${previewBaseUrl}-${failedCanvasPreviewKeys[activePreviewKey] ? "retry" : "canvas"}`}
                                                                             src={previewBaseUrl!}
-                                                                            pageNumber={currentPage}
-                                                                            title={`${doc.name}-page-${activePlanStep.pageNumber}`}
-                                                                            className="h-full w-full"
-                                                                            onRendered={() => {
-                                                                                clearLearningPreviewFailure(activePreviewKey)
+	                                                                            pageNumber={currentPage}
+	                                                                            title={`${doc.name}-page-${activePlanStep.pageNumber}`}
+	                                                                            className="h-full w-full"
+	                                                                            suspendRender={isMobilePreviewSettling}
+	                                                                            onRendered={() => {
+	                                                                                clearLearningPreviewFailure(activePreviewKey)
                                                                                 clearLearningPreviewFailure(stepPreviewKey)
                                                                                 markLearningPreviewLoaded(activePreviewKey)
                                                                                 markLearningPreviewLoaded(stepPreviewKey)
@@ -3410,14 +3543,14 @@ export default function DocumentsPage() {
                                                         </>
                                                     )}
 
-                                                    <div className={`rounded-xl border border-gray-200 bg-white/90 p-2 dark:border-gray-700 dark:bg-gray-900/75 ${
-                                                        isLearningFullscreen
-                                                            ? "z-[140] flex-shrink-0 !rounded-none !border-x-0 !border-b-0 p-1.5 backdrop-blur supports-[backdrop-filter]:bg-white/88 dark:supports-[backdrop-filter]:bg-gray-900/82"
-                                                            : isMobileReader
-                                                                ? "sticky bottom-2 z-20"
-                                                                : ""
-                                                    }`}>
-                                                        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+	                                                    <div className={`rounded-xl border border-gray-200 bg-white/90 p-2 dark:border-gray-700 dark:bg-gray-900/75 ${
+	                                                        isLearningFullscreen
+	                                                            ? "z-[140] min-h-0 flex-shrink-0 !rounded-none !border-x-0 !border-b-0 !bg-white/92 !p-1.5 !pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur dark:!bg-gray-900/90"
+	                                                            : isMobileReader
+	                                                                ? "sticky bottom-2 z-20"
+	                                                                : ""
+	                                                    }`}>
+	                                                        <div className="grid grid-cols-[minmax(2.75rem,1fr)_auto_minmax(2.75rem,1fr)] items-center gap-2">
                                                             <Button
                                                                 type="button"
                                                                 variant="outline"
@@ -3898,47 +4031,59 @@ export default function DocumentsPage() {
                 </div>
             </div>
 
-            {/* Results count */}
-            <div className="mb-4">
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                    {filteredDocuments.length} / {documentsData.length} tài liệu
-                    {activeFolder ? ` trong "${activeFolder.name}"` : ""}
-                </p>
-            </div>
-
-            {/* Document list */}
-            <div className="space-y-8">
-                {Object.entries(groups).map(([groupName, groupDocs]) => (
-                    <div key={groupName}>
-                        {groupBy !== "none" && (
-                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
-                                {groupName}
-                                <Badge variant="secondary" className="ml-2">{groupDocs.length}</Badge>
-                            </h2>
-                        )}
-                        {viewMode === "grid" ? (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                                {(sortBy === "date" ? [...groupDocs].reverse() : groupDocs).map((doc) => (
-                                    <DocumentCard key={doc.id} doc={doc} />
-                                ))}
-                            </div>
-                        ) : (
-                            <div className="space-y-1">
-                                {groupDocs.map((doc) => <DocumentListItem key={doc.id} doc={doc} />)}
-                            </div>
-                        )}
+            {documentsLoading ? (
+                <div className="flex min-h-[35vh] flex-col items-center justify-center gap-3 py-16 text-center">
+                    <Loader2 className="h-7 w-7 animate-spin text-blue-600 dark:text-blue-400" />
+                    <div>
+                        <p className="text-sm font-medium text-gray-700 dark:text-gray-200">Đang tải tài liệu...</p>
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Vui lòng chờ dữ liệu tài liệu hoàn tất.</p>
                     </div>
-                ))}
-            </div>
-
-            {filteredDocuments.length === 0 && (
-                <div className="text-center py-12">
-                    <FileText className="w-12 h-12 mx-auto mb-4 text-gray-400" />
-                    <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Không có tài liệu</h3>
-                    <p className="text-gray-600 dark:text-gray-400">
-                        {activeFolder ? `Folder "${activeFolder.name}" chưa có file nào.` : "Thử thay đổi bộ lọc hoặc tìm kiếm."}
-                    </p>
                 </div>
+            ) : (
+                <>
+                    {/* Results count */}
+                    <div className="mb-4">
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                            {filteredDocuments.length} / {documentsData.length} tài liệu
+                            {activeFolder ? ` trong "${activeFolder.name}"` : ""}
+                        </p>
+                    </div>
+
+                    {/* Document list */}
+                    <div className="space-y-8">
+                        {Object.entries(groups).map(([groupName, groupDocs]) => (
+                            <div key={groupName}>
+                                {groupBy !== "none" && (
+                                    <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
+                                        {groupName}
+                                        <Badge variant="secondary" className="ml-2">{groupDocs.length}</Badge>
+                                    </h2>
+                                )}
+                                {viewMode === "grid" ? (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                        {(sortBy === "date" ? [...groupDocs].reverse() : groupDocs).map((doc) => (
+                                            <DocumentCard key={doc.id} doc={doc} />
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="space-y-1">
+                                        {groupDocs.map((doc) => <DocumentListItem key={doc.id} doc={doc} />)}
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
+                    {filteredDocuments.length === 0 && (
+                        <div className="text-center py-12">
+                            <FileText className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+                            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Không có tài liệu</h3>
+                            <p className="text-gray-600 dark:text-gray-400">
+                                {activeFolder ? `Folder "${activeFolder.name}" chưa có file nào.` : "Thử thay đổi bộ lọc hoặc tìm kiếm."}
+                            </p>
+                        </div>
+                    )}
+                </>
             )}
 
             {/* ── Context Menu ─────────────────────────────────────────── */}
@@ -4973,7 +5118,7 @@ export default function DocumentsPage() {
             {/* ── Quiz Results Modal (Leader) ──────────────────────────── */}
             {quizResultsModal.open && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
-                    <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-lg flex-col rounded-2xl bg-white shadow-2xl dark:bg-gray-800 sm:max-h-[85vh]">
+                    <div className="relative flex max-h-[calc(100dvh-1.5rem)] w-full max-w-lg flex-col rounded-2xl bg-white shadow-2xl dark:bg-gray-800 sm:max-h-[85vh]">
                         <div className="flex items-center justify-between border-b border-gray-200 px-4 pb-4 pt-4 dark:border-gray-700 sm:px-6 sm:pt-5">
                             <div>
                                 <h2 className="text-lg font-bold text-gray-900 dark:text-white">Kết quả quiz</h2>
@@ -5134,6 +5279,22 @@ export default function DocumentsPage() {
                                         quizResultsModal.attempts.forEach((item) => roleGroupsInResult.add(getRoleGroupByPersonId(item.personId)))
                                         const roleOptionOrder: Exclude<QuizResultsRoleFilter, "all">[] = ["store_manager", "store_lead", "store_technician", "trainer", "other"]
                                         const roleOptions = roleOptionOrder.filter((group) => roleGroupsInResult.has(group))
+                                        const statusByPersonId = new Map(quizResultsModal.learningStatuses.map((item) => [item.personId, item]))
+                                        const supervisorOptions = Array.from(
+                                            new Map(
+                                                quizResultsModal.learningStatuses
+                                                    .filter((item) => item.supervisorUserId && item.supervisorName)
+                                                    .map((item) => [item.supervisorUserId as string, item.supervisorName as string])
+                                            ).entries()
+                                        ).sort((a, b) => a[1].localeCompare(b[1], "vi"))
+                                        const openStatusListDetail = (title: string, rows: LearningStatusRow[]) => {
+                                            setSelectedLearningStatusListDetail({ title, rows })
+                                        }
+                                        const renderStatusName = (item: LearningStatusRow, className: string) => (
+                                            <p key={item.personId} className={`px-1 py-0.5 text-xs font-medium ${className}`}>
+                                                {item.personName}
+                                            </p>
+                                        )
 
                                         const allowedRoleOptionsByActor: Record<string, Exclude<QuizResultsRoleFilter, "all">[]> = {
                                             store_trainer: ["store_manager", "store_lead", "store_technician"],
@@ -5150,10 +5311,15 @@ export default function DocumentsPage() {
                                                 : "all"
                                         const roleMatched = (personId: string) =>
                                             effectiveRoleFilter === "all" || getRoleGroupByPersonId(personId) === effectiveRoleFilter
+                                        const supervisorMatched = (personId: string) =>
+                                            quizResultsSupervisorFilter === "all" ||
+                                            statusByPersonId.get(personId)?.supervisorUserId === quizResultsSupervisorFilter
 
-                                        const scopedLearningStatuses = quizResultsModal.learningStatuses.filter((item) => roleMatched(item.personId))
-                                        const scopedAttempts = quizResultsModal.attempts.filter((attempt) => roleMatched(attempt.personId))
+                                        const scopedLearningStatuses = quizResultsModal.learningStatuses.filter((item) => roleMatched(item.personId) && supervisorMatched(item.personId))
+                                        const scopedAttempts = quizResultsModal.attempts.filter((attempt) => roleMatched(attempt.personId) && supervisorMatched(attempt.personId))
                                         const activeAttempts = scopedAttempts.filter((attempt) => attempt.isActiveAttempt !== false)
+                                        const needsRetakeAttempts = activeAttempts.filter((attempt) => attempt.score < QUIZ_PASS_SCORE)
+                                        const totalRetakeCount = activeAttempts.reduce((sum, attempt) => sum + getQuizRetakeCount(attempt), 0)
 
                                         const completed = scopedLearningStatuses.filter((item) => item.status === "completed")
                                         const inProgress = scopedLearningStatuses.filter((item) => item.status === "in_progress")
@@ -5192,107 +5358,161 @@ export default function DocumentsPage() {
                                                             </button>
                                                         ))}
                                                     </div>
+                                                    <div className="mt-3">
+                                                        <label className="mb-1 block text-xs font-semibold text-gray-600 dark:text-gray-300">
+                                                            Lọc theo người phụ trách
+                                                        </label>
+                                                        <select
+                                                            value={quizResultsSupervisorFilter}
+                                                            onChange={(event) => setQuizResultsSupervisorFilter(event.target.value)}
+                                                            className="h-9 w-full rounded-md border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                                                        >
+                                                            <option value="all">Tất cả người phụ trách</option>
+                                                            {supervisorOptions.map(([supervisorId, supervisorName]) => (
+                                                                <option key={supervisorId} value={supervisorId}>{supervisorName}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
                                                 </div>
 
                                                 <div>
                                                     <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Trạng thái học nhân viên</h3>
                                                     <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                                                        <div className="text-center px-3 py-2 rounded-xl bg-green-50 dark:bg-green-900/20">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Đã học", completed)}
+                                                            className="text-center px-3 py-2 rounded-xl bg-green-50 transition hover:ring-2 hover:ring-green-300 focus:outline-none focus:ring-2 focus:ring-green-500 dark:bg-green-900/20"
+                                                        >
                                                             <p className="text-lg font-bold text-green-700 dark:text-green-300">{completed.length}</p>
                                                             <p className="text-xs text-green-600 dark:text-green-400">Đã học</p>
-                                                        </div>
-                                                        <div className="text-center px-3 py-2 rounded-xl bg-amber-50 dark:bg-amber-900/20">
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Đang học", inProgress)}
+                                                            className="text-center px-3 py-2 rounded-xl bg-amber-50 transition hover:ring-2 hover:ring-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500 dark:bg-amber-900/20"
+                                                        >
                                                             <p className="text-lg font-bold text-amber-700 dark:text-amber-300">{inProgress.length}</p>
                                                             <p className="text-xs text-amber-600 dark:text-amber-400">Đang học</p>
-                                                        </div>
-                                                        <div className="text-center px-3 py-2 rounded-xl bg-gray-100 dark:bg-gray-700/40">
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Chưa học", notStarted)}
+                                                            className="text-center px-3 py-2 rounded-xl bg-gray-100 transition hover:ring-2 hover:ring-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:bg-gray-700/40"
+                                                        >
                                                             <p className="text-lg font-bold text-gray-700 dark:text-gray-200">{notStarted.length}</p>
                                                             <p className="text-xs text-gray-600 dark:text-gray-400">Chưa học</p>
-                                                        </div>
+                                                        </button>
                                                     </div>
                                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                                        <div className="rounded-xl border border-green-200 dark:border-green-800 bg-green-50/70 dark:bg-green-900/10 p-3">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Đã học", completed)}
+                                                            className="rounded-xl border border-green-200 bg-green-50/70 p-3 text-left transition hover:border-green-400 focus:outline-none focus:ring-2 focus:ring-green-500 dark:border-green-800 dark:bg-green-900/10"
+                                                        >
                                                             <p className="text-xs font-semibold text-green-700 dark:text-green-300 mb-2">Đã học</p>
                                                             <div className="space-y-1 max-h-40 overflow-y-auto">
                                                                 {completed.length === 0 ? (
                                                                     <p className="text-xs text-green-700/70 dark:text-green-300/70">Chưa có</p>
-                                                                ) : completed.map((item) => (
-                                                                    <p key={item.personId} className="text-xs text-green-900 dark:text-green-200">{item.personName}</p>
-                                                                ))}
+                                                                ) : completed.map((item) => renderStatusName(item, "text-green-900 dark:text-green-200"))}
                                                             </div>
-                                                        </div>
-                                                        <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-900/10 p-3">
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Đang học", inProgress)}
+                                                            className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 text-left transition hover:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-500 dark:border-amber-800 dark:bg-amber-900/10"
+                                                        >
                                                             <p className="text-xs font-semibold text-amber-700 dark:text-amber-300 mb-2">Đang học</p>
                                                             <div className="space-y-1 max-h-40 overflow-y-auto">
                                                                 {inProgress.length === 0 ? (
                                                                     <p className="text-xs text-amber-700/70 dark:text-amber-300/70">Chưa có</p>
-                                                                ) : inProgress.map((item) => (
-                                                                    <p key={item.personId} className="text-xs text-amber-900 dark:text-amber-200">{item.personName}</p>
-                                                                ))}
+                                                                ) : inProgress.map((item) => renderStatusName(item, "text-amber-900 dark:text-amber-200"))}
                                                             </div>
-                                                        </div>
-                                                        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-900/30 p-3">
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Chưa học", notStarted)}
+                                                            className="rounded-xl border border-gray-200 bg-gray-50/80 p-3 text-left transition hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:border-gray-700 dark:bg-gray-900/30"
+                                                        >
                                                             <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">Chưa học</p>
                                                             <div className="space-y-1 max-h-40 overflow-y-auto">
                                                                 {notStarted.length === 0 ? (
                                                                     <p className="text-xs text-gray-500 dark:text-gray-400">Chưa có</p>
-                                                                ) : notStarted.map((item) => (
-                                                                    <p key={item.personId} className="text-xs text-gray-800 dark:text-gray-200">{item.personName}</p>
-                                                                ))}
+                                                                ) : notStarted.map((item) => renderStatusName(item, "text-gray-800 dark:text-gray-200"))}
                                                             </div>
-                                                        </div>
+                                                        </button>
                                                     </div>
                                                 </div>
 
                                                 <div className="pt-2">
                                                     <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Tiến độ làm bài kiểm tra</h3>
                                                     <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                                                        <div className="text-center px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-900/20">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Đã nộp", activeAttempts.map((item) => statusByPersonId.get(item.personId)).filter(Boolean) as LearningStatusRow[])}
+                                                            className="text-center px-3 py-2 rounded-xl bg-blue-50 transition hover:ring-2 hover:ring-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-blue-900/20"
+                                                        >
                                                             <p className="text-lg font-bold text-blue-700 dark:text-blue-300">{activeAttempts.length}</p>
                                                             <p className="text-xs text-blue-600 dark:text-blue-400">Đã nộp</p>
-                                                        </div>
-                                                        <div className="text-center px-3 py-2 rounded-xl bg-amber-50 dark:bg-amber-900/20">
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Chưa nộp (đã học)", readyButNotSubmitted)}
+                                                            className="text-center px-3 py-2 rounded-xl bg-amber-50 transition hover:ring-2 hover:ring-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500 dark:bg-amber-900/20"
+                                                        >
                                                             <p className="text-lg font-bold text-amber-700 dark:text-amber-300">{readyButNotSubmitted.length}</p>
                                                             <p className="text-xs text-amber-600 dark:text-amber-400">Chưa nộp (đã học)</p>
-                                                        </div>
-                                                        <div className="text-center px-3 py-2 rounded-xl bg-gray-100 dark:bg-gray-700/40">
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Chưa đủ điều kiện", notEligibleForQuiz)}
+                                                            className="text-center px-3 py-2 rounded-xl bg-gray-100 transition hover:ring-2 hover:ring-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:bg-gray-700/40"
+                                                        >
                                                             <p className="text-lg font-bold text-gray-700 dark:text-gray-200">{notEligibleForQuiz.length}</p>
                                                             <p className="text-xs text-gray-600 dark:text-gray-400">Chưa đủ điều kiện</p>
-                                                        </div>
+                                                        </button>
                                                     </div>
                                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                                        <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-900/10 p-3">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Đã nộp", activeAttempts.map((item) => statusByPersonId.get(item.personId)).filter(Boolean) as LearningStatusRow[])}
+                                                            className="rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-left transition hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-blue-800 dark:bg-blue-900/10"
+                                                        >
                                                             <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-2">Đã nộp</p>
                                                             <div className="space-y-1 max-h-40 overflow-y-auto">
                                                                 {activeAttempts.length === 0 ? (
                                                                     <p className="text-xs text-blue-700/70 dark:text-blue-300/70">Chưa có</p>
-                                                                ) : activeAttempts.map((item) => (
-                                                                    <p key={item.id} className="text-xs text-blue-900 dark:text-blue-200">
-                                                                        {item.personName ?? "Unknown"}
-                                                                    </p>
-                                                                ))}
+                                                                ) : activeAttempts.map((item) => {
+                                                                    const status = statusByPersonId.get(item.personId)
+                                                                    return status
+                                                                        ? renderStatusName(status, "text-blue-900 dark:text-blue-200")
+                                                                        : <p key={item.id} className="px-1 py-0.5 text-xs font-medium text-blue-900 dark:text-blue-200">{item.personName ?? "Unknown"}</p>
+                                                                })}
                                                             </div>
-                                                        </div>
-                                                        <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-900/10 p-3">
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Chưa nộp (đã học)", readyButNotSubmitted)}
+                                                            className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 text-left transition hover:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-500 dark:border-amber-800 dark:bg-amber-900/10"
+                                                        >
                                                             <p className="text-xs font-semibold text-amber-700 dark:text-amber-300 mb-2">Chưa nộp (đã học)</p>
                                                             <div className="space-y-1 max-h-40 overflow-y-auto">
                                                                 {readyButNotSubmitted.length === 0 ? (
                                                                     <p className="text-xs text-amber-700/70 dark:text-amber-300/70">Chưa có</p>
-                                                                ) : readyButNotSubmitted.map((item) => (
-                                                                    <p key={item.personId} className="text-xs text-amber-900 dark:text-amber-200">{item.personName}</p>
-                                                                ))}
+                                                                ) : readyButNotSubmitted.map((item) => renderStatusName(item, "text-amber-900 dark:text-amber-200"))}
                                                             </div>
-                                                        </div>
-                                                        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-900/30 p-3">
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openStatusListDetail("Chưa đủ điều kiện", notEligibleForQuiz)}
+                                                            className="rounded-xl border border-gray-200 bg-gray-50/80 p-3 text-left transition hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:border-gray-700 dark:bg-gray-900/30"
+                                                        >
                                                             <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">Chưa đủ điều kiện</p>
                                                             <div className="space-y-1 max-h-40 overflow-y-auto">
                                                                 {notEligibleForQuiz.length === 0 ? (
                                                                     <p className="text-xs text-gray-500 dark:text-gray-400">Chưa có</p>
-                                                                ) : notEligibleForQuiz.map((item) => (
-                                                                    <p key={item.personId} className="text-xs text-gray-800 dark:text-gray-200">{item.personName}</p>
-                                                                ))}
+                                                                ) : notEligibleForQuiz.map((item) => renderStatusName(item, "text-gray-800 dark:text-gray-200"))}
                                                             </div>
-                                                        </div>
+                                                        </button>
                                                     </div>
                                                 </div>
 
@@ -5305,7 +5525,7 @@ export default function DocumentsPage() {
                                                         </div>
                                                     ) : (
                                                         <>
-                                                            <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                                            <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-4">
                                                                 <div className="text-center px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-900/20">
                                                                     <p className="text-lg font-bold text-blue-700 dark:text-blue-300">{activeAttempts.length}</p>
                                                                     <p className="text-xs text-blue-600 dark:text-blue-400">Đã nộp</p>
@@ -5324,7 +5544,14 @@ export default function DocumentsPage() {
                                                                     </p>
                                                                     <p className="text-xs text-violet-600 dark:text-violet-400">Đạt ≥{QUIZ_PASS_SCORE}</p>
                                                                 </div>
+                                                                <div className="text-center px-3 py-2 rounded-xl bg-red-50 dark:bg-red-900/20">
+                                                                    <p className="text-lg font-bold text-red-700 dark:text-red-300">{needsRetakeAttempts.length}</p>
+                                                                    <p className="text-xs text-red-600 dark:text-red-400">Cần làm lại</p>
+                                                                </div>
                                                             </div>
+                                                            <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                                                                Tổng số lần làm lại đã ghi nhận: <span className="font-semibold text-gray-700 dark:text-gray-200">{totalRetakeCount}</span>
+                                                            </p>
                                                             {scopedAttempts.map((att) => (
                                                                 <div key={att.id} className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/30 sm:flex-row sm:items-center sm:justify-between">
                                                                     <div className="flex items-center gap-3">
@@ -5336,11 +5563,16 @@ export default function DocumentsPage() {
                                                                                 {att.personName ?? "Unknown"}
                                                                             </p>
                                                                             <p className="text-xs text-gray-500 dark:text-gray-400">
-                                                                                Lần {att.attemptRound ?? 1} · {att.correctAnswers}/{att.totalQuestions} câu · {new Date(att.submittedAt).toLocaleDateString("vi-VN")}
+                                                                                Lần {att.attemptRound ?? 1} · Làm lại {getQuizRetakeCount(att)} lần · {att.correctAnswers}/{att.totalQuestions} câu · {new Date(att.submittedAt).toLocaleDateString("vi-VN")}
                                                                             </p>
                                                                         </div>
                                                                     </div>
                                                                     <div className="flex items-center gap-2">
+                                                                        {att.isActiveAttempt !== false && att.score < QUIZ_PASS_SCORE && (
+                                                                            <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[11px] font-semibold text-red-600 dark:text-red-300">
+                                                                                Cần làm lại
+                                                                            </span>
+                                                                        )}
                                                                         {att.isActiveAttempt === false && (
                                                                             <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-600 dark:text-amber-300">
                                                                                 Đã reset
@@ -5374,6 +5606,52 @@ export default function DocumentsPage() {
                                 </div>
                             )}
                         </div>
+                        {selectedLearningStatusListDetail && (
+                            <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 px-4">
+                                <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                                    <div className="mb-3 flex items-start justify-between gap-3">
+                                        <div>
+                                            <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                                                {selectedLearningStatusListDetail.title}
+                                            </p>
+                                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                                                {selectedLearningStatusListDetail.rows.length} nhân viên
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSelectedLearningStatusListDetail(null)}
+                                            className="rounded-md p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+                                            aria-label="Đóng danh sách chi tiết"
+                                        >
+                                            <X className="h-4 w-4" />
+                                        </button>
+                                    </div>
+                                    {selectedLearningStatusListDetail.rows.length === 0 ? (
+                                        <p className="rounded-lg border border-dashed border-gray-200 py-8 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                                            Chưa có nhân viên trong nhóm này.
+                                        </p>
+                                    ) : (
+                                        <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+                                            {selectedLearningStatusListDetail.rows.map((item) => (
+                                                <div key={item.personId} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800/70">
+                                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">{item.personName}</p>
+                                                    <p className="text-xs text-gray-500 dark:text-gray-400">{item.personRole ?? "Chưa có vai trò"}</p>
+                                                    <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">
+                                                        Phụ trách: <span className="font-medium">{item.supervisorName ?? "Chưa gán người phụ trách"}</span>
+                                                    </p>
+                                                    {(item.storeBranchNames?.length ?? 0) > 0 && (
+                                                        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                                                            Cửa hàng: {item.storeBranchNames?.join(", ")}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}

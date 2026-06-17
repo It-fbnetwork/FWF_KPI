@@ -77,4 +77,9 @@
   body[data-learning-reader-active="true"] .app-page-content {
     padding-bottom: 0;
   }
+
+  body[data-learning-reader-active="true"] {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
 }

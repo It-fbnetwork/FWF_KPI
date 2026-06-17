@@ -179,6 +179,7 @@ export function MobilePdfPageCanvas({
     pageNumber,
     title,
     className,
+    suspendRender = false,
     onRendered,
     onError,
 }: {
@@ -186,6 +187,7 @@ export function MobilePdfPageCanvas({
     pageNumber: number
     title: string
     className?: string
+    suspendRender?: boolean
     onRendered?: () => void
     onError?: (error: MobilePdfPageCanvasError) => void
 }) {
@@ -209,6 +211,8 @@ export function MobilePdfPageCanvas({
     useEffect(() => {
         const container = containerRef.current
         if (!container) return
+        const settleTimers = new Set<number>()
+        let animationFrame = 0
 
         const updateSize = () => {
             const rect = container.getBoundingClientRect()
@@ -221,28 +225,48 @@ export function MobilePdfPageCanvas({
                 return nextSize
             })
         }
+        const settleSize = () => {
+            updateSize()
+            if (animationFrame) window.cancelAnimationFrame(animationFrame)
+            animationFrame = window.requestAnimationFrame(updateSize)
+            for (const delay of [120, 320]) {
+                const timer = window.setTimeout(() => {
+                    settleTimers.delete(timer)
+                    updateSize()
+                }, delay)
+                settleTimers.add(timer)
+            }
+        }
 
-        updateSize()
+        settleSize()
         const observer = new ResizeObserver(updateSize)
         observer.observe(container)
-        window.visualViewport?.addEventListener("resize", updateSize)
-        window.addEventListener("orientationchange", updateSize)
+        window.visualViewport?.addEventListener("resize", settleSize)
+        window.visualViewport?.addEventListener("scroll", settleSize)
+        window.addEventListener("orientationchange", settleSize)
+        window.addEventListener("resize", settleSize)
         return () => {
             observer.disconnect()
-            window.visualViewport?.removeEventListener("resize", updateSize)
-            window.removeEventListener("orientationchange", updateSize)
+            if (animationFrame) window.cancelAnimationFrame(animationFrame)
+            settleTimers.forEach((timer) => window.clearTimeout(timer))
+            settleTimers.clear()
+            window.visualViewport?.removeEventListener("resize", settleSize)
+            window.visualViewport?.removeEventListener("scroll", settleSize)
+            window.removeEventListener("orientationchange", settleSize)
+            window.removeEventListener("resize", settleSize)
         }
     }, [])
 
     useEffect(() => {
         if (observedSize.width <= 0 || observedSize.height <= 0) return
+        if (suspendRender) return
 
         const timer = window.setTimeout(() => {
             setRenderSize(observedSize)
-        }, hasRenderedPage ? 120 : 0)
+        }, hasRenderedPage ? 140 : 0)
 
         return () => window.clearTimeout(timer)
-    }, [hasRenderedPage, observedSize])
+    }, [hasRenderedPage, observedSize, suspendRender])
 
     useEffect(() => {
         setHasRenderedPage(false)
@@ -251,6 +275,7 @@ export function MobilePdfPageCanvas({
 
     useEffect(() => {
         if (!src || !pageNumber || renderSize.width <= 0 || renderSize.height <= 0) return
+        if (suspendRender) return
 
         let cancelled = false
         let renderTask: { cancel: () => void; promise: Promise<void> } | null = null
@@ -271,29 +296,36 @@ export function MobilePdfPageCanvas({
                 const canvas = canvasRef.current
                 if (!canvas) return
 
-                const nextCanvas = window.document.createElement("canvas")
-                const context = nextCanvas.getContext("2d", { alpha: false })
-                if (!context) return
+                const pageCanvas = window.document.createElement("canvas")
+                const pageContext = pageCanvas.getContext("2d", { alpha: false })
+                if (!pageContext) return
 
                 const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5)
-                nextCanvas.width = Math.max(1, Math.floor(viewport.width * pixelRatio))
-                nextCanvas.height = Math.max(1, Math.floor(viewport.height * pixelRatio))
-                context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
-                context.fillStyle = "#fff"
-                context.fillRect(0, 0, viewport.width, viewport.height)
+                pageCanvas.width = Math.max(1, Math.floor(viewport.width * pixelRatio))
+                pageCanvas.height = Math.max(1, Math.floor(viewport.height * pixelRatio))
+                pageContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+                pageContext.fillStyle = "#fff"
+                pageContext.fillRect(0, 0, viewport.width, viewport.height)
 
-                renderTask = page.render({ canvasContext: context, viewport })
+                renderTask = page.render({ canvasContext: pageContext, viewport })
                 await renderTask.promise
                 if (cancelled) return
 
-                const visibleContext = canvas.getContext("2d", { alpha: false })
+                const visibleContext = canvas.getContext("2d", { alpha: true })
                 if (!visibleContext) return
-                canvas.width = nextCanvas.width
-                canvas.height = nextCanvas.height
-                canvas.style.width = `${Math.floor(viewport.width)}px`
-                canvas.style.height = `${Math.floor(viewport.height)}px`
+                const outputWidth = Math.max(1, Math.floor(renderSize.width * pixelRatio))
+                const outputHeight = Math.max(1, Math.floor(renderSize.height * pixelRatio))
+                canvas.width = outputWidth
+                canvas.height = outputHeight
+                canvas.style.width = "100%"
+                canvas.style.height = "100%"
                 visibleContext.setTransform(1, 0, 0, 1, 0, 0)
-                visibleContext.drawImage(nextCanvas, 0, 0)
+                visibleContext.clearRect(0, 0, outputWidth, outputHeight)
+                visibleContext.drawImage(
+                    pageCanvas,
+                    Math.round((outputWidth - pageCanvas.width) / 2),
+                    Math.round((outputHeight - pageCanvas.height) / 2)
+                )
                 if (!cancelled) {
                     setHasRenderedPage(true)
                     setIsRendering(false)
@@ -313,12 +345,12 @@ export function MobilePdfPageCanvas({
             cancelled = true
             renderTask?.cancel()
         }
-    }, [pageNumber, renderSize.height, renderSize.width, src])
+    }, [pageNumber, renderSize.height, renderSize.width, src, suspendRender])
 
     return (
         <div ref={containerRef} className={`relative grid place-items-center overflow-hidden bg-neutral-100 dark:bg-neutral-950 ${className ?? ""}`}>
-            <canvas ref={canvasRef} aria-label={title} className="max-h-full max-w-full select-none shadow-sm touch-none" />
-            {isRendering && !hasRenderedPage && (
+            <canvas ref={canvasRef} aria-label={title} className="h-full w-full select-none touch-none" />
+            {(isRendering || suspendRender) && !hasRenderedPage && (
                 <div className="absolute inset-0 grid place-items-center bg-white/90 dark:bg-gray-900/80">
                     <div className="text-center">
                         <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-violet-200 border-t-violet-600" />
@@ -326,7 +358,7 @@ export function MobilePdfPageCanvas({
                     </div>
                 </div>
             )}
-            {isRendering && hasRenderedPage && (
+            {(isRendering || suspendRender) && hasRenderedPage && (
                 <div className="pointer-events-none absolute bottom-3 left-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm">
                     Đang căn lại...
                 </div>
