@@ -84,12 +84,15 @@ create table if not exists tasks (
 create table if not exists document_folders (
   id text primary key,
   name text not null,
+  parent_id text references document_folders(id) on delete cascade,
   owner_id text,
   team_id text,
   created_at timestamptz,
   updated_at timestamptz,
   raw_json jsonb not null default '{}'::jsonb
 );
+
+alter table document_folders add column if not exists parent_id text references document_folders(id) on delete cascade;
 
 create table if not exists documents (
   id text primary key,
@@ -297,6 +300,7 @@ create table if not exists uploads_blobs (
 
 create index if not exists idx_documents_owner_modified on documents(owner_id, modified_at desc);
 create index if not exists idx_documents_folder on documents(folder_id);
+create index if not exists idx_document_folders_parent on document_folders(parent_id);
 create index if not exists idx_learning_quizzes_document on learning_quizzes(document_id);
 create index if not exists idx_quiz_attempts_document_person on quiz_attempts(document_id, person_id);
 create index if not exists idx_learning_progress_person_document on learning_progress(person_id, document_id);

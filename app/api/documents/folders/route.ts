@@ -11,8 +11,8 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const sessionUserId = await getSessionUserId();
-    const { name } = await request.json();
-    const folder = await createFolderRecord(sessionUserId, { name });
+    const { name, parentId } = await request.json();
+    const folder = await createFolderRecord(sessionUserId, { name, parentId });
     return NextResponse.json({ ok: true, folder });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to create folder.";

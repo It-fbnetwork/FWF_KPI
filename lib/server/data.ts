@@ -108,8 +108,8 @@ type DbDocument = {
   ownerId: string;
   createdAt: string;
   modifiedAt: string;
-  folder?: string;
-  folderId?: string;
+  folder?: string | null;
+  folderId?: string | null;
   tags: string[];
   isStarred: boolean;
   thumbnail?: string | null;
@@ -125,9 +125,15 @@ type DbDocument = {
   lockedByUserId?: string;
 };
 
+type DocumentPatch = Omit<Partial<Document>, "folder" | "folderId"> & {
+  folder?: string | null;
+  folderId?: string | null;
+};
+
 type DbFolder = {
   _id: string;
   name: string;
+  parentId?: string;
   ownerId: string;
   teamId: string;
   createdAt: string;
@@ -1245,8 +1251,8 @@ function mapDbDocument(document: DbDocument): Document {
     ownerId: document.ownerId,
     createdAt: document.createdAt,
     modifiedAt: document.modifiedAt,
-    folder: document.folder,
-    folderId: document.folderId,
+    folder: document.folder ?? undefined,
+    folderId: document.folderId ?? undefined,
     tags: document.tags ?? [],
     isStarred: document.isStarred,
     thumbnail: document.thumbnail ?? undefined,
@@ -1331,6 +1337,7 @@ function mapDbFolder(folder: DbFolder): Folder {
   return {
     id: folder._id,
     name: folder.name,
+    parentId: folder.parentId,
     ownerId: folder.ownerId,
     teamId: folder.teamId,
     createdAt: folder.createdAt,
@@ -1651,9 +1658,13 @@ export async function canAccessFileById(
 }
 
 function mapPgFolderRow(row: Record<string, unknown>): DbFolder {
+  const raw = row.raw_json && typeof row.raw_json === "object"
+    ? (row.raw_json as Record<string, unknown>)
+    : {};
   return {
     _id: String(row.id),
     name: String(row.name ?? ""),
+    parentId: row.parent_id ? String(row.parent_id) : (raw.parentId ? String(raw.parentId) : undefined),
     ownerId: String(row.owner_id ?? ""),
     teamId: String(row.team_id ?? "product"),
     createdAt: toIsoStringOrUndefined(row.created_at) ?? new Date().toISOString(),
@@ -5483,7 +5494,7 @@ export async function createDocumentRecord(
 export async function updateDocumentRecord(
   sessionUserId: string | null | undefined,
   documentId: string,
-  updates: Partial<Document>
+  updates: DocumentPatch
 ) {
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
@@ -5499,8 +5510,22 @@ export async function updateDocumentRecord(
 
     const payload: Partial<DbDocument> = { modifiedAt: new Date().toISOString() };
     if (updates.name !== undefined) payload.name = updates.name;
-    if (updates.folder !== undefined) payload.folder = updates.folder;
-    if (updates.folderId !== undefined) payload.folderId = updates.folderId;
+    if (updates.folderId !== undefined) {
+      if (updates.folderId) {
+        const folderRes = await pgQuery("select * from document_folders where id = $1 limit 1", [updates.folderId]);
+        const folderRow = folderRes.rows[0];
+        if (!folderRow) throw new Error("Folder not found");
+        const targetFolder = mapPgFolderRow(folderRow);
+        if (!actor.isAdmin && targetFolder.teamId !== actor.person.team) throw new Error("Forbidden");
+        payload.folderId = targetFolder._id;
+        payload.folder = targetFolder.name;
+      } else {
+        payload.folderId = null;
+        payload.folder = null;
+      }
+    } else if (updates.folder !== undefined) {
+      payload.folder = updates.folder;
+    }
     if (updates.tags !== undefined) payload.tags = updates.tags;
     if (updates.isStarred !== undefined) payload.isStarred = updates.isStarred;
     if (updates.description !== undefined) payload.description = updates.description;
@@ -5550,8 +5575,20 @@ export async function updateDocumentRecord(
 
   const payload: Partial<DbDocument> = { modifiedAt: new Date().toISOString() };
   if (updates.name !== undefined) payload.name = updates.name;
-  if (updates.folder !== undefined) payload.folder = updates.folder;
-  if (updates.folderId !== undefined) payload.folderId = updates.folderId;
+  if (updates.folderId !== undefined) {
+    if (updates.folderId) {
+      const targetFolder = await db.collection<DbFolder>("document_folders").findOne({ _id: updates.folderId });
+      if (!targetFolder) throw new Error("Folder not found");
+      if (!actor.isAdmin && targetFolder.teamId !== actor.person.team) throw new Error("Forbidden");
+      payload.folderId = targetFolder._id;
+      payload.folder = targetFolder.name;
+    } else {
+      payload.folderId = null;
+      payload.folder = null;
+    }
+  } else if (updates.folder !== undefined) {
+    payload.folder = updates.folder;
+  }
   if (updates.tags !== undefined) payload.tags = updates.tags;
   if (updates.isStarred !== undefined) payload.isStarred = updates.isStarred;
   if (updates.description !== undefined) payload.description = updates.description;
@@ -5642,42 +5679,122 @@ export async function getFoldersData(sessionUserId?: string | null) {
 
 export async function createFolderRecord(
   sessionUserId: string | null | undefined,
-  input: { name: string }
+  input: { name: string; parentId?: string | null }
 ) {
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
   if (!canCreateDocuments(actor)) throw new Error("Forbidden");
+  const parentId = input.parentId?.trim() || undefined;
+  const folderName = input.name.trim();
+
+  if (!folderName) throw new Error("Folder name is required");
 
   if (shouldUseSupabasePhaseA()) {
+    if (parentId) {
+      const parentRes = await pgQuery("select * from document_folders where id = $1 limit 1", [parentId]);
+      const parentRow = parentRes.rows[0];
+      if (!parentRow) throw new Error("Parent folder not found");
+      const parentFolder = mapPgFolderRow(parentRow);
+      if (!actor.isAdmin && parentFolder.teamId !== actor.person.team) throw new Error("Forbidden");
+    }
+
     const now = new Date().toISOString();
     const folder: DbFolder = {
       _id: `folder_${Date.now()}`,
-      name: input.name.trim(),
+      name: folderName,
+      parentId,
       ownerId: actor.person.id,
       teamId: actor.person.team,
       createdAt: now,
       updatedAt: now
     };
-    await pgQuery(
-      "insert into document_folders (id,name,owner_id,team_id,created_at,updated_at,raw_json) values ($1,$2,$3,$4,$5,$6,$7::jsonb)",
-      [folder._id, folder.name, folder.ownerId, folder.teamId, folder.createdAt, folder.updatedAt, JSON.stringify(folder)]
-    );
+    try {
+      await pgQuery(
+        "insert into document_folders (id,name,parent_id,owner_id,team_id,created_at,updated_at,raw_json) values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)",
+        [folder._id, folder.name, folder.parentId ?? null, folder.ownerId, folder.teamId, folder.createdAt, folder.updatedAt, JSON.stringify(folder)]
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!message.toLowerCase().includes("parent_id")) throw error;
+      await pgQuery(
+        "insert into document_folders (id,name,owner_id,team_id,created_at,updated_at,raw_json) values ($1,$2,$3,$4,$5,$6,$7::jsonb)",
+        [folder._id, folder.name, folder.ownerId, folder.teamId, folder.createdAt, folder.updatedAt, JSON.stringify(folder)]
+      );
+    }
     return mapDbFolder(folder);
+  }
+
+  const db = await getMongoDb();
+  if (parentId) {
+    const parentFolder = await db.collection<DbFolder>("document_folders").findOne({ _id: parentId });
+    if (!parentFolder) throw new Error("Parent folder not found");
+    if (!actor.isAdmin && parentFolder.teamId !== actor.person.team) throw new Error("Forbidden");
   }
 
   const now = new Date().toISOString();
   const folder: DbFolder = {
     _id: `folder_${Date.now()}`,
-    name: input.name.trim(),
+    name: folderName,
+    parentId,
     ownerId: actor.person.id,
     teamId: actor.person.team,
     createdAt: now,
     updatedAt: now
   };
 
-  const db = await getMongoDb();
   await db.collection<DbFolder>("document_folders").insertOne(folder);
   return mapDbFolder(folder);
+}
+
+export async function updateFolderRecord(
+  sessionUserId: string | null | undefined,
+  folderId: string,
+  input: { name: string }
+) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canCreateDocuments(actor)) throw new Error("Forbidden");
+
+  const folderName = input.name.trim();
+  if (!folderName) throw new Error("Folder name is required");
+
+  if (shouldUseSupabasePhaseA()) {
+    const folderRes = await pgQuery("select * from document_folders where id = $1 limit 1", [folderId]);
+    const row = folderRes.rows[0];
+    if (!row) return null;
+    const existing = mapPgFolderRow(row);
+    if (!actor.isAdmin && existing.teamId !== actor.person.team) throw new Error("Forbidden");
+
+    const updated: DbFolder = {
+      ...existing,
+      name: folderName,
+      updatedAt: new Date().toISOString()
+    };
+
+    await pgQuery(
+      "update document_folders set name = $2, updated_at = $3::timestamptz, raw_json = $4::jsonb where id = $1",
+      [folderId, updated.name, updated.updatedAt, JSON.stringify(updated)]
+    );
+    await pgQuery("update documents set folder = $2 where folder_id = $1", [folderId, updated.name]);
+    return mapDbFolder(updated);
+  }
+
+  const db = await getMongoDb();
+  const existing = await db.collection<DbFolder>("document_folders").findOne({ _id: folderId });
+  if (!existing) return null;
+  if (!actor.isAdmin && existing.teamId !== actor.person.team) throw new Error("Forbidden");
+
+  const updatedAt = new Date().toISOString();
+  await db.collection<DbFolder>("document_folders").updateOne(
+    { _id: folderId },
+    { $set: { name: folderName, updatedAt } }
+  );
+  await db.collection<DbDocument>("documents").updateMany(
+    { folderId },
+    { $set: { folder: folderName } }
+  );
+
+  return mapDbFolder({ ...existing, name: folderName, updatedAt });
 }
 
 export async function deleteFolderRecord(sessionUserId: string | null | undefined, folderId: string) {
@@ -5691,8 +5808,26 @@ export async function deleteFolderRecord(sessionUserId: string | null | undefine
     if (!row) return false;
     const folder = mapPgFolderRow(row);
     if (!actor.isAdmin && folder.teamId !== actor.person.team) return false;
-    await pgQuery("delete from document_folders where id = $1", [folderId]);
-    await pgQuery("update documents set folder_id = null where folder_id = $1", [folderId]);
+
+    const allFoldersRes = actor.isAdmin
+      ? await pgQuery("select * from document_folders")
+      : await pgQuery("select * from document_folders where team_id = $1", [actor.person.team]);
+    const folders = allFoldersRes.rows.map((item) => mapPgFolderRow(item));
+    const folderIdsToDelete = new Set<string>([folderId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const candidate of folders) {
+        if (candidate.parentId && folderIdsToDelete.has(candidate.parentId) && !folderIdsToDelete.has(candidate._id)) {
+          folderIdsToDelete.add(candidate._id);
+          changed = true;
+        }
+      }
+    }
+
+    const ids = Array.from(folderIdsToDelete);
+    await pgQuery("delete from document_folders where id = any($1::text[])", [ids]);
+    await pgQuery("update documents set folder_id = null where folder_id = any($1::text[])", [ids]);
     return true;
   }
 
@@ -5701,9 +5836,24 @@ export async function deleteFolderRecord(sessionUserId: string | null | undefine
   if (!folder) return false;
   if (!actor.isAdmin && folder.teamId !== actor.person.team) return false;
 
-  await db.collection<DbFolder>("document_folders").deleteOne({ _id: folderId });
+  const folderQuery = actor.isAdmin ? {} : { teamId: actor.person.team };
+  const folders = await db.collection<DbFolder>("document_folders").find(folderQuery).toArray();
+  const folderIdsToDelete = new Set<string>([folderId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const candidate of folders) {
+      if (candidate.parentId && folderIdsToDelete.has(candidate.parentId) && !folderIdsToDelete.has(candidate._id)) {
+        folderIdsToDelete.add(candidate._id);
+        changed = true;
+      }
+    }
+  }
+
+  const ids = Array.from(folderIdsToDelete);
+  await db.collection<DbFolder>("document_folders").deleteMany({ _id: { $in: ids } });
   await db.collection<DbDocument>("documents").updateMany(
-    { folderId },
+    { folderId: { $in: ids } },
     { $unset: { folderId: "" } }
   );
   return true;

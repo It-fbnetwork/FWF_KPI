@@ -38,6 +38,7 @@ import {
     FileText,
     Tag,
     MoreHorizontal,
+    MoreVertical,
     Link,
     Globe,
     Store,
@@ -286,6 +287,10 @@ type SortBy = "name" | "date" | "size" | "type" | "owner"
 type GroupBy = "none" | "type" | "date" | "owner" | "folder"
 type ViewMode = "grid" | "list"
 type DocVisibility = "team" | "office" | "store"
+type DocumentPatch = Omit<Partial<Document>, "folder" | "folderId"> & {
+    folder?: string | null
+    folderId?: string | null
+}
 
 interface ContextMenuPosition {
     x: number
@@ -295,6 +300,13 @@ interface ContextMenuPosition {
 interface NewFolderDialogState {
     open: boolean
     name: string
+    parentId: string | null
+}
+
+interface MoveDocumentDialogState {
+    open: boolean
+    document: Document | null
+    selectedFolderId: string | null
 }
 
 interface CreateDocumentDialogState {
@@ -431,7 +443,12 @@ export default function DocumentsPage() {
     const [documentsLoading, setDocumentsLoading] = useState(true)
     const [folders, setFolders] = useState<Folder[]>([])
     const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
-    const [newFolderDialog, setNewFolderDialog] = useState<NewFolderDialogState>({ open: false, name: "" })
+    const [newFolderDialog, setNewFolderDialog] = useState<NewFolderDialogState>({ open: false, name: "", parentId: null })
+    const [moveDocumentDialog, setMoveDocumentDialog] = useState<MoveDocumentDialogState>({
+        open: false,
+        document: null,
+        selectedFolderId: null,
+    })
     const [createDocumentDialog, setCreateDocumentDialog] = useState<CreateDocumentDialogState>(
         buildDefaultCreateDocumentDialog(user)
     )
@@ -518,6 +535,46 @@ export default function DocumentsPage() {
     const learningViewportSettleSeqRef = useRef(0)
 
     const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null
+    const folderChildrenByParentId = useMemo(() => {
+        const map = new Map<string, Folder[]>()
+        for (const folder of folders) {
+            const parentKey = folder.parentId ?? "__root__"
+            const children = map.get(parentKey) ?? []
+            children.push(folder)
+            map.set(parentKey, children)
+        }
+        for (const children of map.values()) {
+            children.sort((a, b) => a.name.localeCompare(b.name, "vi"))
+        }
+        return map
+    }, [folders])
+    const visibleFolders = folderChildrenByParentId.get(activeFolderId ?? "__root__") ?? []
+    const activeFolderPath = useMemo(() => {
+        if (!activeFolderId) return []
+        const byId = new Map(folders.map((folder) => [folder.id, folder]))
+        const path: Folder[] = []
+        const visited = new Set<string>()
+        let cursor = byId.get(activeFolderId)
+        while (cursor && !visited.has(cursor.id)) {
+            path.unshift(cursor)
+            visited.add(cursor.id)
+            cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined
+        }
+        return path
+    }, [activeFolderId, folders])
+    const getFolderPathLabel = useCallback((folderId: string | null | undefined) => {
+        if (!folderId) return "Ngoài folder"
+        const byId = new Map(folders.map((folder) => [folder.id, folder]))
+        const path: string[] = []
+        const visited = new Set<string>()
+        let cursor = byId.get(folderId)
+        while (cursor && !visited.has(cursor.id)) {
+            path.unshift(cursor.name)
+            visited.add(cursor.id)
+            cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined
+        }
+        return path.length > 0 ? path.join(" / ") : "Folder không tồn tại"
+    }, [folders])
     const currentPerson = people.find((person) => person.id === user?.personId) ?? null
     const normalizeRoleValue = useCallback((value: string) => value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim(), [])
     const getRoleGroup = useCallback((role: string) => {
@@ -1052,7 +1109,10 @@ export default function DocumentsPage() {
         }
     }
 
-    const patchDocument = async (documentId: string, updates: Partial<Document>) => {
+    const patchDocument = async (
+        documentId: string,
+        updates: DocumentPatch
+    ) => {
         const res = await fetch(`/api/documents/${documentId}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1076,6 +1136,10 @@ export default function DocumentsPage() {
 
     // ── Folder handlers ──────────────────────────────────────────────
 
+    const openNewFolderDialog = (parentId: string | null = activeFolderId) => {
+        setNewFolderDialog({ open: true, name: "", parentId })
+    }
+
     const handleCreateFolder = async () => {
         if (!newFolderDialog.name.trim()) return
         setIsSubmitting(true)
@@ -1084,13 +1148,17 @@ export default function DocumentsPage() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: "include",
-                body: JSON.stringify({ name: newFolderDialog.name.trim() }),
+                body: JSON.stringify({
+                    name: newFolderDialog.name.trim(),
+                    parentId: newFolderDialog.parentId,
+                }),
             })
-            const payload = (await res.json()) as { ok: boolean; folder: Folder }
-            if (!res.ok) throw new Error(payload.folder as unknown as string)
-            setFolders((prev) => [payload.folder, ...prev])
-            setNewFolderDialog({ open: false, name: "" })
-            toast({ title: "Tạo folder thành công" })
+            const payload = (await res.json()) as { ok: boolean; folder?: Folder; message?: string }
+            if (!res.ok || !payload.folder) throw new Error(payload.message || "Không thể tạo folder")
+            const createdFolder = payload.folder
+            setFolders((prev) => [createdFolder, ...prev])
+            setNewFolderDialog({ open: false, name: "", parentId: null })
+            toast({ title: createdFolder.parentId ? "Tạo folder con thành công" : "Tạo folder thành công" })
         } catch {
             toast({ title: "Không thể tạo folder", variant: "destructive" })
         } finally {
@@ -1098,14 +1166,54 @@ export default function DocumentsPage() {
         }
     }
 
+    const handleRenameFolder = async (folder: Folder) => {
+        const next = window.prompt("Nhập tên folder mới", folder.name)?.trim()
+        if (!next || next === folder.name) return
+        try {
+            const res = await fetch(`/api/documents/folders/${folder.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ name: next }),
+            })
+            const payload = (await res.json()) as { ok: boolean; folder?: Folder; message?: string }
+            if (!res.ok || !payload.folder) throw new Error(payload.message || "Không thể đổi tên folder")
+            const renamedFolder = payload.folder
+            setFolders((prev) => prev.map((item) => (item.id === renamedFolder.id ? renamedFolder : item)))
+            setDocumentsData((prev) => prev.map((doc) => (
+                doc.folderId === renamedFolder.id ? { ...doc, folder: renamedFolder.name } : doc
+            )))
+            setSelectedDocument((prev) => (
+                prev?.folderId === renamedFolder.id ? { ...prev, folder: renamedFolder.name } : prev
+            ))
+            setSelectedLearningDoc((prev) => (
+                prev?.folderId === renamedFolder.id ? { ...prev, folder: renamedFolder.name } : prev
+            ))
+            toast({ title: "Đã đổi tên folder" })
+        } catch {
+            toast({ title: "Không thể đổi tên folder", variant: "destructive" })
+        }
+    }
+
     const handleDeleteFolder = async (folderId: string) => {
-        if (!confirm("Xóa folder này? Các file bên trong sẽ không bị xóa.")) return
+        if (!confirm("Xóa folder này? Folder con cũng sẽ bị xóa. Các file bên trong sẽ không bị xóa.")) return
         try {
             const res = await fetch(`/api/documents/folders/${folderId}`, { method: "DELETE", credentials: "include" })
             const payload = (await res.json()) as { ok: boolean; message?: string }
             if (!res.ok || !payload.ok) throw new Error(payload.message || "Không thể xóa folder")
-            setFolders((prev) => prev.filter((f) => f.id !== folderId))
-            if (activeFolderId === folderId) {
+            const idsToDelete = new Set<string>([folderId])
+            let changed = true
+            while (changed) {
+                changed = false
+                for (const folder of folders) {
+                    if (folder.parentId && idsToDelete.has(folder.parentId) && !idsToDelete.has(folder.id)) {
+                        idsToDelete.add(folder.id)
+                        changed = true
+                    }
+                }
+            }
+            setFolders((prev) => prev.filter((f) => !idsToDelete.has(f.id)))
+            if (activeFolderId && idsToDelete.has(activeFolderId)) {
                 setActiveFolderId(null)
                 await loadDocuments()
             }
@@ -1402,17 +1510,75 @@ export default function DocumentsPage() {
         }
     }
 
-    const handleMoveDocument = async (doc: Document) => {
-        const next = window.prompt("Nhập tên folder mới", doc.folder ?? "")?.trim()
-        if (next === undefined) return
+    const openMoveDocumentDialog = (doc: Document) => {
+        setMoveDocumentDialog({
+            open: true,
+            document: doc,
+            selectedFolderId: doc.folderId ?? null,
+        })
+        setContextMenu(null)
+    }
+
+    const handleConfirmMoveDocument = async () => {
+        const doc = moveDocumentDialog.document
+        if (!doc) return
+        setIsSubmitting(true)
         try {
-            const updated = await patchDocument(doc.id, { folder: next || undefined })
-            setDocumentsData((prev) => prev.map((d) => (d.id === doc.id ? updated : d)))
-            setContextMenu(null)
+            const targetFolder = moveDocumentDialog.selectedFolderId
+                ? folders.find((folder) => folder.id === moveDocumentDialog.selectedFolderId) ?? null
+                : null
+            const updated = await patchDocument(doc.id, {
+                folder: targetFolder?.name ?? null,
+                folderId: targetFolder?.id ?? null,
+            })
+            setDocumentsData((prev) => {
+                if (activeFolderId && updated.folderId !== activeFolderId) {
+                    return prev.filter((item) => item.id !== doc.id)
+                }
+                return prev.map((item) => (item.id === doc.id ? updated : item))
+            })
+            setMoveDocumentDialog({ open: false, document: null, selectedFolderId: null })
             if (selectedDocument?.id === doc.id) setSelectedDocument(updated)
+            if (selectedLearningDoc?.id === doc.id) setSelectedLearningDoc(updated)
+            toast({ title: "Đã di chuyển tài liệu" })
         } catch {
             toast({ title: "Không thể di chuyển", variant: "destructive" })
+        } finally {
+            setIsSubmitting(false)
         }
+    }
+
+    const renderMoveFolderOption = (folder: Folder, depth = 0): React.ReactNode => {
+        const children = folderChildrenByParentId.get(folder.id) ?? []
+        const selected = moveDocumentDialog.selectedFolderId === folder.id
+        return (
+            <div key={folder.id}>
+                <button
+                    type="button"
+                    className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${
+                        selected
+                            ? "bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:ring-blue-700"
+                            : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                    }`}
+                    style={{ paddingLeft: `${12 + depth * 22}px` }}
+                    onClick={() => setMoveDocumentDialog((state) => ({ ...state, selectedFolderId: folder.id }))}
+                >
+                    {children.length > 0 ? (
+                        <ChevronRight className="h-3.5 w-3.5 text-gray-400" />
+                    ) : (
+                        <span className="h-3.5 w-3.5" />
+                    )}
+                    <FolderIcon className="h-4 w-4 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+                    {children.length > 0 && (
+                        <Badge variant="secondary" className="h-5 rounded-full px-1.5 text-[10px]">
+                            {children.length}
+                        </Badge>
+                    )}
+                </button>
+                {children.map((child) => renderMoveFolderOption(child, depth + 1))}
+            </div>
+        )
     }
 
     const handleToggleDocumentLock = async (doc: Document) => {
@@ -3894,21 +4060,25 @@ export default function DocumentsPage() {
                             size="sm"
                             variant="outline"
                             className="border-dashed border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400"
-                            onClick={() => setNewFolderDialog({ open: true, name: "" })}
+                            onClick={() => openNewFolderDialog(activeFolderId)}
                         >
                             <FolderPlus className="w-4 h-4 mr-1" />
-                            Tạo folder
+                            {activeFolder ? "Tạo folder con" : "Tạo folder"}
                         </Button>
                     )}
                 </div>
 
-                {folders.length === 0 ? (
+                {visibleFolders.length === 0 ? (
                     <p className="text-sm text-gray-400 dark:text-gray-500 italic">
-                        {isLeaderOrAdmin ? "Chưa có folder nào. Tạo folder đầu tiên." : "Chưa có folder nào."}
+                        {activeFolder
+                            ? (isLeaderOrAdmin ? "Folder này chưa có folder con. Tạo folder con đầu tiên." : "Folder này chưa có folder con.")
+                            : (isLeaderOrAdmin ? "Chưa có folder nào. Tạo folder đầu tiên." : "Chưa có folder nào.")}
                     </p>
                 ) : (
                     <div className="flex flex-wrap gap-3">
-                        {folders.map((folder) => (
+                        {visibleFolders.map((folder) => {
+                            const childCount = folderChildrenByParentId.get(folder.id)?.length ?? 0
+                            return (
                             <div
                                 key={folder.id}
                                 className={`group flex items-center gap-2 px-4 py-2.5 rounded-xl border cursor-pointer transition-all ${
@@ -3922,16 +4092,42 @@ export default function DocumentsPage() {
                                     ? <FolderOpen className="w-4 h-4" />
                                     : <FolderIcon className="w-4 h-4" />}
                                 <span className="text-sm font-medium">{folder.name}</span>
+                                {childCount > 0 && (
+                                    <Badge variant="secondary" className="ml-1 h-5 rounded-full px-1.5 text-[10px]">
+                                        {childCount}
+                                    </Badge>
+                                )}
                                 {isLeaderOrAdmin && (
-                                    <button
-                                        className="ml-1 text-gray-400 transition-opacity hover:text-red-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                                        onClick={(e) => { e.stopPropagation(); void handleDeleteFolder(folder.id) }}
-                                    >
-                                        <X className="w-3 h-3" />
-                                    </button>
+                                    <div className="ml-1 flex items-center gap-1 transition-opacity opacity-100 sm:opacity-0 sm:group-hover:opacity-100">
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <button
+                                                    className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    aria-label={`Mở menu folder ${folder.name}`}
+                                                >
+                                                    <MoreVertical className="w-3.5 h-3.5" />
+                                                </button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                                                <DropdownMenuItem onClick={() => void handleRenameFolder(folder)}>
+                                                    <Pencil className="w-4 h-4 mr-2" />
+                                                    Đổi tên
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem
+                                                    className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
+                                                    onClick={() => void handleDeleteFolder(folder.id)}
+                                                >
+                                                    <X className="w-4 h-4 mr-2" />
+                                                    Xóa
+                                                </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+                                    </div>
                                 )}
                             </div>
-                        ))}
+                            )
+                        })}
                     </div>
                 )}
             </div>
@@ -3948,11 +4144,32 @@ export default function DocumentsPage() {
                         <ChevronLeft className="w-4 h-4 mr-1" />
                         Tất cả
                     </Button>
-                    <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">/ {activeFolder?.name}</span>
+                    <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm text-blue-700 dark:text-blue-300">
+                        {activeFolderPath.map((folder, index) => (
+                            <div key={folder.id} className="flex min-w-0 items-center gap-1">
+                                <span className="text-blue-400">/</span>
+                                <button
+                                    type="button"
+                                    className={`max-w-[180px] truncate rounded px-1 py-0.5 text-left hover:bg-blue-100 dark:hover:bg-blue-900/40 ${
+                                        index === activeFolderPath.length - 1 ? "font-semibold" : "font-medium"
+                                    }`}
+                                    onClick={() => setActiveFolderId(folder.id)}
+                                >
+                                    {folder.name}
+                                </button>
+                            </div>
+                        ))}
+                    </div>
 
                     {/* Actions inside folder — leader/admin only */}
                     {isLeaderOrAdmin && (
                         <div className="ml-auto flex w-full justify-end gap-2 sm:w-auto">
+                            <Button size="sm" variant="outline"
+                                className="border-blue-300 text-blue-700 dark:text-blue-300 bg-transparent"
+                                onClick={() => openNewFolderDialog(activeFolderId)}>
+                                <FolderPlus className="w-3.5 h-3.5 mr-1" />
+                                Tạo folder con
+                            </Button>
                             <Button size="sm" variant="outline"
                                 className="border-blue-300 text-blue-700 dark:text-blue-300 bg-transparent"
                                 onClick={openCreateDocumentDialog}>
@@ -4136,7 +4353,7 @@ export default function DocumentsPage() {
                                 <Edit className="w-4 h-4 mr-2" />Đổi tên
                             </button>
                             <button className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center"
-                                onClick={() => void handleMoveDocument(contextMenu.document)}>
+                                onClick={() => openMoveDocumentDialog(contextMenu.document)}>
                                 <Move className="w-4 h-4 mr-2" />Di chuyển
                             </button>
                             <button
@@ -4333,7 +4550,17 @@ export default function DocumentsPage() {
             {newFolderDialog.open && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3">
                     <div className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl dark:bg-gray-800 sm:p-6">
-                        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Tạo folder mới</h2>
+                        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                            {newFolderDialog.parentId ? "Tạo folder con" : "Tạo folder mới"}
+                        </h2>
+                        {newFolderDialog.parentId && (
+                            <p className="mb-4 mt-1 text-sm text-gray-500 dark:text-gray-400">
+                                Trong folder: <span className="font-medium text-gray-700 dark:text-gray-200">
+                                    {folders.find((folder) => folder.id === newFolderDialog.parentId)?.name ?? "Folder hiện tại"}
+                                </span>
+                            </p>
+                        )}
+                        {!newFolderDialog.parentId && <div className="mb-4" />}
                         <Input
                             autoFocus
                             placeholder="Tên folder..."
@@ -4344,9 +4571,69 @@ export default function DocumentsPage() {
                         />
                         <div className="flex gap-2 justify-end">
                             <Button variant="outline" className="bg-transparent"
-                                onClick={() => setNewFolderDialog({ open: false, name: "" })}>Huỷ</Button>
+                                onClick={() => setNewFolderDialog({ open: false, name: "", parentId: null })}>Huỷ</Button>
                             <Button disabled={!newFolderDialog.name.trim() || isSubmitting}
                                 onClick={() => void handleCreateFolder()}>Tạo</Button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Move Document Dialog ────────────────────────────────── */}
+            {moveDocumentDialog.open && moveDocumentDialog.document && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3">
+                    <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-xl dark:bg-gray-800 sm:p-6">
+                        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Di chuyển tài liệu</h2>
+                        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                            Chọn folder đích cho <span className="font-medium text-gray-700 dark:text-gray-200">
+                                {moveDocumentDialog.document.name}
+                            </span>
+                        </p>
+                        <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
+                            Hiện tại: <span className="font-medium">{getFolderPathLabel(moveDocumentDialog.document.folderId)}</span>
+                        </div>
+
+                        <div className="mt-4 max-h-[55vh] overflow-y-auto rounded-xl border border-gray-200 p-2 dark:border-gray-700">
+                            <button
+                                type="button"
+                                className={`mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${
+                                    moveDocumentDialog.selectedFolderId === null
+                                        ? "bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:ring-blue-700"
+                                        : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                                }`}
+                                onClick={() => setMoveDocumentDialog((state) => ({ ...state, selectedFolderId: null }))}
+                            >
+                                <FolderOpen className="h-4 w-4 shrink-0" />
+                                <span className="font-medium">Ngoài folder</span>
+                            </button>
+
+                            {(folderChildrenByParentId.get("__root__") ?? []).length === 0 ? (
+                                <p className="px-3 py-4 text-sm italic text-gray-400 dark:text-gray-500">
+                                    Chưa có folder nào để chọn.
+                                </p>
+                            ) : (
+                                (folderChildrenByParentId.get("__root__") ?? []).map((folder) => renderMoveFolderOption(folder))
+                            )}
+                        </div>
+
+                        <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                            Folder đích: <span className="font-medium">{getFolderPathLabel(moveDocumentDialog.selectedFolderId)}</span>
+                        </div>
+
+                        <div className="mt-4 flex gap-2 justify-end">
+                            <Button
+                                variant="outline"
+                                className="bg-transparent"
+                                onClick={() => setMoveDocumentDialog({ open: false, document: null, selectedFolderId: null })}
+                            >
+                                Huỷ
+                            </Button>
+                            <Button
+                                disabled={isSubmitting || moveDocumentDialog.selectedFolderId === (moveDocumentDialog.document.folderId ?? null)}
+                                onClick={() => void handleConfirmMoveDocument()}
+                            >
+                                Di chuyển
+                            </Button>
                         </div>
                     </div>
                 </div>

@@ -1,6 +1,7 @@
 export interface Folder {
   id: string;
   name: string;
+  parentId?: string;
   ownerId: string;
   teamId: string;
   createdAt: string;
