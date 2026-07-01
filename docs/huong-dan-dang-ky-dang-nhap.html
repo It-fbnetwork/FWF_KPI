@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hướng dẫn đăng ký và đăng nhập FWF KPI</title>
+    <style>
+      @page {
+        size: A4;
+        margin: 1.6cm;
+      }
+
+      body {
+        color: #1f2937;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 11pt;
+        line-height: 1.55;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        color: #111827;
+        font-size: 24pt;
+      }
+
+      h2 {
+        margin: 28px 0 10px;
+        color: #1f2937;
+        font-size: 17pt;
+        page-break-after: avoid;
+      }
+
+      h3 {
+        margin: 20px 0 8px;
+        color: #374151;
+        font-size: 13pt;
+        page-break-after: avoid;
+      }
+
+      p {
+        margin: 7px 0;
+      }
+
+      ul,
+      ol {
+        margin: 7px 0 12px 22px;
+        padding: 0;
+      }
+
+      li {
+        margin: 4px 0;
+      }
+
+      code {
+        color: #b45309;
+        font-family: Consolas, "Courier New", monospace;
+      }
+
+      .cover {
+        border-bottom: 3px solid #f97316;
+        margin-bottom: 22px;
+        padding-bottom: 16px;
+      }
+
+      .subtitle {
+        color: #6b7280;
+        font-size: 12pt;
+      }
+
+      .note {
+        border-left: 4px solid #f97316;
+        background: #fff7ed;
+        margin: 14px 0;
+        padding: 10px 14px;
+      }
+
+      .screen {
+        margin: 14px 0 22px;
+        page-break-inside: avoid;
+      }
+
+      .screen img {
+        width: 100%;
+        max-width: 720px;
+        border: 1px solid #e5e7eb;
+      }
+
+      .caption {
+        color: #6b7280;
+        font-size: 9.5pt;
+        margin-top: 5px;
+        text-align: center;
+      }
+
+      .page-break {
+        page-break-before: always;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="cover">
+      <h1>Hướng dẫn đăng ký và đăng nhập FWF KPI</h1>
+      <p class="subtitle">Tài liệu thao tác chi tiết kèm màn hình ví dụ cho người dùng.</p>
+    </section>
+
+    <p>
+      Tài liệu này mô tả luồng đăng ký và đăng nhập hiện tại của project FWF KPI. Hệ thống không dùng mật khẩu ở màn hình đăng nhập/đăng ký mới; người dùng xác thực bằng mã OTP 6 số gửi qua email.
+    </p>
+
+    <h2>1. Chuẩn bị trước khi thao tác</h2>
+    <ul>
+      <li>Truy cập app tại <code>/login</code> để đăng nhập hoặc <code>/register</code> để đăng ký.</li>
+      <li>Có thể dùng <strong>Email công ty</strong> dạng <code>ten@facewashfox.com</code> hoặc <strong>Email cá nhân</strong>.</li>
+      <li>OTP có hiệu lực trong 5 phút.</li>
+      <li>Sau khi gửi OTP, nút gửi lại sẽ bị khóa 30 giây.</li>
+      <li>Nếu môi trường chưa cấu hình SMTP thật, server cần bật <code>OTP_DEBUG=true</code>; frontend muốn hiện OTP demo cần bật <code>NEXT_PUBLIC_OTP_DEBUG=true</code>.</li>
+    </ul>
+
+    <h2>2. Đăng nhập</h2>
+    <h3>Bước 1: Mở màn hình đăng nhập</h3>
+    <p>Vào <code>/login</code>. Chọn loại email rồi nhập email đã có tài khoản trong hệ thống.</p>
+    <div class="screen">
+      <img src="assets/auth/login-form.png" alt="Màn hình đăng nhập" />
+      <p class="caption">Màn hình đăng nhập bằng email.</p>
+    </div>
+    <p>
+      Với <strong>Email công ty</strong>, người dùng chỉ cần nhập phần trước <code>@facewashfox.com</code>; hệ thống tự gắn domain công ty. Với <strong>Email cá nhân</strong>, nhập đầy đủ địa chỉ email.
+    </p>
+
+    <h3>Bước 2: Gửi OTP đăng nhập</h3>
+    <p>Nhấn <strong>Gửi OTP đăng nhập</strong>. Hệ thống chỉ gửi OTP nếu:</p>
+    <ul>
+      <li>Email đã tồn tại trong bảng người dùng.</li>
+      <li>Tài khoản đã được xác minh.</li>
+      <li>Tài khoản không đang ở trạng thái chờ admin/CEO duyệt.</li>
+    </ul>
+    <p>Các lỗi thường gặp:</p>
+    <ul>
+      <li><code>Không tìm thấy tài khoản phù hợp.</code>: email chưa có tài khoản.</li>
+      <li><code>Tài khoản chưa xác minh email bằng OTP.</code>: tài khoản chưa hoàn tất xác minh.</li>
+      <li><code>Tài khoản đã xác thực OTP và đang chờ admin gốc duyệt.</code>: tài khoản cần đợi phê duyệt.</li>
+      <li><code>Chưa cấu hình SMTP để gửi OTP thật.</code>: môi trường chưa có SMTP và không bật debug OTP.</li>
+    </ul>
+
+    <h3>Bước 3: Nhập OTP</h3>
+    <p>Nhập đủ 6 số OTP đã nhận qua email, sau đó nhấn <strong>Xác minh OTP</strong>.</p>
+    <div class="screen">
+      <img src="assets/auth/login-otp.png" alt="Màn hình OTP đăng nhập" />
+      <p class="caption">Màn hình nhập OTP đăng nhập.</p>
+    </div>
+    <p>Nếu OTP đúng và còn hạn, hệ thống tạo session rồi chuyển người dùng vào <code>/dashboard</code>. Nếu OTP sai hoặc hết hạn, màn hình sẽ báo lỗi và người dùng cần nhập lại hoặc gửi lại OTP.</p>
+
+    <h2 class="page-break">3. Đăng ký tài khoản</h2>
+    <h3>Bước 1: Mở màn hình đăng ký</h3>
+    <p>Vào <code>/register</code>. Nhập họ tên, chọn loại email, nhập email, chọn phòng ban và vai trò.</p>
+    <div class="screen">
+      <img src="assets/auth/register-form.png" alt="Màn hình đăng ký" />
+      <p class="caption">Màn hình đăng ký tài khoản theo phòng ban.</p>
+    </div>
+    <p>Quy tắc chọn vai trò:</p>
+    <ul>
+      <li>Các phòng ban văn phòng có các vai trò: <strong>Nhân viên</strong>, <strong>Leader</strong>, <strong>CEO</strong>, <strong>Admin</strong>.</li>
+      <li>Khi chọn <strong>CEO</strong>, phòng ban hiệu lực được đặt là <strong>Vận hành</strong>.</li>
+      <li>Phòng ban <strong>Cửa hàng</strong> chỉ dùng các vai trò cửa hàng: <strong>Trainer</strong>, <strong>Quản lí cửa hàng</strong>, <strong>Cửa hàng trưởng</strong>, <strong>Kỹ thuật viên</strong>.</li>
+    </ul>
+
+    <h3>Bước 2: Điền thông tin riêng cho phòng ban Cửa hàng</h3>
+    <p>Nếu chọn phòng ban <strong>Cửa hàng</strong>, form sẽ hiện thêm trường theo vai trò.</p>
+    <div class="screen">
+      <img src="assets/auth/register-store.png" alt="Đăng ký phòng ban Cửa hàng" />
+      <p class="caption">Ví dụ đăng ký tài khoản thuộc phòng ban Cửa hàng.</p>
+    </div>
+    <p>Quy tắc hiện tại:</p>
+    <ul>
+      <li><strong>Trainer</strong>: không cần chọn khu vực hoặc chi nhánh.</li>
+      <li><strong>Quản lí cửa hàng</strong>: chọn <strong>Khu vực</strong>; hệ thống gán toàn bộ chi nhánh thuộc khu vực đó.</li>
+      <li><strong>Cửa hàng trưởng</strong>: chọn <strong>Khu vực</strong> và đúng 1 <strong>Chi nhánh</strong>.</li>
+      <li><strong>Kỹ thuật viên</strong>: chọn <strong>Cửa hàng trưởng quản lý</strong>; nếu chưa có cửa hàng trưởng khả dụng, hệ thống dùng <strong>Trainer</strong> làm quản lý tạm thời.</li>
+    </ul>
+
+    <h3>Bước 3: Gửi OTP đăng ký</h3>
+    <p>Nhấn <strong>Gửi OTP</strong>. Hệ thống kiểm tra:</p>
+    <ul>
+      <li>Họ tên không được trống.</li>
+      <li>Email chưa tồn tại.</li>
+      <li>Email không đang có yêu cầu duyệt pending.</li>
+      <li>Vai trò cửa hàng chỉ được dùng với phòng ban <strong>Cửa hàng</strong>.</li>
+      <li>Thông tin khu vực, chi nhánh hoặc quản lý cửa hàng phải hợp lệ theo vai trò.</li>
+    </ul>
+    <p>Nếu hợp lệ, hệ thống tạo OTP 6 số và gửi tới email.</p>
+
+    <h3>Bước 4: Xác nhận OTP đăng ký</h3>
+    <p>Nhập OTP rồi nhấn <strong>Xác minh OTP</strong>.</p>
+    <div class="screen">
+      <img src="assets/auth/register-otp.png" alt="Màn hình OTP đăng ký" />
+      <p class="caption">Màn hình nhập OTP đăng ký.</p>
+    </div>
+    <p>Nếu vai trò không cần duyệt, hệ thống tạo tài khoản, tạo/cập nhật hồ sơ nhân sự tương ứng và đăng nhập người dùng vào dashboard.</p>
+    <p>Nếu OTP sai hoặc hết hạn, hệ thống hiển thị lỗi:</p>
+    <ul>
+      <li><code>OTP không chính xác.</code></li>
+      <li><code>OTP đã hết hạn. Vui lòng gửi lại OTP.</code></li>
+      <li><code>Không tìm thấy yêu cầu xác minh phù hợp.</code></li>
+    </ul>
+
+    <h2 class="page-break">4. Trường hợp cần admin/CEO duyệt</h2>
+    <p>Theo logic server hiện tại, các vai trò sau cần duyệt sau khi xác minh OTP:</p>
+    <ul>
+      <li><strong>Leader</strong></li>
+      <li><strong>Admin</strong></li>
+      <li><strong>CEO</strong></li>
+    </ul>
+    <p>Sau khi OTP hợp lệ, tài khoản chưa đăng nhập ngay mà chuyển sang trạng thái chờ duyệt.</p>
+    <div class="screen">
+      <img src="assets/auth/approval-pending.png" alt="Trạng thái chờ duyệt" />
+      <p class="caption">Thông báo tài khoản đang chờ admin/CEO duyệt.</p>
+    </div>
+    <p>Người dùng cần chờ admin/CEO duyệt. Sau khi được duyệt, hệ thống gửi email thông báo và người dùng có thể quay lại <code>/login</code> để đăng nhập bằng OTP.</p>
+
+    <h2>5. Ghi chú vận hành</h2>
+    <ul>
+      <li>API gửi OTP đăng nhập: <code>POST /api/auth/login</code></li>
+      <li>API xác minh OTP đăng nhập: <code>POST /api/auth/login/verify-otp</code></li>
+      <li>API gửi OTP đăng ký: <code>POST /api/auth/register/request-otp</code></li>
+      <li>API xác minh OTP đăng ký: <code>POST /api/auth/register/verify-otp</code></li>
+      <li>Component giao diện chính: <code>components/auth-shell.tsx</code></li>
+      <li>Provider gọi API auth: <code>components/auth-provider.tsx</code></li>
+      <li>Logic server tạo/xác minh OTP: <code>lib/server/data.ts</code></li>
+      <li>Cấu hình gửi email OTP: <code>lib/server/mailer.ts</code></li>
+    </ul>
+
+    <h2>6. Checklist nhanh cho người dùng</h2>
+    <h3>Đăng ký</h3>
+    <ol>
+      <li>Vào <code>/register</code>.</li>
+      <li>Nhập họ tên.</li>
+      <li>Chọn loại email và nhập email.</li>
+      <li>Chọn phòng ban, vai trò và thông tin cửa hàng nếu có.</li>
+      <li>Nhấn <strong>Gửi OTP</strong>.</li>
+      <li>Nhập OTP 6 số.</li>
+      <li>Nếu tài khoản cần duyệt, chờ admin/CEO duyệt trước khi đăng nhập.</li>
+    </ol>
+    <h3>Đăng nhập</h3>
+    <ol>
+      <li>Vào <code>/login</code>.</li>
+      <li>Chọn loại email và nhập email đã đăng ký.</li>
+      <li>Nhấn <strong>Gửi OTP đăng nhập</strong>.</li>
+      <li>Nhập OTP 6 số.</li>
+      <li>Nhấn <strong>Xác minh OTP</strong> để vào dashboard.</li>
+    </ol>
+  </body>
+</html>
