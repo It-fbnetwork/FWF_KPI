@@ -502,6 +502,7 @@ export default function DocumentsPage() {
     const [quizResultsTab, setQuizResultsTab] = useState<QuizResultsTab>("results")
     const [quizResetPersonFilter, setQuizResetPersonFilter] = useState<string>("all")
     const [quizResetTimeFilter, setQuizResetTimeFilter] = useState<"all" | "today" | "7d" | "30d" | "90d">("all")
+    const [expandedAttemptIds, setExpandedAttemptIds] = useState<Set<string>>(new Set())
     const [selectedLearningDoc, setSelectedLearningDoc] = useState<Document | null>(null)
     const [isLearningSidebarCollapsed, setIsLearningSidebarCollapsed] = useState(false)
     const [failedLearningPreviewKeys, setFailedLearningPreviewKeys] = useState<Record<string, true>>({})
@@ -2166,6 +2167,30 @@ export default function DocumentsPage() {
         })
     }, [])
 
+    const getIncorrectAttemptQuestions = (attempt: QuizAttemptRecord) => {
+        const questions = attempt.reviewQuestions ?? []
+        return questions
+            .map((question, index) => ({
+                question,
+                questionIndex: index,
+                selectedIndex: attempt.answers[index] ?? -1,
+                correctIndex: question.correctIndex ?? -1,
+            }))
+            .filter((item) => item.correctIndex >= 0 && item.selectedIndex !== item.correctIndex)
+    }
+
+    const toggleAttemptDetail = (attemptId: string) => {
+        setExpandedAttemptIds((prev) => {
+            const next = new Set(prev)
+            if (next.has(attemptId)) {
+                next.delete(attemptId)
+            } else {
+                next.add(attemptId)
+            }
+            return next
+        })
+    }
+
     const handleOpenQuizCreate = (doc: Document) => {
         const existingQuiz = quizzes[doc.id] ?? null
         setQuizCreateDialog({
@@ -2464,6 +2489,7 @@ export default function DocumentsPage() {
         setQuizResultsTab("results")
         setQuizResetPersonFilter("all")
         setQuizResetTimeFilter("all")
+        setExpandedAttemptIds(new Set())
         setQuizResultsModal({
             open: true,
             documentId: doc.id,
@@ -5884,51 +5910,118 @@ export default function DocumentsPage() {
                                                             <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
                                                                 Tổng số lần làm lại đã ghi nhận: <span className="font-semibold text-gray-700 dark:text-gray-200">{totalRetakeCount}</span>
                                                             </p>
-                                                            {scopedAttempts.map((att) => (
-                                                                <div key={att.id} className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/30 sm:flex-row sm:items-center sm:justify-between">
-                                                                    <div className="flex items-center gap-3">
-                                                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white ${att.score >= QUIZ_PASS_SCORE ? "bg-green-500" : att.score >= 50 ? "bg-yellow-500" : "bg-red-500"}`}>
-                                                                            {att.personName?.[0] ?? "?"}
+                                                            {scopedAttempts.map((att) => {
+                                                                const isExpanded = expandedAttemptIds.has(att.id)
+                                                                const incorrectQuestions = getIncorrectAttemptQuestions(att)
+                                                                const hasReviewQuestions = (att.reviewQuestions?.length ?? 0) > 0
+                                                                return (
+                                                                    <div key={att.id} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/30">
+                                                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                                            <div className="flex items-center gap-3">
+                                                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white ${att.score >= QUIZ_PASS_SCORE ? "bg-green-500" : att.score >= 50 ? "bg-yellow-500" : "bg-red-500"}`}>
+                                                                                    {att.personName?.[0] ?? "?"}
+                                                                                </div>
+                                                                                <div>
+                                                                                    <p className="text-sm font-medium text-gray-900 dark:text-white">
+                                                                                        {att.personName ?? "Unknown"}
+                                                                                    </p>
+                                                                                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                                                                                        Lần {att.attemptRound ?? 1} · Làm lại {getQuizRetakeCount(att)} lần · {att.correctAnswers}/{att.totalQuestions} câu · {new Date(att.submittedAt).toLocaleDateString("vi-VN")}
+                                                                                    </p>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                                {att.isActiveAttempt !== false && att.score < QUIZ_PASS_SCORE && (
+                                                                                    <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[11px] font-semibold text-red-600 dark:text-red-300">
+                                                                                        Cần làm lại
+                                                                                    </span>
+                                                                                )}
+                                                                                {att.isActiveAttempt === false && (
+                                                                                    <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-600 dark:text-amber-300">
+                                                                                        Đã reset
+                                                                                    </span>
+                                                                                )}
+                                                                                <span className={`text-base font-bold ${att.score >= QUIZ_PASS_SCORE ? "text-green-600" : att.score >= 50 ? "text-yellow-500" : "text-red-500"}`}>
+                                                                                    {att.score}đ
+                                                                                </span>
+                                                                                <Button
+                                                                                    type="button"
+                                                                                    size="sm"
+                                                                                    variant="outline"
+                                                                                    className="h-8 bg-transparent"
+                                                                                    onClick={() => toggleAttemptDetail(att.id)}
+                                                                                >
+                                                                                    {isExpanded ? "Thu gọn" : "Chi tiết"}
+                                                                                </Button>
+                                                                                {user?.role === "store_trainer" && att.isActiveAttempt !== false && (
+                                                                                    <Button
+                                                                                        type="button"
+                                                                                        size="sm"
+                                                                                        variant="outline"
+                                                                                        className="h-8 bg-transparent"
+                                                                                        disabled={resettingAttemptPersonId === att.personId}
+                                                                                        onClick={() => void handleResetQuizAttemptForPerson(att.personId)}
+                                                                                    >
+                                                                                        <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                                                                                        {resettingAttemptPersonId === att.personId ? "Đang reset..." : "Reset"}
+                                                                                    </Button>
+                                                                                )}
+                                                                            </div>
                                                                         </div>
-                                                                        <div>
-                                                                            <p className="text-sm font-medium text-gray-900 dark:text-white">
-                                                                                {att.personName ?? "Unknown"}
-                                                                            </p>
-                                                                            <p className="text-xs text-gray-500 dark:text-gray-400">
-                                                                                Lần {att.attemptRound ?? 1} · Làm lại {getQuizRetakeCount(att)} lần · {att.correctAnswers}/{att.totalQuestions} câu · {new Date(att.submittedAt).toLocaleDateString("vi-VN")}
-                                                                            </p>
-                                                                        </div>
+                                                                        {isExpanded && (
+                                                                            <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800">
+                                                                                <div className="mb-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
+                                                                                    <div>
+                                                                                        <p className="text-gray-500 dark:text-gray-400">Điểm lần làm</p>
+                                                                                        <p className="font-semibold text-gray-900 dark:text-white">{att.score}đ</p>
+                                                                                    </div>
+                                                                                    <div>
+                                                                                        <p className="text-gray-500 dark:text-gray-400">Số câu đúng</p>
+                                                                                        <p className="font-semibold text-gray-900 dark:text-white">{att.correctAnswers}/{att.totalQuestions}</p>
+                                                                                    </div>
+                                                                                    <div>
+                                                                                        <p className="text-gray-500 dark:text-gray-400">Thời gian nộp</p>
+                                                                                        <p className="font-semibold text-gray-900 dark:text-white">{new Date(att.submittedAt).toLocaleString("vi-VN")}</p>
+                                                                                    </div>
+                                                                                </div>
+                                                                                {!hasReviewQuestions ? (
+                                                                                    <p className="text-xs text-gray-500 dark:text-gray-400">Chưa có dữ liệu câu hỏi để đối chiếu đáp án sai.</p>
+                                                                                ) : incorrectQuestions.length === 0 ? (
+                                                                                    <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-medium text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300">
+                                                                                        Lần làm này không sai câu nào.
+                                                                                    </div>
+                                                                                ) : (
+                                                                                    <div className="space-y-2">
+                                                                                        <p className="text-xs font-semibold text-red-600 dark:text-red-300">
+                                                                                            Sai {incorrectQuestions.length} câu:
+                                                                                        </p>
+                                                                                        {incorrectQuestions.map(({ question, questionIndex, selectedIndex, correctIndex }) => (
+                                                                                            <div key={`${att.id}-${questionIndex}`} className="rounded-lg border border-red-200 bg-red-50/80 p-3 dark:border-red-900/60 dark:bg-red-900/10">
+                                                                                                <p className="text-xs font-semibold text-gray-900 dark:text-white">
+                                                                                                    Câu {questionIndex + 1}: {question.text}
+                                                                                                </p>
+                                                                                                <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                                                                                                    Bạn chọn: <span className="font-semibold text-red-600 dark:text-red-300">
+                                                                                                        {selectedIndex >= 0 ? `${["A", "B", "C", "D"][selectedIndex] ?? selectedIndex + 1} - ${question.options[selectedIndex] ?? ""}` : "Chưa chọn"}
+                                                                                                    </span>
+                                                                                                </p>
+                                                                                                <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
+                                                                                                    Đáp án đúng: <span className="font-semibold text-green-700 dark:text-green-300">
+                                                                                                        {["A", "B", "C", "D"][correctIndex] ?? correctIndex + 1} - {question.options[correctIndex] ?? ""}
+                                                                                                    </span>
+                                                                                                </p>
+                                                                                                {question.explanation && (
+                                                                                                    <p className="mt-1 text-xs text-blue-600 dark:text-blue-300">{question.explanation}</p>
+                                                                                                )}
+                                                                                            </div>
+                                                                                        ))}
+                                                                                    </div>
+                                                                                )}
+                                                                            </div>
+                                                                        )}
                                                                     </div>
-                                                                    <div className="flex items-center gap-2">
-                                                                        {att.isActiveAttempt !== false && att.score < QUIZ_PASS_SCORE && (
-                                                                            <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[11px] font-semibold text-red-600 dark:text-red-300">
-                                                                                Cần làm lại
-                                                                            </span>
-                                                                        )}
-                                                                        {att.isActiveAttempt === false && (
-                                                                            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-600 dark:text-amber-300">
-                                                                                Đã reset
-                                                                            </span>
-                                                                        )}
-                                                                        <span className={`text-base font-bold ${att.score >= QUIZ_PASS_SCORE ? "text-green-600" : att.score >= 50 ? "text-yellow-500" : "text-red-500"}`}>
-                                                                            {att.score}đ
-                                                                        </span>
-                                                                        {user?.role === "store_trainer" && att.isActiveAttempt !== false && (
-                                                                            <Button
-                                                                                type="button"
-                                                                                size="sm"
-                                                                                variant="outline"
-                                                                                className="h-8 bg-transparent"
-                                                                                disabled={resettingAttemptPersonId === att.personId}
-                                                                                onClick={() => void handleResetQuizAttemptForPerson(att.personId)}
-                                                                            >
-                                                                                <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                                                                                {resettingAttemptPersonId === att.personId ? "Đang reset..." : "Reset"}
-                                                                            </Button>
-                                                                        )}
-                                                                    </div>
-                                                                </div>
-                                                            ))}
+                                                                )
+                                                            })}
                                                         </>
                                                     )}
                                                 </div>

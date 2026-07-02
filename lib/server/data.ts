@@ -1318,6 +1318,16 @@ function mapDbQuizAttempt(
   };
 }
 
+function buildQuizReviewQuestions(quiz?: Pick<DbLearningQuiz, "questions"> | null): QuizQuestion[] | undefined {
+  if (!quiz) return undefined;
+  return quiz.questions.map((q) => ({
+    text: q.text,
+    options: q.options,
+    correctIndex: q.correctIndex,
+    explanation: q.explanation,
+  }));
+}
+
 function mapDbLearningProgress(progress: DbLearningProgress): LearningProgressRecord {
   return {
     id: progress._id,
@@ -6435,12 +6445,7 @@ export async function submitQuizAttempt(
         attempt.score, attempt.correctAnswers, attempt.totalQuestions, attempt.startedAt, attempt.submittedAt, JSON.stringify(attempt),
       ]
     );
-    const reviewQuestions = quiz.questions.map((q) => ({
-      text: q.text,
-      options: q.options,
-      correctIndex: q.correctIndex,
-      explanation: q.explanation,
-    }));
+    const reviewQuestions = buildQuizReviewQuestions(quiz);
     const roundRes = await pgQuery(
       "select count(*)::int as count from quiz_attempts where document_id = $1 and person_id = $2 and submitted_at <= $3::timestamptz",
       [documentId, actor.person.id, attempt.submittedAt]
@@ -6487,12 +6492,7 @@ export async function submitQuizAttempt(
 
   await db.collection<DbQuizAttempt>("quiz_attempts").insertOne(attempt);
 
-  const reviewQuestions = quiz.questions.map((q) => ({
-    text: q.text,
-    options: q.options,
-    correctIndex: q.correctIndex,
-    explanation: q.explanation,
-  }));
+  const reviewQuestions = buildQuizReviewQuestions(quiz);
 
   const attemptRound = await db.collection<DbQuizAttempt>("quiz_attempts").countDocuments({
     documentId,
@@ -6564,17 +6564,19 @@ export async function getTeamQuizAttempts(
 
   if (shouldUseSupabasePhaseA()) {
     await ensureQuizAttemptResetSchemaReady();
-    const [documentRes, attemptsRes, peopleRes, resetRes] = await Promise.all([
+    const [documentRes, attemptsRes, peopleRes, resetRes, quizRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [documentId]),
       pgQuery("select * from quiz_attempts where document_id = $1 order by submitted_at desc nulls last", [documentId]),
       pgQuery("select * from people"),
       pgQuery("select * from quiz_attempt_resets where document_id = $1", [documentId]),
+      pgQuery("select * from learning_quizzes where document_id = $1 limit 1", [documentId]),
     ]);
     const documentRow = documentRes.rows[0];
     if (!documentRow || attemptsRes.rows.length === 0) return [];
     const document = mapPgDocumentRow(documentRow);
     const attempts = attemptsRes.rows.map((row) => mapPgQuizAttemptRow(row));
     const resets = resetRes.rows.map((row) => mapPgQuizAttemptResetRow(row));
+    const reviewQuestions = quizRes.rows[0] ? buildQuizReviewQuestions(mapPgLearningQuizRow(quizRes.rows[0])) : undefined;
     const attemptRounds = computeAttemptRoundByPerson(attempts, resets);
     const latestResetAtByPerson = new Map<string, string>();
     for (const reset of resets) {
@@ -6628,7 +6630,7 @@ export async function getTeamQuizAttempts(
         attempt,
         peopleById.get(attempt.personId)?.name ?? "Unknown",
         peopleById.get(attempt.personId)?.role,
-        undefined,
+        reviewQuestions,
         attemptRounds.get(attempt._id),
         latestActiveAttemptIdByPerson.get(attempt.personId) === attempt._id
       )
@@ -6636,13 +6638,14 @@ export async function getTeamQuizAttempts(
   }
 
   const db = await getMongoDb();
-  const [document, attempts, resets] = await Promise.all([
+  const [document, attempts, resets, quiz] = await Promise.all([
     db.collection<DbDocument>("documents").findOne({ _id: documentId }),
     db
       .collection<DbQuizAttempt>("quiz_attempts")
       .find({ documentId }, { sort: { submittedAt: -1 } })
       .toArray(),
     db.collection<DbQuizAttemptReset>("quiz_attempt_resets").find({ documentId }).toArray(),
+    db.collection<DbLearningQuiz>("learning_quizzes").findOne({ documentId }),
   ]);
 
   if (!document || attempts.length === 0) return [];
@@ -6682,6 +6685,7 @@ export async function getTeamQuizAttempts(
       : visibleAttempts;
 
   const attemptRounds = computeAttemptRoundByPerson(attempts, resets);
+  const reviewQuestions = buildQuizReviewQuestions(quiz);
   const latestResetAtByPerson = new Map<string, string>();
   for (const reset of resets) {
     const prev = latestResetAtByPerson.get(reset.personId);
@@ -6708,7 +6712,7 @@ export async function getTeamQuizAttempts(
       attempt,
       peopleById.get(attempt.personId)?.name ?? "Unknown",
       peopleById.get(attempt.personId)?.role,
-      undefined,
+      reviewQuestions,
       attemptRounds.get(attempt._id),
       latestActiveAttemptIdByPerson.get(attempt.personId) === attempt._id
     )
