@@ -1843,11 +1843,19 @@ export default function DocumentsPage() {
                             completedStepIds,
                             activeStepIndex: Math.min(current.activeStepIndex, Math.max(planSteps.length - 1, 0)),
                         }
-                        if (completedStepIds.length >= planSteps.length) {
-                            markDocumentAsCompleted(currentDocId)
-                        }
                         const nextPlanProgress = { ...prev, [currentDocId]: nextState }
-                        void syncLearningProgressToServer(currentDocId, learningProgress, nextPlanProgress)
+                        if (completedStepIds.length >= planSteps.length) {
+                            const nextLearningProgress = learningProgress.completedDocIds.includes(currentDocId)
+                                ? learningProgress
+                                : {
+                                    ...learningProgress,
+                                    completedDocIds: [...learningProgress.completedDocIds, currentDocId],
+                                }
+                            setLearningProgress(nextLearningProgress)
+                            void syncLearningProgressToServer(currentDocId, nextLearningProgress, nextPlanProgress)
+                        } else {
+                            void syncLearningProgressToServer(currentDocId, learningProgress, nextPlanProgress)
+                        }
                         return nextPlanProgress
                     })
                 }
@@ -2014,6 +2022,43 @@ export default function DocumentsPage() {
             toast({
                 title: `Bạn cần học thêm ${learningRemainingSeconds}s trước khi hoàn thành bài này.`,
                 variant: "destructive",
+            })
+            return
+        }
+        const doc = documentsData.find((item) => item.id === docId)
+        const steps = doc?.learningPlan?.steps ?? []
+        if (steps.length > 0) {
+            const currentProgress = learningPlanProgress[docId] ?? buildDefaultPlanProgress()
+            const activeStepIndex = Math.min(currentProgress.activeStepIndex, Math.max(steps.length - 1, 0))
+            const activeStep = steps[activeStepIndex]
+            if (!activeStep) return
+            const completedStepIds = currentProgress.completedStepIds.includes(activeStep.id)
+                ? currentProgress.completedStepIds
+                : [...currentProgress.completedStepIds, activeStep.id]
+            const nextPlanProgress: LearningPlanProgressMap = {
+                ...learningPlanProgress,
+                [docId]: {
+                    ...currentProgress,
+                    activeStepIndex,
+                    completedStepIds,
+                },
+            }
+            const shouldCompleteDoc = completedStepIds.length >= steps.length
+            const nextLearningProgress = shouldCompleteDoc && !learningProgress.completedDocIds.includes(docId)
+                ? {
+                    ...learningProgress,
+                    completedDocIds: [...learningProgress.completedDocIds, docId],
+                }
+                : learningProgress
+            setLearningPlanProgress(nextPlanProgress)
+            if (nextLearningProgress !== learningProgress) {
+                setLearningProgress(nextLearningProgress)
+            }
+            void syncLearningProgressToServer(docId, nextLearningProgress, nextPlanProgress)
+            toast({
+                title: shouldCompleteDoc
+                    ? "Đã hoàn thành toàn bộ bài học. Bạn có thể làm bài kiểm tra."
+                    : "Đã hoàn thành trang hiện tại. Bạn có thể qua trang tiếp theo.",
             })
             return
         }
@@ -3387,7 +3432,10 @@ export default function DocumentsPage() {
                                 const activeStepHasVideo = Boolean(activePlanStep?.media?.some((item) => item.type === "video"))
                                 const isVideoLesson = doc.type === "mp4" && Boolean(doc.url)
                                 const requiredSeconds = LEARNING_REQUIRED_SECONDS
-                                const isCurrentLessonCompleted = isLeaderOrAdmin || learningProgress.completedDocIds.includes(doc.id)
+                                const hasCompletedAllPlanSteps = hasLearningPlan && learningPlanSteps.every((step) =>
+                                    docPlanProgress.completedStepIds.includes(step.id)
+                                )
+                                const isCurrentLessonCompleted = isLeaderOrAdmin || learningProgress.completedDocIds.includes(doc.id) || hasCompletedAllPlanSteps
                                 const canGoNext = !!nextDoc
                                 const shouldPromoteQuiz = Boolean(!isLeaderOrAdmin && quiz && isCurrentLessonCompleted && !attempt && !isLearningFullscreen)
                                 const prevPlanStep = hasLearningPlan && activePlanStepIndex > 0
@@ -4012,7 +4060,7 @@ export default function DocumentsPage() {
                                                         </span>
                                                         <Button
                                                             size="sm"
-                                                            disabled={hasLearningPlan || isVideoLesson || isCurrentLessonCompleted || learningRemainingSeconds > 0}
+                                                            disabled={isVideoLesson || isCurrentLessonCompleted || learningRemainingSeconds > 0}
                                                             onClick={() => handleMarkLessonCompleted(doc.id)}
                                                             className="bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-60"
                                                         >
