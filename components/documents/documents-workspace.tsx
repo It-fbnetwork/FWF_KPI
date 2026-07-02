@@ -38,7 +38,6 @@ import {
     FileText,
     Tag,
     MoreHorizontal,
-    MoreVertical,
     Link,
     Globe,
     Store,
@@ -1669,11 +1668,22 @@ export default function DocumentsPage() {
 
     // ── Filtering & sorting ──────────────────────────────────────────
 
+    const normalizedSearchQuery = searchQuery.trim().toLowerCase()
+    const filteredVisibleFolders = visibleFolders.filter((folder) => {
+        if (!normalizedSearchQuery) return true
+        const owner = people.find((p) => p.id === folder.ownerId)
+        return (
+            folder.name.toLowerCase().includes(normalizedSearchQuery) ||
+            owner?.name.toLowerCase().includes(normalizedSearchQuery) ||
+            folder.teamId.toLowerCase().includes(normalizedSearchQuery)
+        )
+    })
+
     const filteredDocuments = documentsData.filter(
         (doc) =>
-            doc.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            doc.tags.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase())) ||
-            doc.folder?.toLowerCase().includes(searchQuery.toLowerCase())
+            doc.name.toLowerCase().includes(normalizedSearchQuery) ||
+            doc.tags.some((t) => t.toLowerCase().includes(normalizedSearchQuery)) ||
+            doc.folder?.toLowerCase().includes(normalizedSearchQuery)
     )
 
     const sortedDocuments = [...filteredDocuments].sort((a, b) => {
@@ -1713,6 +1723,7 @@ export default function DocumentsPage() {
     }
 
     const groups = groupedDocuments()
+    const shouldShowDocumentList = Boolean(activeFolderId || normalizedSearchQuery)
     const learningDocs = (isLeaderOrAdmin
         ? documentsData.filter((d) => d.isLearningMaterial)
         : documentsData.filter((d) => !d.isLocked)
@@ -2938,6 +2949,80 @@ export default function DocumentsPage() {
         )
     }
 
+    const FolderListItem = ({ folder }: { folder: Folder }) => {
+        const owner = people.find((p) => p.id === folder.ownerId)
+        const childCount = folderChildrenByParentId.get(folder.id)?.length ?? 0
+
+        return (
+            <div
+                className="group flex cursor-pointer items-center gap-4 rounded-lg p-3 transition-colors hover:bg-gray-50 dark:hover:bg-gray-700"
+                onClick={() => setActiveFolderId(folder.id)}
+            >
+                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300">
+                    <FolderIcon className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                        <h3 className="truncate font-medium text-gray-900 dark:text-white" title={folder.name}>
+                            {folder.name}
+                        </h3>
+                        {childCount > 0 && (
+                            <Badge variant="secondary" className="h-5 rounded-full px-1.5 text-[10px]">
+                                {childCount}
+                            </Badge>
+                        )}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
+                        <span>Folder</span>
+                        <span>{formatDate(folder.updatedAt)}</span>
+                        <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                            <Globe className="h-3 w-3" />
+                            Phòng ban
+                        </span>
+                    </div>
+                </div>
+                <div className="flex flex-shrink-0 items-center gap-3">
+                    <Unlock className="h-4 w-4 text-emerald-500" />
+                    <Avatar className="h-6 w-6">
+                        <AvatarImage src={owner?.imageURL || "/placeholder.svg"} />
+                        <AvatarFallback className="bg-gray-200 text-xs dark:bg-gray-600">
+                            {owner?.name.split(" ").map((n) => n[0]).join("") || "U"}
+                        </AvatarFallback>
+                    </Avatar>
+                    <span className="hidden text-sm text-gray-600 dark:text-gray-300 sm:block">{owner?.name || "Unknown"}</span>
+                    {isLeaderOrAdmin && (
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                                    onClick={(e) => e.stopPropagation()}
+                                    aria-label={`Mở menu folder ${folder.name}`}
+                                >
+                                    <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                                <DropdownMenuItem onClick={() => void handleRenameFolder(folder)}>
+                                    <Pencil className="mr-2 h-4 w-4" />
+                                    Đổi tên
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                    className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
+                                    onClick={() => void handleDeleteFolder(folder.id)}
+                                >
+                                    <X className="mr-2 h-4 w-4" />
+                                    Xóa
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    )}
+                </div>
+            </div>
+        )
+    }
+
     const LearningCard = ({ doc }: { doc: Document }) => {
         const owner = people.find((p) => p.id === doc.ownerId)
         const docType = documentTypes[doc.type] ?? documentTypes.txt
@@ -4051,85 +4136,84 @@ export default function DocumentsPage() {
             {/* ── Tài liệu tab ── */}
             {activeTab === "all" && <>
 
-            {/* Folders section */}
-            <div className="mb-6">
-                <div className="flex items-center justify-between mb-3">
-                    <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Folders</h2>
-                    {isLeaderOrAdmin && (
-                        <Button
-                            size="sm"
-                            variant="outline"
-                            className="border-dashed border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400"
-                            onClick={() => openNewFolderDialog(activeFolderId)}
-                        >
-                            <FolderPlus className="w-4 h-4 mr-1" />
-                            {activeFolder ? "Tạo folder con" : "Tạo folder"}
-                        </Button>
-                    )}
+            {/* Top controls */}
+            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="flex-1">
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+                        <Input
+                            placeholder="Tìm kiếm folder, tài liệu, tags..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="pl-10 bg-white dark:bg-gray-700"
+                        />
+                    </div>
                 </div>
 
-                {visibleFolders.length === 0 ? (
-                    <p className="text-sm text-gray-400 dark:text-gray-500 italic">
-                        {activeFolder
-                            ? (isLeaderOrAdmin ? "Folder này chưa có folder con. Tạo folder con đầu tiên." : "Folder này chưa có folder con.")
-                            : (isLeaderOrAdmin ? "Chưa có folder nào. Tạo folder đầu tiên." : "Chưa có folder nào.")}
-                    </p>
-                ) : (
-                    <div className="flex flex-wrap gap-3">
-                        {visibleFolders.map((folder) => {
-                            const childCount = folderChildrenByParentId.get(folder.id)?.length ?? 0
-                            return (
-                            <div
-                                key={folder.id}
-                                className={`group flex items-center gap-2 px-4 py-2.5 rounded-xl border cursor-pointer transition-all ${
-                                    activeFolderId === folder.id
-                                        ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300"
-                                        : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 text-gray-700 dark:text-gray-300"
-                                }`}
-                                onClick={() => setActiveFolderId(activeFolderId === folder.id ? null : folder.id)}
-                            >
-                                {activeFolderId === folder.id
-                                    ? <FolderOpen className="w-4 h-4" />
-                                    : <FolderIcon className="w-4 h-4" />}
-                                <span className="text-sm font-medium">{folder.name}</span>
-                                {childCount > 0 && (
-                                    <Badge variant="secondary" className="ml-1 h-5 rounded-full px-1.5 text-[10px]">
-                                        {childCount}
-                                    </Badge>
-                                )}
-                                {isLeaderOrAdmin && (
-                                    <div className="ml-1 flex items-center gap-1 transition-opacity opacity-100 sm:opacity-0 sm:group-hover:opacity-100">
-                                        <DropdownMenu>
-                                            <DropdownMenuTrigger asChild>
-                                                <button
-                                                    className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-                                                    onClick={(e) => e.stopPropagation()}
-                                                    aria-label={`Mở menu folder ${folder.name}`}
-                                                >
-                                                    <MoreVertical className="w-3.5 h-3.5" />
-                                                </button>
-                                            </DropdownMenuTrigger>
-                                            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-                                                <DropdownMenuItem onClick={() => void handleRenameFolder(folder)}>
-                                                    <Pencil className="w-4 h-4 mr-2" />
-                                                    Đổi tên
-                                                </DropdownMenuItem>
-                                                <DropdownMenuItem
-                                                    className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
-                                                    onClick={() => void handleDeleteFolder(folder.id)}
-                                                >
-                                                    <X className="w-4 h-4 mr-2" />
-                                                    Xóa
-                                                </DropdownMenuItem>
-                                            </DropdownMenuContent>
-                                        </DropdownMenu>
-                                    </div>
-                                )}
+                <div className="flex flex-wrap items-center gap-2">
+                    {shouldShowDocumentList && (
+                        <>
+                            <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                    <Button variant="outline" className="bg-transparent">
+                                        {isMobile ? "Sort" : `Sort: ${sortBy.charAt(0).toUpperCase() + sortBy.slice(1)}`}
+                                        <ChevronDown className="w-4 h-4 ml-2" />
+                                    </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent>
+                                    {(["name", "date", "size", "type", "owner"] as SortBy[]).map((s) => (
+                                        <DropdownMenuItem key={s} onClick={() => setSortBy(s)}>
+                                            {s.charAt(0).toUpperCase() + s.slice(1)}
+                                        </DropdownMenuItem>
+                                    ))}
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+
+                            <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                    <Button variant="outline" className="bg-transparent">
+                                        <Filter className="w-4 h-4 mr-2" />
+                                        {isMobile ? "Group" : `Group: ${groupBy === "none" ? "None" : groupBy.charAt(0).toUpperCase() + groupBy.slice(1)}`}
+                                        <ChevronDown className="w-4 h-4 ml-2" />
+                                    </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent>
+                                    {(["none", "type", "date", "owner", "folder"] as GroupBy[]).map((g) => (
+                                        <DropdownMenuItem key={g} onClick={() => setGroupBy(g)}>
+                                            {g === "none" ? "None" : g.charAt(0).toUpperCase() + g.slice(1)}
+                                        </DropdownMenuItem>
+                                    ))}
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+
+                            <div className="flex items-center border rounded-lg p-1 bg-white dark:bg-gray-800">
+                                <Button variant={viewMode === "grid" ? "default" : "ghost"} size="sm" onClick={() => setViewMode("grid")} className="h-8 px-3">
+                                    <Grid3X3 className="w-4 h-4" />
+                                </Button>
+                                <Button variant={viewMode === "list" ? "default" : "ghost"} size="sm" onClick={() => setViewMode("list")} className="h-8 px-3">
+                                    <List className="w-4 h-4" />
+                                </Button>
                             </div>
-                            )
-                        })}
-                    </div>
-                )}
+                        </>
+                    )}
+
+                    {isLeaderOrAdmin && (
+                        <>
+                            <Button
+                                variant="outline"
+                                className="border-dashed border-gray-300 bg-transparent text-gray-600 dark:border-gray-600 dark:text-gray-400"
+                                onClick={() => openNewFolderDialog(activeFolderId)}
+                            >
+                                <FolderPlus className="w-4 h-4 mr-2" />
+                                {activeFolder ? "Tạo folder con" : "Tạo folder"}
+                            </Button>
+                            <Button className="bg-blue-600 hover:bg-blue-700" onClick={openCreateDocumentDialog}>
+                                <Plus className="w-4 h-4 mr-2" />
+                                Tạo tài liệu
+                            </Button>
+                        </>
+                    )}
+                </div>
             </div>
 
             {/* Active folder bar */}
@@ -4181,74 +4265,35 @@ export default function DocumentsPage() {
                 </div>
             )}
 
-            {/* Controls */}
-            <div className="mb-6 flex flex-col gap-4 sm:flex-row">
-                <div className="flex-1">
-                    <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
-                        <Input
-                            placeholder="Tìm kiếm tài liệu, tags..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="pl-10 bg-white dark:bg-gray-700"
-                        />
-                    </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="outline" className="bg-transparent">
-                                {isMobile ? "Sort" : `Sort: ${sortBy.charAt(0).toUpperCase() + sortBy.slice(1)}`}
-                                <ChevronDown className="w-4 h-4 ml-2" />
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent>
-                            {(["name", "date", "size", "type", "owner"] as SortBy[]).map((s) => (
-                                <DropdownMenuItem key={s} onClick={() => setSortBy(s)}>
-                                    {s.charAt(0).toUpperCase() + s.slice(1)}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="outline" className="bg-transparent">
-                                <Filter className="w-4 h-4 mr-2" />
-                                {isMobile ? "Group" : `Group: ${groupBy === "none" ? "None" : groupBy.charAt(0).toUpperCase() + groupBy.slice(1)}`}
-                                <ChevronDown className="w-4 h-4 ml-2" />
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent>
-                            {(["none", "type", "date", "owner", "folder"] as GroupBy[]).map((g) => (
-                                <DropdownMenuItem key={g} onClick={() => setGroupBy(g)}>
-                                    {g === "none" ? "None" : g.charAt(0).toUpperCase() + g.slice(1)}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-
-                    <div className="flex items-center border rounded-lg p-1 bg-white dark:bg-gray-800">
-                        <Button variant={viewMode === "grid" ? "default" : "ghost"} size="sm" onClick={() => setViewMode("grid")} className="h-8 px-3">
-                            <Grid3X3 className="w-4 h-4" />
-                        </Button>
-                        <Button variant={viewMode === "list" ? "default" : "ghost"} size="sm" onClick={() => setViewMode("list")} className="h-8 px-3">
-                            <List className="w-4 h-4" />
-                        </Button>
-                    </div>
-
-                    {/* Create document outside folder — leader/admin only */}
-                    {!activeFolderId && isLeaderOrAdmin && (
-                        <Button className="bg-blue-600 hover:bg-blue-700" onClick={openCreateDocumentDialog}>
-                            <Plus className="w-4 h-4 mr-2" />
-                            Tạo tài liệu
-                        </Button>
+            {/* Folders section */}
+            <div className="mb-6">
+                <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Folders</h2>
+                    {normalizedSearchQuery && (
+                        <span className="text-xs text-gray-500 dark:text-gray-400">
+                            {filteredVisibleFolders.length} / {visibleFolders.length} folder
+                        </span>
                     )}
                 </div>
+
+                {filteredVisibleFolders.length === 0 ? (
+                    <p className="text-sm text-gray-400 dark:text-gray-500 italic">
+                        {normalizedSearchQuery
+                            ? "Không tìm thấy folder phù hợp."
+                            : activeFolder
+                                ? (isLeaderOrAdmin ? "Folder này chưa có folder con. Tạo folder con đầu tiên." : "Folder này chưa có folder con.")
+                                : (isLeaderOrAdmin ? "Chưa có folder nào. Tạo folder đầu tiên." : "Chưa có folder nào.")}
+                    </p>
+                ) : (
+                    <div className="space-y-1">
+                        {filteredVisibleFolders.map((folder) => (
+                            <FolderListItem key={folder.id} folder={folder} />
+                        ))}
+                    </div>
+                )}
             </div>
 
-            {documentsLoading ? (
+            {shouldShowDocumentList && (documentsLoading ? (
                 <div className="flex min-h-[35vh] flex-col items-center justify-center gap-3 py-16 text-center">
                     <Loader2 className="h-7 w-7 animate-spin text-blue-600 dark:text-blue-400" />
                     <div>
@@ -4301,7 +4346,7 @@ export default function DocumentsPage() {
                         </div>
                     )}
                 </>
-            )}
+            ))}
 
             {/* ── Context Menu ─────────────────────────────────────────── */}
             {contextMenu && (
