@@ -4073,7 +4073,7 @@ export default function DocumentsPage() {
                                         )}
 
                                         {/* Quiz section */}
-                                        {quiz && !shouldPromoteQuiz ? (
+                                        {!shouldPromoteQuiz && quiz ? (
                                             <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm overflow-hidden">
                                                 <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800 bg-violet-50 dark:bg-violet-900/20 flex items-center gap-2">
                                                     <ClipboardCheck className="w-5 h-5 text-violet-600 dark:text-violet-400" />
@@ -4147,7 +4147,7 @@ export default function DocumentsPage() {
                                                     )}
                                                 </div>
                                             </div>
-                                        ) : (isLeaderOrAdmin || canViewTeamLearningReports) ? (
+                                        ) : !quiz && (isLeaderOrAdmin || canViewTeamLearningReports) ? (
                                             <div className="rounded-2xl border border-dashed border-gray-300 bg-white p-6 text-center dark:border-gray-700 dark:bg-gray-900 sm:p-10">
                                                 <ClipboardCheck className="w-10 h-10 mx-auto mb-3 text-gray-300 dark:text-gray-600" />
                                                 <p className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-4">Chưa có bài kiểm tra cho tài liệu này</p>
@@ -4162,12 +4162,7 @@ export default function DocumentsPage() {
                                                     )}
                                                 </div>
                                             </div>
-                                        ) : (
-                                            <div className="rounded-2xl border border-gray-200 bg-white p-6 text-center dark:border-gray-800 dark:bg-gray-900 sm:p-10">
-                                                <ClipboardCheck className="w-10 h-10 mx-auto mb-3 text-gray-300 dark:text-gray-600" />
-                                                <p className="text-sm text-gray-500 dark:text-gray-400">Chưa có bài kiểm tra cho tài liệu này.</p>
-                                            </div>
-                                        )}
+                                        ) : null}
 
                                         {/* Navigation */}
                                         <div className="flex items-center justify-between gap-2 pt-2 pb-4">
