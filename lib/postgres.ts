@@ -30,29 +30,35 @@ function normalizeConnectionString(input?: string) {
 
 const connectionString = normalizeConnectionString(process.env.SUPABASE_DB_URL);
 
-let pool: Pool | null = null;
+declare global {
+  // eslint-disable-next-line no-var
+  var __fwfPgPool__: Pool | undefined;
+  // eslint-disable-next-line no-var
+  var __fwfPgPoolConnectionString__: string | undefined;
+}
 
 function getPool() {
   if (!connectionString) {
     throw new Error("Missing SUPABASE_DB_URL environment variable.");
   }
 
-  if (!pool) {
-    pool = new Pool({
+  if (!globalThis.__fwfPgPool__ || globalThis.__fwfPgPoolConnectionString__ !== connectionString) {
+    globalThis.__fwfPgPool__ = new Pool({
       connectionString,
       ssl: { rejectUnauthorized: false },
-      max: 5,
+      max: 3,
       min: 0,
       idleTimeoutMillis: 10000,
       connectionTimeoutMillis: 10000,
       allowExitOnIdle: true,
     });
-    pool.on("error", (error) => {
+    globalThis.__fwfPgPoolConnectionString__ = connectionString;
+    globalThis.__fwfPgPool__.on("error", (error) => {
       console.error("[postgres] idle client error:", error.message);
     });
   }
 
-  return pool;
+  return globalThis.__fwfPgPool__;
 }
 
 export async function pgQuery<T extends QueryResultRow = QueryResultRow>(text: string, values: unknown[] = []) {
