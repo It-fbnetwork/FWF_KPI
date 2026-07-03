@@ -6978,7 +6978,7 @@ export async function resetQuizAttemptForPerson(
 ) {
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
-  if (actor.user.role !== "store_trainer") throw new Error("Forbidden");
+  if (!actor.isAdmin && actor.user.role !== "store_trainer") throw new Error("Forbidden");
 
   if (shouldUseSupabasePhaseA()) {
     await ensureQuizAttemptResetSchemaReady();
@@ -7041,6 +7041,115 @@ export async function resetQuizAttemptForPerson(
 
   return {
     deleted: Boolean(latestAttempt),
+    resetAt: now,
+    documentName: document.name,
+    personName: targetPerson.name,
+  };
+}
+
+export async function resetLearningProgressForPerson(
+  sessionUserId: string | null | undefined,
+  input: { documentId: string; personId: string }
+) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!actor.isAdmin && actor.user.role !== "store_trainer") throw new Error("Forbidden");
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureQuizAttemptResetSchemaReady();
+    const [personRes, documentRes, peopleRes, usersRes] = await Promise.all([
+      pgQuery("select * from people where id = $1 limit 1", [input.personId]),
+      pgQuery("select * from documents where id = $1 limit 1", [input.documentId]),
+      pgQuery("select id,team_id from people"),
+      pgQuery("select id, name, email, person_id, role, department, store_lead_user_id, verified from users where person_id is not null"),
+    ]);
+    const targetRow = personRes.rows[0];
+    const documentRow = documentRes.rows[0];
+    if (!targetRow || !documentRow) throw new Error("Not found");
+
+    const targetPerson = mapDbPerson(mapPgPersonRow(targetRow));
+    const document = mapPgDocumentRow(documentRow);
+    const ownerTeamByPersonId = new Map(peopleRes.rows.map((row) => [String(row.id), normalizeTeamId(String(row.team_id))]));
+    const personRolesByPersonId = buildPersonRolesMap(usersRes.rows);
+    if (!canAccessPerson(actor, targetPerson.id)) throw new Error("Forbidden");
+    if (!isEmployeePerson(targetPerson)) throw new Error("Forbidden");
+    if (!canPersonAccessDocument(targetPerson, document, ownerTeamByPersonId, personRolesByPersonId)) throw new Error("Forbidden");
+
+    const now = new Date().toISOString();
+    const [deleteRes, latestAttemptRes] = await Promise.all([
+      pgQuery("delete from learning_progress where document_id = $1 and person_id = $2", [input.documentId, input.personId]),
+      pgQuery(
+        "select id from quiz_attempts where document_id = $1 and person_id = $2 order by submitted_at desc nulls last limit 1",
+        [input.documentId, input.personId]
+      ),
+    ]);
+    const resetQuizAttempt = (latestAttemptRes.rowCount ?? 0) > 0;
+    if (resetQuizAttempt) {
+      const reset: DbQuizAttemptReset = {
+        _id: `attempt_reset_${Date.now()}_${randomInt(1000, 9999)}`,
+        documentId: input.documentId,
+        personId: input.personId,
+        resetByPersonId: actor.person.id,
+        resetAt: now,
+      };
+      await pgQuery(
+        `insert into quiz_attempt_resets
+        (id, document_id, person_id, reset_by_person_id, reset_at, raw_json)
+        values ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [reset._id, reset.documentId, reset.personId, reset.resetByPersonId, reset.resetAt, JSON.stringify(reset)]
+      );
+    }
+
+    return {
+      deletedProgress: (deleteRes.rowCount ?? 0) > 0,
+      resetQuizAttempt,
+      resetAt: now,
+      documentName: document.name,
+      personName: targetPerson.name,
+    };
+  }
+
+  const db = await getMongoDb();
+  const [targetPerson, document, people, users] = await Promise.all([
+    db.collection<DbPerson>("people").findOne({ _id: input.personId }),
+    db.collection<DbDocument>("documents").findOne({ _id: input.documentId }),
+    db.collection<DbPerson>("people").find({}, { projection: { _id: 1, teamId: 1 } }).toArray(),
+    db.collection<DbUser>("users").find({}, { projection: { _id: 1, name: 1, email: 1, personId: 1, role: 1, department: 1, storeLeadUserId: 1, verified: 1 } }).toArray(),
+  ]);
+  if (!targetPerson || !document) throw new Error("Not found");
+
+  const mappedTargetPerson = mapDbPerson(targetPerson);
+  const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
+  const personRolesByPersonId = new Map<string, Set<UserRole>>();
+  for (const user of users) {
+    if (!user.personId) continue;
+    const roles = personRolesByPersonId.get(user.personId) ?? new Set<UserRole>();
+    roles.add(normalizeUserRole(user.role));
+    personRolesByPersonId.set(user.personId, roles);
+  }
+  if (!canAccessPerson(actor, mappedTargetPerson.id)) throw new Error("Forbidden");
+  if (!isEmployeePerson(mappedTargetPerson)) throw new Error("Forbidden");
+  if (!canPersonAccessDocument(mappedTargetPerson, document, ownerTeamByPersonId, personRolesByPersonId)) throw new Error("Forbidden");
+
+  const now = new Date().toISOString();
+  const [deleteRes, latestAttempt] = await Promise.all([
+    db.collection<DbLearningProgress>("learning_progress").deleteOne({ documentId: input.documentId, personId: input.personId }),
+    db.collection<DbQuizAttempt>("quiz_attempts").find({ documentId: input.documentId, personId: input.personId }, { sort: { submittedAt: -1 } }).limit(1).next(),
+  ]);
+  const resetQuizAttempt = Boolean(latestAttempt);
+  if (resetQuizAttempt) {
+    await db.collection<DbQuizAttemptReset>("quiz_attempt_resets").insertOne({
+      _id: `attempt_reset_${Date.now()}_${randomInt(1000, 9999)}`,
+      documentId: input.documentId,
+      personId: input.personId,
+      resetByPersonId: actor.person.id,
+      resetAt: now,
+    });
+  }
+
+  return {
+    deletedProgress: deleteRes.deletedCount > 0,
+    resetQuizAttempt,
     resetAt: now,
     documentName: document.name,
     personName: targetPerson.name,
@@ -7400,12 +7509,14 @@ export async function getTeamLearningStatusesForDocument(
   if (!canViewTeamLearningReports(actor)) throw new Error("Forbidden");
 
   if (shouldUseSupabasePhaseA()) {
-    const [documentRes, peopleRes, usersRes, progressesRes, attemptsRes] = await Promise.all([
+    await ensureQuizAttemptResetSchemaReady();
+    const [documentRes, peopleRes, usersRes, progressesRes, attemptsRes, resetRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [documentId]),
       pgQuery("select * from people"),
       pgQuery("select * from users where person_id is not null"),
       pgQuery("select * from learning_progress where document_id = $1", [documentId]),
       pgQuery("select * from quiz_attempts where document_id = $1", [documentId]),
+      pgQuery("select * from quiz_attempt_resets where document_id = $1", [documentId]),
     ]);
     const documentRow = documentRes.rows[0];
     if (!documentRow) return [];
@@ -7440,8 +7551,25 @@ export async function getTeamLearningStatusesForDocument(
     const attempts = attemptsRes.rows
       .map((row) => mapPgQuizAttemptRow(row))
       .filter((attempt) => targetPersonIdSet.has(attempt.personId));
+    const resets = resetRes.rows
+      .map((row) => mapPgQuizAttemptResetRow(row))
+      .filter((reset) => targetPersonIdSet.has(reset.personId));
+    const latestResetAtByPerson = new Map<string, string>();
+    for (const reset of resets) {
+      const prev = latestResetAtByPerson.get(reset.personId);
+      if (!prev || new Date(reset.resetAt).getTime() > new Date(prev).getTime()) {
+        latestResetAtByPerson.set(reset.personId, reset.resetAt);
+      }
+    }
     const progressByPersonId = new Map(progresses.map((progress) => [progress.personId, progress]));
-    const attemptPersonIdSet = new Set(attempts.map((attempt) => attempt.personId));
+    const attemptPersonIdSet = new Set(
+      attempts
+        .filter((attempt) => {
+          const latestResetAt = latestResetAtByPerson.get(attempt.personId);
+          return !latestResetAt || new Date(attempt.submittedAt).getTime() > new Date(latestResetAt).getTime();
+        })
+        .map((attempt) => attempt.personId)
+    );
     return targetPeople
       .map((person) => {
         const progress = progressByPersonId.get(person.id);
@@ -7501,7 +7629,7 @@ export async function getTeamLearningStatusesForDocument(
   if (targetPeople.length === 0) return [];
 
   const targetPersonIds = targetPeople.map((person) => person.id);
-  const [progresses, attempts] = await Promise.all([
+  const [progresses, attempts, resets] = await Promise.all([
     db
       .collection<DbLearningProgress>("learning_progress")
       .find({ documentId, personId: { $in: targetPersonIds } })
@@ -7510,10 +7638,28 @@ export async function getTeamLearningStatusesForDocument(
       .collection<DbQuizAttempt>("quiz_attempts")
       .find({ documentId, personId: { $in: targetPersonIds } })
       .toArray(),
+    db
+      .collection<DbQuizAttemptReset>("quiz_attempt_resets")
+      .find({ documentId, personId: { $in: targetPersonIds } })
+      .toArray(),
   ]);
 
   const progressByPersonId = new Map(progresses.map((progress) => [progress.personId, progress]));
-  const attemptPersonIdSet = new Set(attempts.map((attempt) => attempt.personId));
+  const latestResetAtByPerson = new Map<string, string>();
+  for (const reset of resets) {
+    const prev = latestResetAtByPerson.get(reset.personId);
+    if (!prev || new Date(reset.resetAt).getTime() > new Date(prev).getTime()) {
+      latestResetAtByPerson.set(reset.personId, reset.resetAt);
+    }
+  }
+  const attemptPersonIdSet = new Set(
+    attempts
+      .filter((attempt) => {
+        const latestResetAt = latestResetAtByPerson.get(attempt.personId);
+        return !latestResetAt || new Date(attempt.submittedAt).getTime() > new Date(latestResetAt).getTime();
+      })
+      .map((attempt) => attempt.personId)
+  );
 
   return targetPeople
     .map((person) => {

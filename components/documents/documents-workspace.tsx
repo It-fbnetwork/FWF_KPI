@@ -17,7 +17,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { documentTypes, formatFileSize, formatDate, type Document, type Folder } from "@/lib/documents"
-import type { UserAccount } from "@/lib/auth"
+import { isAdminLikeRole, type UserAccount } from "@/lib/auth"
 import { useIsMobile } from "@/components/hooks/use-mobile"
 import {
     Search,
@@ -429,6 +429,7 @@ export default function DocumentsPage() {
         isLeaderOrAdmin ||
         (user?.department === "Cửa hàng" &&
             (user?.role === "store_manager" || user?.role === "store_lead"))
+    const canResetTeamLearning = isAdminLikeRole(user?.role) || user?.role === "store_trainer"
 
     const [searchQuery, setSearchQuery] = useState("")
     const [sortBy, setSortBy] = useState<SortBy>("date")
@@ -496,6 +497,7 @@ export default function DocumentsPage() {
         open: false, documentId: "", documentName: "", attempts: [], resets: [], learningStatuses: [], isLoading: false,
     })
     const [resettingAttemptPersonId, setResettingAttemptPersonId] = useState<string | null>(null)
+    const [resettingLearningPersonId, setResettingLearningPersonId] = useState<string | null>(null)
     const [quizResultsRoleFilter, setQuizResultsRoleFilter] = useState<QuizResultsRoleFilter>("all")
     const [quizResultsSupervisorFilter, setQuizResultsSupervisorFilter] = useState<string>("all")
     const [selectedLearningStatusListDetail, setSelectedLearningStatusListDetail] = useState<LearningStatusListDetail | null>(null)
@@ -2400,7 +2402,13 @@ export default function DocumentsPage() {
     }
 
     const handleOpenQuizTake = (doc: Document) => {
-        if (!isLeaderOrAdmin && !learningProgress.completedDocIds.includes(doc.id)) {
+        const learningPlanSteps = doc.learningPlan?.steps ?? []
+        const docPlanProgress = learningPlanProgress[doc.id] ?? buildDefaultPlanProgress()
+        const hasCompletedAllPlanSteps = learningPlanSteps.length > 0 && learningPlanSteps.every((step) =>
+            docPlanProgress.completedStepIds.includes(step.id)
+        )
+        const isLearningCompleted = learningProgress.completedDocIds.includes(doc.id) || hasCompletedAllPlanSteps
+        if (!isLeaderOrAdmin && !isLearningCompleted) {
             toast({
                 title: "Bạn cần học xong tất cả slide trước khi làm bài kiểm tra.",
                 variant: "destructive",
@@ -2409,6 +2417,14 @@ export default function DocumentsPage() {
         }
         const quiz = quizzes[doc.id]
         if (!quiz) return
+        if (!isLeaderOrAdmin && hasCompletedAllPlanSteps && !learningProgress.completedDocIds.includes(doc.id)) {
+            const nextLearningProgress = {
+                ...learningProgress,
+                completedDocIds: [...learningProgress.completedDocIds, doc.id],
+            }
+            setLearningProgress(nextLearningProgress)
+            void syncLearningProgressToServer(doc.id, nextLearningProgress, learningPlanProgress)
+        }
         const questionOrder = shuffleIndices(quiz.questions.length)
         const optionOrderByQuestion = quiz.questions.map((question) => shuffleIndices(question.options.length))
         const startedAt = new Date().toISOString()
@@ -2589,6 +2605,44 @@ export default function DocumentsPage() {
             toast({ title: error instanceof Error ? error.message : "Không thể reset kết quả", variant: "destructive" })
         } finally {
             setResettingAttemptPersonId(null)
+        }
+    }
+
+    const handleResetLearningProgressForPerson = async (personId: string, personName: string) => {
+        if (!quizResultsModal.documentId) return
+        const confirmed = window.confirm(`Cho ${personName} học lại tài liệu này? Tiến độ học và kết quả kiểm tra hiện tại sẽ được reset.`)
+        if (!confirmed) return
+
+        setResettingLearningPersonId(personId)
+        try {
+            const res = await fetch(`/api/learning/progress/${quizResultsModal.documentId}/team`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ personId }),
+            })
+            const data = (await res.json()) as { ok?: boolean; message?: string }
+            if (!res.ok || !data.ok) throw new Error(data.message ?? "Không thể cho nhân sự học lại")
+            const [attemptsRes, statusesRes] = await Promise.all([
+                fetch(`/api/learning/quiz/${quizResultsModal.documentId}/attempts?scope=team`, { credentials: "include", cache: "no-store" }),
+                fetch(`/api/learning/progress/${quizResultsModal.documentId}/team`, { credentials: "include", cache: "no-store" }),
+            ])
+            const attemptsData = (await attemptsRes.json()) as { attempts: QuizAttemptRecord[]; resets?: QuizAttemptResetRecord[] }
+            const statusData = (await statusesRes.json()) as { rows: LearningStatusRow[] }
+            setQuizResultsModal((prev) => ({
+                ...prev,
+                attempts: attemptsData.attempts ?? [],
+                resets: attemptsData.resets ?? prev.resets,
+                learningStatuses: statusData.rows ?? prev.learningStatuses,
+            }))
+            setSelectedLearningStatusListDetail((prev) =>
+                prev ? { ...prev, rows: prev.rows.filter((item) => item.personId !== personId) } : prev
+            )
+            toast({ title: "Đã cho nhân sự học lại. Tiến độ học và bài kiểm tra cũ đã được reset." })
+        } catch (error) {
+            toast({ title: error instanceof Error ? error.message : "Không thể cho nhân sự học lại", variant: "destructive" })
+        } finally {
+            setResettingLearningPersonId(null)
         }
     }
 
@@ -5996,7 +6050,7 @@ export default function DocumentsPage() {
                                                                                 >
                                                                                     {isExpanded ? "Thu gọn" : "Chi tiết"}
                                                                                 </Button>
-                                                                                {user?.role === "store_trainer" && att.isActiveAttempt !== false && (
+                                                                                {canResetTeamLearning && att.isActiveAttempt !== false && (
                                                                                     <Button
                                                                                         type="button"
                                                                                         size="sm"
@@ -6103,8 +6157,25 @@ export default function DocumentsPage() {
                                         <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
                                             {selectedLearningStatusListDetail.rows.map((item) => (
                                                 <div key={item.personId} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800/70">
-                                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">{item.personName}</p>
-                                                    <p className="text-xs text-gray-500 dark:text-gray-400">{item.personRole ?? "Chưa có vai trò"}</p>
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <p className="break-words text-sm font-semibold text-gray-900 dark:text-white">{item.personName}</p>
+                                                            <p className="text-xs text-gray-500 dark:text-gray-400">{item.personRole ?? "Chưa có vai trò"}</p>
+                                                        </div>
+                                                        {canResetTeamLearning && item.status !== "not_started" && (
+                                                            <Button
+                                                                type="button"
+                                                                size="sm"
+                                                                variant="outline"
+                                                                className="h-8 shrink-0 bg-transparent px-2 text-xs"
+                                                                disabled={resettingLearningPersonId === item.personId}
+                                                                onClick={() => void handleResetLearningProgressForPerson(item.personId, item.personName)}
+                                                            >
+                                                                <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                                                                {resettingLearningPersonId === item.personId ? "Đang reset" : "Cho học lại"}
+                                                            </Button>
+                                                        )}
+                                                    </div>
                                                     <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">
                                                         Phụ trách: <span className="font-medium">{item.supervisorName ?? "Chưa gán người phụ trách"}</span>
                                                     </p>
