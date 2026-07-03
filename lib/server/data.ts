@@ -1343,6 +1343,17 @@ function mapDbLearningProgress(progress: DbLearningProgress): LearningProgressRe
   };
 }
 
+function hasCompletedAllLearningSteps(progress: DbLearningProgress | undefined, document: Pick<DbDocument, "learningPlan">) {
+  const steps = document.learningPlan?.steps ?? [];
+  if (!progress || steps.length === 0) return false;
+  const completedStepIds = new Set(progress.completedStepIds ?? []);
+  return steps.every((step) => completedStepIds.has(step.id));
+}
+
+function isLearningProgressCompleted(progress: DbLearningProgress | undefined, document: Pick<DbDocument, "learningPlan">) {
+  return Boolean(progress?.completedAt) || hasCompletedAllLearningSteps(progress, document);
+}
+
 function mapDbFolder(folder: DbFolder): Folder {
   return {
     id: folder._id,
@@ -7296,7 +7307,7 @@ export async function getTeamLearningStatusesForDocument(
           (progress?.activeStepIndex ?? 0) > 0 ||
           (progress?.completedStepIds?.length ?? 0) > 0 ||
           Object.keys(progress?.startedAtByStepId ?? {}).length > 0;
-        const completed = Boolean(progress?.completedAt) || attemptPersonIdSet.has(person.id);
+        const completed = isLearningProgressCompleted(progress, document) || attemptPersonIdSet.has(person.id);
         return {
           personId: person.id,
           personName: person.name,
@@ -7369,7 +7380,7 @@ export async function getTeamLearningStatusesForDocument(
         (progress?.activeStepIndex ?? 0) > 0 ||
         (progress?.completedStepIds?.length ?? 0) > 0 ||
         Object.keys(progress?.startedAtByStepId ?? {}).length > 0;
-      const completed = Boolean(progress?.completedAt) || attemptPersonIdSet.has(person.id);
+      const completed = isLearningProgressCompleted(progress, document) || attemptPersonIdSet.has(person.id);
 
       return {
         personId: person.id,
@@ -7484,7 +7495,7 @@ export async function getQuizReport(
           (progress?.activeStepIndex ?? 0) > 0 ||
           (progress?.completedStepIds?.length ?? 0) > 0 ||
           Object.keys(progress?.startedAtByStepId ?? {}).length > 0;
-        const completed = Boolean(progress?.completedAt) || attemptedDocIds.has(document._id);
+        const completed = isLearningProgressCompleted(progress, document) || attemptedDocIds.has(document._id);
         if (completed) {
           learningCompleted++;
         } else if (hasStarted) {
@@ -7607,7 +7618,7 @@ export async function getQuizReport(
         (progress?.activeStepIndex ?? 0) > 0 ||
         (progress?.completedStepIds?.length ?? 0) > 0 ||
         Object.keys(progress?.startedAtByStepId ?? {}).length > 0;
-      const completed = Boolean(progress?.completedAt) || attemptedDocIds.has(document._id);
+      const completed = isLearningProgressCompleted(progress, document) || attemptedDocIds.has(document._id);
       if (completed) {
         learningCompleted++;
       } else if (hasStarted) {
