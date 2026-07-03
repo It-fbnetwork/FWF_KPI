@@ -23,6 +23,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "@/components/ui/use-toast"
 import { isAdminLikeRole } from "@/lib/auth"
 import { findPersonForAuthUser, getTeamById, isPersonWorking, personDisplayRoles, type Person } from "@/lib/people"
+import { STORE_BRANCHES_BY_REGION, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches"
 import {
     ChevronDown,
     Clock,
@@ -49,6 +50,8 @@ type PersonFormState = {
     email: string
     team: string
     imageURL: string
+    storeRegion: StoreRegion
+    storeBranchIds: number[]
     storeLeadUserId: string
     storeManagerUserId: string
     start: string
@@ -79,6 +82,8 @@ const DEFAULT_FORM: PersonFormState = {
     email: "",
     team: "marketing",
     imageURL: "",
+    storeRegion: "Hồ Chí Minh",
+    storeBranchIds: [],
     storeLeadUserId: "",
     storeManagerUserId: "",
     start: "09:00",
@@ -162,6 +167,14 @@ export default function PeoplePage() {
         editingPerson?.authRole === "store_lead" &&
         personForm.team === "store" &&
         personForm.role === "Cửa hàng trưởng"
+    const shouldEditStoreLeadLocation =
+        personForm.team === "store" &&
+        personForm.role === "Cửa hàng trưởng"
+    const regionBranches = useMemo(() => {
+        const branches = STORE_BRANCHES_BY_REGION[personForm.storeRegion] ?? []
+        if (!isStoreManager) return branches
+        return branches.filter((branch) => managerBranchIds.has(branch.id))
+    }, [isStoreManager, managerBranchIds, personForm.storeRegion])
     const accessiblePeople = isAdmin
         ? people
         : isStoreManager
@@ -390,6 +403,8 @@ export default function PeoplePage() {
             ...DEFAULT_FORM,
             team: isStoreTrainer ? "store" : teams[0]?.id ?? "marketing",
             role: isStoreTrainer ? "Kỹ thuật viên" : DEFAULT_FORM.role,
+            storeRegion: (user?.storeRegion as StoreRegion | undefined) ?? DEFAULT_FORM.storeRegion,
+            storeBranchIds: [],
         })
         setIsDialogOpen(true)
     }
@@ -405,6 +420,8 @@ export default function PeoplePage() {
             email: person.email,
             team: person.team,
             imageURL: person.imageURL === "/placeholder.svg" ? "" : person.imageURL,
+            storeRegion: (person.storeRegion as StoreRegion | undefined) ?? DEFAULT_FORM.storeRegion,
+            storeBranchIds: person.storeBranchIds ?? [],
             storeLeadUserId: person.storeLeadUserId ?? "",
             storeManagerUserId: storeManagerOptions.find((manager) =>
                 (person.storeBranchIds ?? []).some((branchId) => (manager.storeBranchIds ?? []).includes(branchId))
@@ -433,10 +450,18 @@ export default function PeoplePage() {
             })
             return
         }
-        if (canEditStoreLeadManager && !personForm.storeManagerUserId) {
+        if (canEditStoreLeadManager && !shouldEditStoreLeadLocation && !personForm.storeManagerUserId) {
             toast({
                 title: "Thiếu quản lí cửa hàng",
                 description: "Vui lòng chọn quản lí cửa hàng phụ trách cửa hàng trưởng.",
+                variant: "destructive",
+            })
+            return
+        }
+        if (shouldEditStoreLeadLocation && personForm.storeBranchIds.length !== 1) {
+            toast({
+                title: "Thiếu chi nhánh",
+                description: "Vui lòng chọn 1 chi nhánh cho cửa hàng trưởng.",
                 variant: "destructive",
             })
             return
@@ -455,8 +480,10 @@ export default function PeoplePage() {
                     email: personForm.email,
                     team: personForm.team,
                     imageURL: personForm.imageURL,
+                    storeRegion: shouldEditStoreLeadLocation ? personForm.storeRegion : undefined,
+                    storeBranchIds: shouldEditStoreLeadLocation ? personForm.storeBranchIds : undefined,
                     storeLeadUserId: canEditTechnicianSupervisor ? personForm.storeLeadUserId : undefined,
-                    storeManagerUserId: canEditStoreLeadManager ? personForm.storeManagerUserId : undefined,
+                    storeManagerUserId: canEditStoreLeadManager && !shouldEditStoreLeadLocation ? personForm.storeManagerUserId : undefined,
                     workingHours: {
                         start: personForm.start,
                         end: personForm.end,
@@ -833,7 +860,70 @@ export default function PeoplePage() {
                                 </Select>
                             </div>
                         )}
-                        {canEditStoreLeadManager && (
+                        {shouldEditStoreLeadLocation && (
+                            <div className="grid gap-3 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+                                <div className="grid gap-2">
+                                    <Label htmlFor="store-lead-region">Khu vực</Label>
+                                    <Select
+                                        value={personForm.storeRegion}
+                                        onValueChange={(value) => {
+                                            const nextRegion = value as StoreRegion
+                                            setPersonForm((prev) => ({
+                                                ...prev,
+                                                storeRegion: nextRegion,
+                                                storeBranchIds: [],
+                                            }))
+                                        }}
+                                    >
+                                        <SelectTrigger id="store-lead-region">
+                                            <SelectValue placeholder="Chọn khu vực" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {STORE_REGIONS.map((region) => (
+                                                <SelectItem key={region} value={region}>
+                                                    {region}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label>Chi nhánh (chọn 1)</Label>
+                                    <div className="max-h-52 space-y-2 overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-950">
+                                        {regionBranches.length === 0 ? (
+                                            <p className="px-2 py-3 text-sm text-gray-500 dark:text-gray-400">
+                                                Không có chi nhánh khả dụng trong khu vực này.
+                                            </p>
+                                        ) : (
+                                            regionBranches.map((branch) => {
+                                                const checked = personForm.storeBranchIds.includes(branch.id)
+                                                return (
+                                                    <label key={branch.id} className="flex cursor-pointer items-start gap-2 rounded-md p-2 hover:bg-gray-50 dark:hover:bg-gray-900">
+                                                        <input
+                                                            type="checkbox"
+                                                            className="mt-1"
+                                                            checked={checked}
+                                                            onChange={(event) => {
+                                                                setPersonForm((prev) => ({
+                                                                    ...prev,
+                                                                    storeBranchIds: event.target.checked ? [branch.id] : [],
+                                                                }))
+                                                            }}
+                                                        />
+                                                        <span className="text-sm text-gray-700 dark:text-gray-200">
+                                                            <span className="font-medium">{branch.name}</span>
+                                                            <br />
+                                                            <span className="text-gray-500 dark:text-gray-400">{branch.address}</span>
+                                                        </span>
+                                                    </label>
+                                                )
+                                            })
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {canEditStoreLeadManager && !shouldEditStoreLeadLocation && (
                             <div className="grid gap-2">
                                 <Label htmlFor="store-lead-manager">Quản lí cửa hàng phụ trách</Label>
                                 <Select value={personForm.storeManagerUserId} onValueChange={(value) => updatePersonForm("storeManagerUserId", value)}>

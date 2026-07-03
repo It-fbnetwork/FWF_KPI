@@ -15,6 +15,7 @@ export interface Person {
   userId?: string;
   authRole?: UserAccount["role"];
   department?: UserAccount["department"];
+  storeRegion?: string;
   storeBranchIds?: number[];
   storeLeadUserId?: string;
 }

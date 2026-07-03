@@ -664,6 +664,23 @@ function normalizePersonDisplayRole(role: string) {
   }
 }
 
+function mapStoreDisplayRoleToAuthRole(role: string): UserRole | undefined {
+  switch (normalizePersonDisplayRole(role)) {
+    case "Nhân viên cửa hàng":
+      return "store_staff";
+    case "Kỹ thuật viên":
+      return "store_technician";
+    case "Cửa hàng trưởng":
+      return "store_lead";
+    case "Quản lí cửa hàng":
+      return "store_manager";
+    case "Trainer":
+      return "store_trainer";
+    default:
+      return undefined;
+  }
+}
+
 function isStoreTrainerActor(actor: SessionActor) {
   return actor.user.role === "store_trainer" && actor.user.department === "Cửa hàng";
 }
@@ -1194,6 +1211,7 @@ function attachUserProfileToPeople(people: Person[], users: UserAccount[]) {
       userId: user.id,
       authRole: user.role,
       department: user.department,
+      storeRegion: user.storeRegion,
       storeBranchIds: user.storeBranchIds ?? [],
       storeLeadUserId: user.storeLeadUserId,
     };
@@ -3308,6 +3326,8 @@ type PersonMutationInput = {
   email: string;
   imageURL?: string;
   team: string;
+  storeRegion?: string;
+  storeBranchIds?: number[];
   storeLeadUserId?: string;
   storeManagerUserId?: string;
   workingHours: Person["workingHours"];
@@ -3379,6 +3399,33 @@ function assertCanAssignStoreLeadManager(actor: SessionActor, managerUser: UserA
   }
 }
 
+function normalizeStoreLeadLocationInput(actor: SessionActor, input: Pick<PersonMutationInput, "storeRegion" | "storeBranchIds">) {
+  const region = input.storeRegion?.trim() as StoreRegion | undefined;
+  if (!region || !STORE_REGIONS.includes(region)) {
+    throw new Error("Khu vực cửa hàng không hợp lệ.");
+  }
+
+  const branchIds = [...new Set(
+    (input.storeBranchIds ?? [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id))
+  )];
+  if (branchIds.length !== 1) {
+    throw new Error("Vui lòng chọn 1 chi nhánh cho Cửa hàng trưởng.");
+  }
+
+  const branch = STORE_BRANCHES.find((item) => item.id === branchIds[0]);
+  if (!branch || !STORE_BRANCH_ID_SET.has(branch.id) || branch.city !== region) {
+    throw new Error("Chi nhánh không thuộc khu vực đã chọn.");
+  }
+
+  if (isStoreManagerActor(actor) && !branchIds.every((id) => (actor.user.storeBranchIds ?? []).includes(id))) {
+    throw new Error("Bạn không có quyền gán Cửa hàng trưởng cho chi nhánh này.");
+  }
+
+  return { storeRegion: region, storeBranchIds: branchIds };
+}
+
 export async function createPersonRecord(
   sessionUserId: string | null | undefined,
   input: PersonMutationInput
@@ -3412,6 +3459,10 @@ export async function createPersonRecord(
         throw new Error("Quản lí cửa hàng chỉ được thêm Cửa hàng trưởng hoặc Kỹ thuật viên.");
       }
     }
+    const storeLeadLocation = input.team === "store" && normalizedRole === "Cửa hàng trưởng"
+      ? normalizeStoreLeadLocationInput(actor, input)
+      : null;
+    const nextAuthRole = input.team === "store" ? mapStoreDisplayRoleToAuthRole(normalizedRole) : undefined;
 
     const now = new Date().toISOString();
     const personId = `people_generated_${Date.now()}`;
@@ -3447,9 +3498,24 @@ export async function createPersonRecord(
     );
     await pgQuery(
       `update users
-       set person_id = $1, name = $2, department = $3, updated_at = $4::timestamptz
+       set person_id = $1,
+           name = $2,
+           department = $3,
+           role = coalesce($8, role),
+           store_region = coalesce($6, store_region),
+           store_branch_ids = coalesce($7::jsonb, store_branch_ids),
+           updated_at = $4::timestamptz
        where email = $5`,
-      [personId, personDocument.name, mapTeamIdToDepartment(input.team), now, normalizedEmail]
+      [
+        personId,
+        personDocument.name,
+        mapTeamIdToDepartment(input.team),
+        now,
+        normalizedEmail,
+        storeLeadLocation?.storeRegion ?? null,
+        storeLeadLocation ? JSON.stringify(storeLeadLocation.storeBranchIds) : null,
+        nextAuthRole ?? null
+      ]
     );
 
     return mapDbPerson(personDocument);
@@ -3490,6 +3556,10 @@ export async function createPersonRecord(
       throw new Error("Quản lí cửa hàng chỉ được thêm Cửa hàng trưởng hoặc Kỹ thuật viên.");
     }
   }
+  const storeLeadLocation = input.team === "store" && normalizedRole === "Cửa hàng trưởng"
+    ? normalizeStoreLeadLocationInput(actor, input)
+    : null;
+  const nextAuthRole = input.team === "store" ? mapStoreDisplayRoleToAuthRole(normalizedRole) : undefined;
 
   const personId = `people_generated_${Date.now()}`;
   const personDocument: DbPerson = {
@@ -3515,6 +3585,11 @@ export async function createPersonRecord(
         personId,
         name: personDocument.name,
         department: mapTeamIdToDepartment(input.team),
+        ...(nextAuthRole ? { role: nextAuthRole } : {}),
+        ...(storeLeadLocation ? {
+          storeRegion: storeLeadLocation.storeRegion,
+          storeBranchIds: storeLeadLocation.storeBranchIds,
+        } : {}),
         updatedAt: new Date().toISOString()
       }
     }
@@ -3561,6 +3636,10 @@ export async function updatePersonRecord(
         throw new Error("Quản lí cửa hàng chỉ được chỉnh role Cửa hàng trưởng hoặc Kỹ thuật viên.");
       }
     }
+    const directStoreLeadLocation = updates.team === "store" && normalizedRole === "Cửa hàng trưởng" && updates.storeBranchIds !== undefined
+      ? normalizeStoreLeadLocationInput(actor, updates)
+      : null;
+    const nextAuthRole = updates.team === "store" ? mapStoreDisplayRoleToAuthRole(normalizedRole) : undefined;
     let nextStoreLeadUser: UserAccount | null = null;
     if (updates.storeLeadUserId !== undefined) {
       const [targetUsersRes, leadUserRes] = await Promise.all([
@@ -3618,9 +3697,9 @@ export async function updatePersonRecord(
     }
     await pgQuery(
       `update users
-       set person_id=$1, name=$2, email=$3, department=$4, updated_at=$5::timestamptz
+       set person_id=$1, name=$2, email=$3, department=$4, role=coalesce($7, role), updated_at=$5::timestamptz
        where person_id=$1 or email=$6`,
-      [personId, updates.name.trim(), normalizedEmail, mapTeamIdToDepartment(updates.team), now, existingPerson.email]
+      [personId, updates.name.trim(), normalizedEmail, mapTeamIdToDepartment(updates.team), now, existingPerson.email, nextAuthRole ?? null]
     );
     if (nextStoreLeadUser) {
       await pgQuery(
@@ -3656,6 +3735,37 @@ export async function updatePersonRecord(
           targetStoreLeadUser.id,
           nextStoreManagerUser.storeRegion ?? null,
           JSON.stringify(nextStoreManagerUser.storeBranchIds ?? []),
+          now
+        ]
+      );
+    }
+    if (directStoreLeadLocation) {
+      const targetUsersRes = await pgQuery("select * from users where person_id = $1 or email = $2", [personId, existingPerson.email]);
+      const targetStoreLeadUserForLocation = targetUsersRes.rows
+        .map((row) => mapDbUser(mapPgUserRow(row)))
+        .find((targetUser) => targetUser.role === "store_lead") ?? null;
+      if (!targetStoreLeadUserForLocation) {
+        throw new Error("Chỉ được cập nhật khu vực/chi nhánh cho tài khoản Cửa hàng trưởng.");
+      }
+      await pgQuery(
+        `update users
+         set store_region=$2, store_branch_ids=$3::jsonb, store_lead_user_id=null, updated_at=$4::timestamptz
+         where id=$1`,
+        [
+          targetStoreLeadUserForLocation.id,
+          directStoreLeadLocation.storeRegion,
+          JSON.stringify(directStoreLeadLocation.storeBranchIds),
+          now
+        ]
+      );
+      await pgQuery(
+        `update users
+         set store_region=$2, store_branch_ids=$3::jsonb, updated_at=$4::timestamptz
+         where store_lead_user_id=$1`,
+        [
+          targetStoreLeadUserForLocation.id,
+          directStoreLeadLocation.storeRegion,
+          JSON.stringify(directStoreLeadLocation.storeBranchIds),
           now
         ]
       );
@@ -3714,6 +3824,10 @@ export async function updatePersonRecord(
       throw new Error("Quản lí cửa hàng chỉ được chỉnh role Cửa hàng trưởng hoặc Kỹ thuật viên.");
     }
   }
+  const directStoreLeadLocation = updates.team === "store" && normalizedRole === "Cửa hàng trưởng" && updates.storeBranchIds !== undefined
+    ? normalizeStoreLeadLocationInput(actor, updates)
+    : null;
+  const nextAuthRole = updates.team === "store" ? mapStoreDisplayRoleToAuthRole(normalizedRole) : undefined;
   let nextStoreLeadUser: UserAccount | null = null;
   if (updates.storeLeadUserId !== undefined) {
     const [targetUsers, leadUserDocument] = await Promise.all([
@@ -3775,6 +3889,7 @@ export async function updatePersonRecord(
         name: updates.name.trim(),
         email: normalizedEmail,
         department: mapTeamIdToDepartment(updates.team),
+        ...(nextAuthRole ? { role: nextAuthRole } : {}),
         updatedAt: new Date().toISOString()
       }
     }
@@ -3810,6 +3925,34 @@ export async function updatePersonRecord(
         $set: {
           storeRegion: nextStoreManagerUser.storeRegion,
           storeBranchIds: nextStoreManagerUser.storeBranchIds ?? [],
+          updatedAt: new Date().toISOString()
+        }
+      }
+    );
+  }
+  if (directStoreLeadLocation) {
+    const targetUsers = await db.collection<DbUser>("users").find({ $or: [{ personId }, { email: existingPerson.email }] }).toArray();
+    const targetStoreLeadUserForLocation = targetUsers.map(mapDbUser).find((targetUser) => targetUser.role === "store_lead") ?? null;
+    if (!targetStoreLeadUserForLocation) {
+      throw new Error("Chỉ được cập nhật khu vực/chi nhánh cho tài khoản Cửa hàng trưởng.");
+    }
+    await db.collection<DbUser>("users").updateOne(
+      { _id: targetStoreLeadUserForLocation.id },
+      {
+        $set: {
+          storeRegion: directStoreLeadLocation.storeRegion,
+          storeBranchIds: directStoreLeadLocation.storeBranchIds,
+          updatedAt: new Date().toISOString()
+        },
+        $unset: { storeLeadUserId: "" }
+      }
+    );
+    await db.collection<DbUser>("users").updateMany(
+      { storeLeadUserId: targetStoreLeadUserForLocation.id },
+      {
+        $set: {
+          storeRegion: directStoreLeadLocation.storeRegion,
+          storeBranchIds: directStoreLeadLocation.storeBranchIds,
           updatedAt: new Date().toISOString()
         }
       }
