@@ -597,7 +597,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 payload.type === "directory.updated" ||
                 payload.type === "workspace.updated" ||
                 payload.type === "schedule.updated" ||
-                payload.type === "learning.updated"
+                (payload.type === "learning.updated" && payload.entityType !== "learning_progress")
             ) {
                 void refreshSession().catch(() => {
                     // Ignore transient realtime refresh failures.

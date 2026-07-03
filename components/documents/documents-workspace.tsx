@@ -1046,6 +1046,40 @@ export default function DocumentsPage() {
         }
     }, [isLeaderOrAdmin, user?.personId])
 
+    const refreshMyLearningProgress = useCallback(async () => {
+        if (isLeaderOrAdmin || !user?.personId) return
+        const res = await fetch("/api/learning/progress", { credentials: "include", cache: "no-store" })
+        if (!res.ok) throw new Error("Failed to load learning progress.")
+        const payload = (await res.json()) as { ok: boolean; progresses: LearningProgressRecord[] }
+        const records = payload.progresses ?? []
+        const completedDocIds = records
+            .filter((record) => Boolean(record.completedAt))
+            .map((record) => record.documentId)
+        const startedAtByDocId = Object.fromEntries(
+            records
+                .filter((record) => Boolean(record.startedAt))
+                .map((record) => [record.documentId, record.startedAt!])
+        )
+        const nextPlanProgress: LearningPlanProgressMap = Object.fromEntries(
+            records
+                .filter((record) =>
+                    (record.completedStepIds?.length ?? 0) > 0 ||
+                    (record.activeStepIndex ?? 0) > 0 ||
+                    Object.keys(record.startedAtByStepId ?? {}).length > 0
+                )
+                .map((record) => [
+                    record.documentId,
+                    {
+                        activeStepIndex: Math.max(0, record.activeStepIndex ?? 0),
+                        completedStepIds: record.completedStepIds ?? [],
+                        startedAtByStepId: record.startedAtByStepId ?? {},
+                    } satisfies LearningPlanProgress,
+                ])
+        )
+        setLearningProgress({ completedDocIds, startedAtByDocId })
+        setLearningPlanProgress(nextPlanProgress)
+    }, [isLeaderOrAdmin, user?.personId])
+
     const buildLearningProgressPayload = (
         documentId: string,
         progressState: LearningProgressState,
@@ -1979,8 +2013,19 @@ export default function DocumentsPage() {
         }
 
         return subscribeToPersonChannel(user.personId, (message) => {
-            const payload = message.data as { type?: string } | undefined
+            const payload = message.data as { type?: string; actorId?: string; entityType?: string } | undefined
             if (payload?.type !== "learning.updated") {
+                return
+            }
+            if (payload.actorId === user.personId) {
+                return
+            }
+            if (payload.entityType === "learning_progress") {
+                if (!isLeaderOrAdmin) {
+                    void refreshMyLearningProgress().catch(() => {
+                        // Keep current progress snapshot if the targeted refresh fails.
+                    })
+                }
                 return
             }
 
@@ -1988,7 +2033,7 @@ export default function DocumentsPage() {
                 // Ignore transient realtime refresh failures.
             })
         })
-    }, [refreshLearningRealtimeData, user?.personId])
+    }, [isLeaderOrAdmin, refreshLearningRealtimeData, refreshMyLearningProgress, user?.personId])
 
     const handleEnterLearningTab = async () => {
         setActiveTab("learning")
