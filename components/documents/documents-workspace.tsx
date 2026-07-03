@@ -189,6 +189,7 @@ type LearningStatusType = "completed" | "in_progress" | "not_started"
 type LearningStatusRow = {
     personId: string
     personName: string
+    personEmail?: string
     personRole?: string
     team: string
     storeRegion?: string
@@ -501,6 +502,7 @@ export default function DocumentsPage() {
     const [quizResultsRoleFilter, setQuizResultsRoleFilter] = useState<QuizResultsRoleFilter>("all")
     const [quizResultsSupervisorFilter, setQuizResultsSupervisorFilter] = useState<string>("all")
     const [selectedLearningStatusListDetail, setSelectedLearningStatusListDetail] = useState<LearningStatusListDetail | null>(null)
+    const [learningStatusListSearch, setLearningStatusListSearch] = useState("")
     const [quizResultsTab, setQuizResultsTab] = useState<QuizResultsTab>("results")
     const [quizResetPersonFilter, setQuizResetPersonFilter] = useState<string>("all")
     const [quizResetTimeFilter, setQuizResetTimeFilter] = useState<"all" | "today" | "7d" | "30d" | "90d">("all")
@@ -5743,6 +5745,7 @@ export default function DocumentsPage() {
                                             ).entries()
                                         ).sort((a, b) => a[1].localeCompare(b[1], "vi"))
                                         const openStatusListDetail = (title: string, rows: LearningStatusRow[]) => {
+                                            setLearningStatusListSearch("")
                                             setSelectedLearningStatusListDetail({ title, rows })
                                         }
                                         const renderStatusName = (item: LearningStatusRow, className: string) => (
@@ -6128,7 +6131,15 @@ export default function DocumentsPage() {
                                 </div>
                             )}
                         </div>
-                        {selectedLearningStatusListDetail && (
+                        {selectedLearningStatusListDetail && (() => {
+                            const normalizedSearch = learningStatusListSearch.trim().toLowerCase()
+                            const filteredRows = normalizedSearch
+                                ? selectedLearningStatusListDetail.rows.filter((item) =>
+                                    item.personName.toLowerCase().includes(normalizedSearch) ||
+                                    (item.personEmail ?? "").toLowerCase().includes(normalizedSearch)
+                                )
+                                : selectedLearningStatusListDetail.rows
+                            return (
                             <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 px-4">
                                 <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-700 dark:bg-gray-900">
                                     <div className="mb-3 flex items-start justify-between gap-3">
@@ -6137,29 +6148,48 @@ export default function DocumentsPage() {
                                                 {selectedLearningStatusListDetail.title}
                                             </p>
                                             <p className="text-xs text-gray-500 dark:text-gray-400">
-                                                {selectedLearningStatusListDetail.rows.length} nhân viên
+                                                {filteredRows.length}/{selectedLearningStatusListDetail.rows.length} nhân viên
                                             </p>
                                         </div>
                                         <button
                                             type="button"
-                                            onClick={() => setSelectedLearningStatusListDetail(null)}
+                                            onClick={() => {
+                                                setSelectedLearningStatusListDetail(null)
+                                                setLearningStatusListSearch("")
+                                            }}
                                             className="rounded-md p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
                                             aria-label="Đóng danh sách chi tiết"
                                         >
                                             <X className="h-4 w-4" />
                                         </button>
                                     </div>
+                                    <div className="relative mb-3">
+                                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                                        <Input
+                                            value={learningStatusListSearch}
+                                            onChange={(event) => setLearningStatusListSearch(event.target.value)}
+                                            placeholder="Tìm theo tên hoặc email..."
+                                            className="h-10 pl-9"
+                                        />
+                                    </div>
                                     {selectedLearningStatusListDetail.rows.length === 0 ? (
                                         <p className="rounded-lg border border-dashed border-gray-200 py-8 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
                                             Chưa có nhân viên trong nhóm này.
                                         </p>
+                                    ) : filteredRows.length === 0 ? (
+                                        <p className="rounded-lg border border-dashed border-gray-200 py-8 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                                            Không tìm thấy nhân viên phù hợp.
+                                        </p>
                                     ) : (
                                         <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
-                                            {selectedLearningStatusListDetail.rows.map((item) => (
+                                            {filteredRows.map((item) => (
                                                 <div key={item.personId} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800/70">
                                                     <div className="flex items-start justify-between gap-3">
                                                         <div className="min-w-0">
                                                             <p className="break-words text-sm font-semibold text-gray-900 dark:text-white">{item.personName}</p>
+                                                            {item.personEmail && (
+                                                                <p className="break-words text-xs text-gray-500 dark:text-gray-400">{item.personEmail}</p>
+                                                            )}
                                                             <p className="text-xs text-gray-500 dark:text-gray-400">{item.personRole ?? "Chưa có vai trò"}</p>
                                                         </div>
                                                         {canResetTeamLearning && item.status !== "not_started" && (
@@ -6190,7 +6220,8 @@ export default function DocumentsPage() {
                                     )}
                                 </div>
                             </div>
-                        )}
+                            )
+                        })()}
                     </div>
                 </div>
             )}

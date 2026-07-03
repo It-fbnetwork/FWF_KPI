@@ -545,6 +545,7 @@ export type LearningProgressRecord = {
 export type TeamLearningStatusRow = {
   personId: string;
   personName: string;
+  personEmail?: string;
   personRole?: string;
   team: string;
   storeRegion?: string;
@@ -7582,6 +7583,7 @@ export async function getTeamLearningStatusesForDocument(
         return {
           personId: person.id,
           personName: person.name,
+          personEmail: person.email,
           personRole: person.role,
           team: person.team,
           ...storeProfileByPersonId.get(person.id),
@@ -7674,6 +7676,7 @@ export async function getTeamLearningStatusesForDocument(
       return {
         personId: person.id,
         personName: person.name,
+        personEmail: person.email,
         personRole: person.role,
         team: person.team,
         ...storeProfileByPersonId.get(person.id),
