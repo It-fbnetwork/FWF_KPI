@@ -207,6 +207,12 @@ type LearningStatusListDetail = {
 }
 
 type ExcelCellValue = string | number | boolean | null | undefined
+type ExcelSheet = {
+    name: string
+    rows: ExcelCellValue[][]
+    filter?: boolean
+    widths?: number[]
+}
 
 function escapeExcelXml(value: ExcelCellValue) {
     return String(value ?? "")
@@ -231,18 +237,31 @@ function sanitizeFilenamePart(name: string) {
         .toLowerCase() || "bao-cao"
 }
 
-function buildExcelWorksheet(name: string, rows: ExcelCellValue[][]) {
-    const worksheetRows = rows.map((row) => (
+function buildExcelWorksheet({ name, rows, filter = false, widths }: ExcelSheet) {
+    const maxColumnCount = rows.reduce((max, row) => Math.max(max, row.length), 0)
+    const columnWidths = widths ?? Array.from({ length: maxColumnCount }, (_, index) => {
+        const contentWidth = rows.reduce((max, row) => Math.max(max, String(row[index] ?? "").length), 0)
+        return Math.min(Math.max(contentWidth * 7, 70), 240)
+    })
+    const columns = columnWidths.map((width) => `<Column ss:AutoFitWidth="0" ss:Width="${width}"/>`).join("")
+    const worksheetRows = rows.map((row, rowIndex) => (
         `<Row>${row.map((cell) => {
             const cellType = typeof cell === "number" ? "Number" : "String"
-            return `<Cell><Data ss:Type="${cellType}">${escapeExcelXml(cell)}</Data></Cell>`
+            const styleId = filter && rowIndex === 0 ? ` ss:StyleID="Header"` : ""
+            return `<Cell${styleId}><Data ss:Type="${cellType}">${escapeExcelXml(cell)}</Data></Cell>`
         }).join("")}</Row>`
     )).join("")
+    const autoFilter = filter && rows.length > 1 && maxColumnCount > 0
+        ? `<AutoFilter x:Range="R1C1:R${rows.length}C${maxColumnCount}" xmlns="urn:schemas-microsoft-com:office:excel"/>`
+        : ""
+    const worksheetOptions = filter
+        ? `<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane></WorksheetOptions>`
+        : ""
 
-    return `<Worksheet ss:Name="${escapeExcelXml(sanitizeExcelSheetName(name))}"><Table>${worksheetRows}</Table></Worksheet>`
+    return `<Worksheet ss:Name="${escapeExcelXml(sanitizeExcelSheetName(name))}"><Table>${columns}${worksheetRows}</Table>${worksheetOptions}${autoFilter}</Worksheet>`
 }
 
-function downloadExcelWorkbook(filename: string, sheets: Array<{ name: string; rows: ExcelCellValue[][] }>) {
+function downloadExcelWorkbook(filename: string, sheets: ExcelSheet[]) {
     const workbook = `<?xml version="1.0" encoding="UTF-8"?>
 <?mso-application progid="Excel.Sheet"?>
 <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
@@ -250,7 +269,14 @@ function downloadExcelWorkbook(filename: string, sheets: Array<{ name: string; r
  xmlns:x="urn:schemas-microsoft-com:office:excel"
  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
  xmlns:html="http://www.w3.org/TR/REC-html40">
-${sheets.map((sheet) => buildExcelWorksheet(sheet.name, sheet.rows)).join("")}
+<Styles>
+    <Style ss:ID="Header">
+        <Font ss:FontName="Arial" ss:Bold="1" ss:Color="#FFFFFF"/>
+        <Interior ss:Color="#6B3F8F" ss:Pattern="Solid"/>
+        <Alignment ss:Vertical="Center"/>
+    </Style>
+</Styles>
+${sheets.map((sheet) => buildExcelWorksheet(sheet)).join("")}
 </Workbook>`
     const blob = new Blob([workbook], { type: "application/vnd.ms-excel;charset=utf-8" })
     const url = URL.createObjectURL(blob)
@@ -584,7 +610,13 @@ export default function DocumentsPage() {
     const getRoleGroup = useCallback((role: string) => {
         const normalized = normalizeRoleValue(role)
         if (normalized.includes("trainer")) return "trainer"
-        if (normalized.includes("quan li cua hang") || normalized.includes("quan ly cua hang") || normalized.includes("store_manager")) return "store_manager"
+        if (
+            normalized.includes("quan li cua hang") ||
+            normalized.includes("quan ly cua hang") ||
+            normalized.includes("quan li khu vuc") ||
+            normalized.includes("quan ly khu vuc") ||
+            normalized.includes("store_manager")
+        ) return "store_manager"
         if (normalized.includes("cua hang truong") || normalized.includes("store_lead")) return "store_lead"
         if (
             normalized.includes("ky thuat vien") ||
@@ -860,7 +892,7 @@ export default function DocumentsPage() {
     const officeRoleOptions = useMemo(() => {
         const roles = new Set(officeSelectablePeople.map((person) => person.role))
         if (currentPerson?.team === "store") {
-            roles.add("Quản lí cửa hàng")
+            roles.add("Quản lí khu vực")
             roles.add("Cửa hàng trưởng")
             roles.add("Kỹ thuật viên")
         }
@@ -868,7 +900,7 @@ export default function DocumentsPage() {
         roles.delete("Trainer")
         roles.delete("trainer")
 
-        const preferredOrder = ["Quản lí cửa hàng", "Cửa hàng trưởng", "Kỹ thuật viên"]
+        const preferredOrder = ["Quản lí khu vực", "Cửa hàng trưởng", "Kỹ thuật viên"]
         const orderedRoles = Array.from(roles).sort((a, b) => {
             const aIndex = preferredOrder.indexOf(a)
             const bIndex = preferredOrder.indexOf(b)
@@ -2706,12 +2738,30 @@ export default function DocumentsPage() {
             }
             return "other"
         }
-        const roleMatched = (personId: string) =>
-            quizResultsRoleFilter === "all" || getRoleGroupByPersonId(personId) === quizResultsRoleFilter
         const statusByPersonId = new Map(quizResultsModal.learningStatuses.map((item) => [item.personId, item]))
         const supervisorMatched = (personId: string) =>
             quizResultsSupervisorFilter === "all" ||
             statusByPersonId.get(personId)?.supervisorUserId === quizResultsSupervisorFilter
+        const roleGroupsInResult = new Set<Exclude<QuizResultsRoleFilter, "all">>()
+        quizResultsModal.learningStatuses.forEach((item) => roleGroupsInResult.add(getRoleGroupByPersonId(item.personId)))
+        quizResultsModal.attempts.forEach((item) => roleGroupsInResult.add(getRoleGroupByPersonId(item.personId)))
+        const roleOptionOrder: Exclude<QuizResultsRoleFilter, "all">[] = ["store_manager", "store_lead", "store_technician", "trainer", "other"]
+        const roleOptions = roleOptionOrder.filter((group) => roleGroupsInResult.has(group))
+        const allowedRoleOptionsByActor: Record<string, Exclude<QuizResultsRoleFilter, "all">[]> = {
+            store_trainer: ["store_manager", "store_lead", "store_technician"],
+            store_manager: ["store_lead", "store_technician"],
+            store_lead: ["store_technician"],
+        }
+        const actorRoleOptions =
+            allowedRoleOptionsByActor[user?.role ?? ""] ??
+            roleOptionOrder.filter((group) => group !== "trainer")
+        const scopedRoleOptions = actorRoleOptions.filter((group) => roleOptions.includes(group) || group === "store_lead" || group === "store_technician")
+        const effectiveRoleFilter =
+            quizResultsRoleFilter === "all" || scopedRoleOptions.includes(quizResultsRoleFilter)
+                ? quizResultsRoleFilter
+                : "all"
+        const roleMatched = (personId: string) =>
+            effectiveRoleFilter === "all" || getRoleGroupByPersonId(personId) === effectiveRoleFilter
         const scopedLearningStatuses = quizResultsModal.learningStatuses.filter((item) => roleMatched(item.personId) && supervisorMatched(item.personId))
         const scopedAttempts = quizResultsModal.attempts.filter((attempt) => roleMatched(attempt.personId) && supervisorMatched(attempt.personId))
         const activeAttempts = scopedAttempts.filter((attempt) => attempt.isActiveAttempt !== false)
@@ -2724,6 +2774,7 @@ export default function DocumentsPage() {
 
         return {
             getRoleGroupByPersonId,
+            effectiveRoleFilter,
             statusByPersonId,
             scopedLearningStatuses,
             scopedAttempts,
@@ -2734,12 +2785,13 @@ export default function DocumentsPage() {
             readyButNotSubmitted,
             notEligibleForQuiz,
         }
-    }, [getRoleGroup, people, quizResultsModal.attempts, quizResultsModal.learningStatuses, quizResultsRoleFilter, quizResultsSupervisorFilter])
+    }, [getRoleGroup, people, quizResultsModal.attempts, quizResultsModal.learningStatuses, quizResultsRoleFilter, quizResultsSupervisorFilter, user?.role])
 
     const handleExportQuizResultsExcel = useCallback(() => {
         if (quizResultsModal.isLoading) return
         const {
             getRoleGroupByPersonId,
+            effectiveRoleFilter,
             statusByPersonId,
             scopedLearningStatuses,
             scopedAttempts,
@@ -2751,7 +2803,7 @@ export default function DocumentsPage() {
             notEligibleForQuiz,
         } = buildQuizResultsScope()
         const roleLabelByGroup: Record<Exclude<QuizResultsRoleFilter, "all">, string> = {
-            store_manager: "Quản lí cửa hàng",
+            store_manager: "Quản lí khu vực",
             store_lead: "Cửa hàng trưởng",
             store_technician: "Kỹ thuật viên",
             trainer: "Trainer",
@@ -2769,11 +2821,16 @@ export default function DocumentsPage() {
         const needsRetakeAttempts = activeAttempts.filter((attempt) => attempt.score < QUIZ_PASS_SCORE)
         const totalRetakeCount = activeAttempts.reduce((sum, attempt) => sum + getQuizRetakeCount(attempt), 0)
         const filename = `${sanitizeFilenamePart(quizResultsModal.documentName)}-tien-do-${new Date().toISOString().slice(0, 10)}.xls`
+        const getExportStoreName = (item?: LearningStatusRow) => {
+            if (!item || getRoleGroupByPersonId(item.personId) === "store_manager") return ""
+            return item.storeBranchNames?.join(", ") ?? ""
+        }
         const statusRows = (rows: LearningStatusRow[]) => rows.map((item) => [
             item.personName,
             item.personRole ?? "",
             roleLabelByGroup[getRoleGroupByPersonId(item.personId)],
             item.team,
+            getExportStoreName(item),
             item.supervisorName ?? "",
             statusLabel[item.status],
         ])
@@ -2782,14 +2839,48 @@ export default function DocumentsPage() {
             quizResultsSupervisorFilter === "all"
                 ? "Tất cả"
                 : quizResultsModal.learningStatuses.find((item) => item.supervisorUserId === quizResultsSupervisorFilter)?.supervisorName ?? quizResultsSupervisorFilter
+        const activeAttemptByPersonId = new Map(activeAttempts.map((attempt) => [attempt.personId, attempt]))
+        const reportRows = scopedLearningStatuses.map((item) => {
+            const activeAttempt = activeAttemptByPersonId.get(item.personId)
+            const quizStatus = activeAttempt
+                ? activeAttempt.score >= QUIZ_PASS_SCORE
+                    ? "Đạt"
+                    : "Cần làm lại"
+                : item.status === "completed"
+                    ? "Chưa nộp"
+                    : "Chưa đủ điều kiện"
+            return [
+                item.personEmail ?? "",
+                activeAttempt?.score ?? "",
+                item.personName,
+                item.storeRegion ?? "",
+                item.personRole ?? "",
+                getExportStoreName(item),
+                getRoleGroupByPersonId(item.personId) === "store_manager" ? "" : item.storeBranchNames?.join(", ") ?? "",
+                item.supervisorName ?? "Không có",
+                statusLabel[item.status],
+                quizStatus,
+                activeAttempt ? getQuizRetakeCount(activeAttempt) : "",
+                activeAttempt ? formatDateTime(activeAttempt.submittedAt) : "",
+            ]
+        })
 
         downloadExcelWorkbook(filename, [
+            {
+                name: "Bao cao",
+                filter: true,
+                widths: [210, 70, 190, 130, 130, 220, 260, 170, 120, 140, 110, 150],
+                rows: [
+                    ["Địa chỉ email", "Điểm số", "Nhập họ và tên của bạn", "Bạn ở khu vực nào?", "Vị trí?", "Cửa hàng", "Chi nhánh bạn đang làm việc", "Người phụ trách", "Trạng thái học", "Trạng thái quiz", "Số lần làm lại", "Nộp lúc"],
+                    ...reportRows,
+                ],
+            },
             {
                 name: "Tong quan",
                 rows: [
                     ["Báo cáo theo dõi tiến độ nhân viên"],
                     ["Tài liệu", quizResultsModal.documentName],
-                    ["Bộ lọc vai trò", quizResultsRoleFilter === "all" ? "Tất cả" : roleLabelByGroup[quizResultsRoleFilter]],
+                    ["Bộ lọc vai trò", effectiveRoleFilter === "all" ? "Tất cả" : roleLabelByGroup[effectiveRoleFilter]],
                     ["Bộ lọc người phụ trách", selectedSupervisorLabel],
                     ["Xuất lúc", new Date().toLocaleString("vi-VN")],
                     [],
@@ -2808,38 +2899,43 @@ export default function DocumentsPage() {
             },
             {
                 name: "Trang thai hoc",
+                filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Người phụ trách", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(scopedLearningStatuses),
                 ],
             },
             {
                 name: "Da hoc",
+                filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Người phụ trách", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(completed),
                 ],
             },
             {
                 name: "Dang hoc",
+                filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Người phụ trách", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(inProgress),
                 ],
             },
             {
                 name: "Chua hoc",
+                filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Người phụ trách", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(notStarted),
                 ],
             },
             {
                 name: "Tien do quiz",
+                filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Người phụ trách", "Trạng thái học", "Trạng thái quiz", "Điểm hiện tại", "Số lần làm lại"],
+                    ["Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái học", "Trạng thái quiz", "Điểm hiện tại", "Số lần làm lại"],
                     ...scopedLearningStatuses.map((item) => {
-                        const activeAttempt = activeAttempts.find((attempt) => attempt.personId === item.personId)
+                        const activeAttempt = activeAttemptByPersonId.get(item.personId)
                         const quizStatus = activeAttempt
                             ? activeAttempt.score >= QUIZ_PASS_SCORE
                                 ? "Đạt"
@@ -2850,6 +2946,7 @@ export default function DocumentsPage() {
                         return [
                             item.personName,
                             item.personRole ?? "",
+                            getExportStoreName(item),
                             item.supervisorName ?? "",
                             statusLabel[item.status],
                             quizStatus,
@@ -2861,30 +2958,36 @@ export default function DocumentsPage() {
             },
             {
                 name: "Ket qua quiz",
+                filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Người phụ trách", "Điểm", "Câu đúng", "Tổng câu", "Lần làm", "Số lần làm lại", "Kết quả", "Trạng thái", "Bắt đầu", "Nộp lúc"],
-                    ...scopedAttempts.map((attempt) => [
-                        attempt.personName ?? "Unknown",
-                        attempt.personRole ?? "",
-                        attemptSupervisor(attempt.personId),
-                        attempt.score,
-                        attempt.correctAnswers,
-                        attempt.totalQuestions,
-                        attempt.attemptRound ?? 1,
-                        getQuizRetakeCount(attempt),
-                        attempt.score >= QUIZ_PASS_SCORE ? "Đạt" : "Cần làm lại",
-                        attempt.isActiveAttempt === false ? "Đã reset" : "Hiệu lực",
-                        formatDateTime(attempt.startedAt),
-                        formatDateTime(attempt.submittedAt),
-                    ]),
+                    ["Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Điểm", "Câu đúng", "Tổng câu", "Lần làm", "Số lần làm lại", "Kết quả", "Trạng thái", "Bắt đầu", "Nộp lúc"],
+                    ...scopedAttempts.map((attempt) => {
+                        const status = statusByPersonId.get(attempt.personId)
+                        return [
+                            attempt.personName ?? "Unknown",
+                            attempt.personRole ?? "",
+                            getExportStoreName(status),
+                            attemptSupervisor(attempt.personId),
+                            attempt.score,
+                            attempt.correctAnswers,
+                            attempt.totalQuestions,
+                            attempt.attemptRound ?? 1,
+                            getQuizRetakeCount(attempt),
+                            attempt.score >= QUIZ_PASS_SCORE ? "Đạt" : "Cần làm lại",
+                            attempt.isActiveAttempt === false ? "Đã reset" : "Hiệu lực",
+                            formatDateTime(attempt.startedAt),
+                            formatDateTime(attempt.submittedAt),
+                        ]
+                    }),
                 ],
             },
             {
                 name: "Lich su reset",
+                filter: true,
                 rows: [
                     ["Nhân viên", "Người reset", "Thời điểm reset"],
                     ...quizResultsModal.resets
-                        .filter((reset) => quizResultsRoleFilter === "all" || getRoleGroupByPersonId(reset.personId) === quizResultsRoleFilter)
+                        .filter((reset) => effectiveRoleFilter === "all" || getRoleGroupByPersonId(reset.personId) === effectiveRoleFilter)
                         .map((reset) => [
                             reset.personName ?? "Unknown",
                             reset.resetByPersonName ?? "Unknown",
@@ -5620,7 +5723,7 @@ export default function DocumentsPage() {
             {/* ── Quiz Results Modal (Leader) ──────────────────────────── */}
             {quizResultsModal.open && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
-                    <div className="relative flex max-h-[calc(100dvh-1.5rem)] w-full max-w-lg flex-col rounded-2xl bg-white shadow-2xl dark:bg-gray-800 sm:max-h-[85vh]">
+                    <div className="relative flex max-h-[calc(100dvh-1.5rem)] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl dark:bg-gray-800 sm:max-h-[88vh]">
                         <div className="flex items-center justify-between border-b border-gray-200 px-4 pb-4 pt-4 dark:border-gray-700 sm:px-6 sm:pt-5">
                             <div>
                                 <h2 className="text-lg font-bold text-gray-900 dark:text-white">Kết quả quiz</h2>
@@ -5631,7 +5734,7 @@ export default function DocumentsPage() {
                                     type="button"
                                     size="sm"
                                     variant="outline"
-                                    className="h-8 bg-transparent text-xs"
+                                    className="h-8 border-[#4f8f6a] bg-[#4f8f6a] text-xs text-white shadow-sm hover:bg-[#457f5f] hover:text-white dark:border-emerald-500 dark:bg-emerald-600 dark:hover:bg-emerald-500"
                                     disabled={quizResultsModal.isLoading}
                                     onClick={handleExportQuizResultsExcel}
                                 >
@@ -5758,7 +5861,7 @@ export default function DocumentsPage() {
                                     {(() => {
                                         const personRoleById = new Map(people.map((person) => [person.id, person.role]))
                                         const roleLabelByGroup: Record<Exclude<QuizResultsRoleFilter, "all">, string> = {
-                                            store_manager: "Quản lí cửa hàng",
+                                            store_manager: "Quản lí khu vực",
                                             store_lead: "Cửa hàng trưởng",
                                             store_technician: "Kỹ thuật viên",
                                             trainer: "Trainer",
@@ -5906,7 +6009,7 @@ export default function DocumentsPage() {
                                                             <p className="text-xs text-gray-600 dark:text-gray-400">Chưa học</p>
                                                         </button>
                                                     </div>
-                                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                    <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
                                                         <button
                                                             type="button"
                                                             onClick={() => openStatusListDetail("Đã học", completed)}
@@ -5974,7 +6077,7 @@ export default function DocumentsPage() {
                                                             <p className="text-xs text-gray-600 dark:text-gray-400">Chưa đủ điều kiện</p>
                                                         </button>
                                                     </div>
-                                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                    <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
                                                         <button
                                                             type="button"
                                                             onClick={() => openStatusListDetail("Đã nộp", activeAttempts.map((item) => statusByPersonId.get(item.personId)).filter(Boolean) as LearningStatusRow[])}
@@ -6186,7 +6289,7 @@ export default function DocumentsPage() {
                                 : selectedLearningStatusListDetail.rows
                             return (
                             <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 px-4">
-                                <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                                <div className="w-full max-w-4xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-700 dark:bg-gray-900 sm:p-5">
                                     <div className="mb-3 flex items-start justify-between gap-3">
                                         <div>
                                             <p className="text-sm font-semibold text-gray-900 dark:text-white">
@@ -6226,9 +6329,18 @@ export default function DocumentsPage() {
                                             Không tìm thấy nhân viên phù hợp.
                                         </p>
                                     ) : (
-                                        <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
-                                            {filteredRows.map((item) => (
-                                                <div key={item.personId} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800/70">
+                                        <div className="grid max-h-[60vh] grid-cols-1 gap-3 overflow-y-auto pr-1 lg:grid-cols-2">
+                                            {filteredRows.map((item) => {
+                                                const itemRoleGroup = getRoleGroup(item.personRole ?? "")
+                                                const statusCardTone = itemRoleGroup === "store_manager"
+                                                    ? "border-orange-400 bg-orange-50/60 dark:border-orange-700 dark:bg-orange-900/10"
+                                                    : itemRoleGroup === "store_technician"
+                                                    ? item.supervisorUserId || item.supervisorName
+                                                        ? "border-green-400 bg-green-50/60 dark:border-green-700 dark:bg-green-900/10"
+                                                        : "border-red-400 bg-red-50/60 dark:border-red-700 dark:bg-red-900/10"
+                                                    : "border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/70"
+                                                return (
+                                                <div key={item.personId} className={`rounded-lg border px-3 py-3 ${statusCardTone}`}>
                                                     <div className="flex items-start justify-between gap-3">
                                                         <div className="min-w-0">
                                                             <p className="break-words text-sm font-semibold text-gray-900 dark:text-white">{item.personName}</p>
@@ -6252,15 +6364,16 @@ export default function DocumentsPage() {
                                                         )}
                                                     </div>
                                                     <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">
-                                                        Phụ trách: <span className="font-medium">{item.supervisorName ?? "Chưa gán người phụ trách"}</span>
+                                                        Phụ trách: <span className="font-medium">{item.supervisorName ?? "Không có"}</span>
                                                     </p>
-                                                    {(item.storeBranchNames?.length ?? 0) > 0 && (
+                                                    {itemRoleGroup !== "store_manager" && (item.storeBranchNames?.length ?? 0) > 0 && (
                                                         <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
                                                             Cửa hàng: {item.storeBranchNames?.join(", ")}
                                                         </p>
                                                     )}
                                                 </div>
-                                            ))}
+                                                )
+                                            })}
                                         </div>
                                     )}
                                 </div>

@@ -79,7 +79,7 @@ const roleDisplayLabel: Record<ApprovalRequest["role"], string> = {
     employee: "Nhân viên",
     store_staff: "Nhân viên cửa hàng",
     store_trainer: "Trainer",
-    store_manager: "Quản lí cửa hàng",
+    store_manager: "Quản lí khu vực",
     store_lead: "Cửa hàng trưởng",
     store_technician: "Kỹ thuật viên"
 }

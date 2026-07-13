@@ -55,7 +55,7 @@ Quy tắc chọn vai trò:
 
 - Các phòng ban văn phòng có các vai trò: `Nhân viên`, `Leader`, `CEO`, `Admin`.
 - Khi chọn `CEO`, phòng ban hiệu lực được đặt là `Vận hành`.
-- Phòng ban `Cửa hàng` chỉ dùng các vai trò cửa hàng: `Trainer`, `Quản lí cửa hàng`, `Cửa hàng trưởng`, `Kỹ thuật viên`.
+- Phòng ban `Cửa hàng` chỉ dùng các vai trò cửa hàng: `Trainer`, `Quản lí khu vực`, `Cửa hàng trưởng`, `Kỹ thuật viên`.
 
 ### Bước 2: Điền thông tin riêng cho phòng ban Cửa hàng
 
@@ -66,7 +66,7 @@ Nếu chọn phòng ban `Cửa hàng`, form sẽ hiện thêm trường theo vai
 Quy tắc hiện tại:
 
 - `Trainer`: không cần chọn khu vực hoặc chi nhánh.
-- `Quản lí cửa hàng`: chọn `Khu vực`; hệ thống gán toàn bộ chi nhánh thuộc khu vực đó.
+- `Quản lí khu vực`: chọn `Khu vực`; hệ thống gán toàn bộ chi nhánh thuộc khu vực đó.
 - `Cửa hàng trưởng`: chọn `Khu vực` và đúng 1 `Chi nhánh`.
 - `Kỹ thuật viên`: chọn `Cửa hàng trưởng quản lý`; nếu chưa có cửa hàng trưởng khả dụng, hệ thống dùng `Trainer` làm quản lý tạm thời.
 
@@ -78,7 +78,7 @@ Nhấn **Gửi OTP**. Hệ thống kiểm tra:
 - Email chưa tồn tại.
 - Email không đang có yêu cầu duyệt pending.
 - Vai trò cửa hàng chỉ được dùng với phòng ban `Cửa hàng`.
-- Thông tin khu vực, chi nhánh hoặc quản lý cửa hàng phải hợp lệ theo vai trò.
+- Thông tin khu vực, chi nhánh hoặc quản lý khu vực phải hợp lệ theo vai trò.
 
 Nếu hợp lệ, hệ thống tạo OTP 6 số và gửi tới email.
 

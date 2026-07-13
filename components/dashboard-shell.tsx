@@ -68,7 +68,7 @@ const roles: { id: RoleKey; label: string }[] = [
   { id: "employee", label: "Nhân viên" },
   { id: "store_staff", label: "Nhân viên cửa hàng" },
   { id: "store_trainer", label: "Trainer" },
-  { id: "store_manager", label: "Quản lí cửa hàng" },
+  { id: "store_manager", label: "Quản lí khu vực" },
   { id: "store_lead", label: "Cửa hàng trưởng" },
   { id: "store_technician", label: "Kỹ thuật viên" },
   { id: "admin", label: "Admin" }
@@ -148,7 +148,7 @@ const roleData: Record<
     metricApproval: "03"
   },
   store_manager: {
-    heroTitle: "Quản lí cửa hàng đang điều phối nhiều chi nhánh",
+    heroTitle: "Quản lí khu vực đang điều phối nhiều chi nhánh",
     heroDescription: "Tập trung xử lý các đầu việc quá hạn tại từng điểm bán và giữ KPI vận hành đồng đều.",
     heroOnTime: "90%",
     heroKpi: "84.1",

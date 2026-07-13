@@ -28,11 +28,10 @@ const roleLabels: Record<UserRole, string> = {
   leader: "Leader",
   store_staff: "Nhân viên cửa hàng",
   store_trainer: "Trainer",
-  store_manager: "Quản lí cửa hàng",
+  store_manager: "Quản lí khu vực",
   store_lead: "Cửa hàng trưởng",
   store_technician: "Kỹ thuật viên"
 };
-const NO_STORE_LEAD_FALLBACK_VALUE = "__no_store_lead_fallback__";
 
 type FieldProps = {
   label: string;
@@ -181,32 +180,10 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
     () => users.filter((user) => user.department === "Cửa hàng" && user.role === "store_lead" && user.verified),
     [users]
   );
-  const storeTrainerOptions = useMemo(
-    () => users.filter((user) => user.department === "Cửa hàng" && user.role === "store_trainer" && user.verified),
-    [users]
-  );
-  const preferredTrainerForFallback = useMemo(
-    () =>
-      storeTrainerOptions.find((item) => item.name.trim().toUpperCase() === "TRẦN THỊ AN HÒA") ??
-      storeTrainerOptions[0] ??
-      null,
-    [storeTrainerOptions]
-  );
-  const managerOptionsForTechnician = useMemo(() => {
-    if (storeLeadOptions.length > 0) return storeLeadOptions;
-    return storeTrainerOptions;
-  }, [storeLeadOptions, storeTrainerOptions]);
-  const validManagerOptionsForTechnician = useMemo(() => {
-    if (!preferredTrainerForFallback) return managerOptionsForTechnician;
-    if (managerOptionsForTechnician.some((item) => item.id === preferredTrainerForFallback.id)) {
-      return managerOptionsForTechnician;
-    }
-    return [...managerOptionsForTechnician, preferredTrainerForFallback];
-  }, [managerOptionsForTechnician, preferredTrainerForFallback]);
-  const isTechnicianUsingTrainerFallback = isStoreTechnicianRole && storeLeadOptions.length === 0;
+  const managerOptionsForTechnician = storeLeadOptions;
   const technicianManagerDisplay = useMemo(() => {
     if (!storeLeadUserId) {
-      return isTechnicianUsingTrainerFallback ? "Chọn trainer quản lý" : "Chọn cửa hàng trưởng";
+      return "Không có";
     }
 
     const selectedLead = managerOptionsForTechnician.find((item) => item.id === storeLeadUserId);
@@ -214,20 +191,16 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
       return `${selectedLead.name} (${selectedLead.email})`;
     }
 
-    if (preferredTrainerForFallback && storeLeadUserId === preferredTrainerForFallback.id) {
-      return `Trainer - ${preferredTrainerForFallback.name} (Mặc định)`;
-    }
-
-    return isTechnicianUsingTrainerFallback ? "Chọn trainer quản lý" : "Chọn cửa hàng trưởng";
-  }, [isTechnicianUsingTrainerFallback, managerOptionsForTechnician, preferredTrainerForFallback, storeLeadUserId]);
+    return "Không có";
+  }, [managerOptionsForTechnician, storeLeadUserId]);
 
   useEffect(() => {
     if (!isStoreTechnicianRole) return;
-    if (managerOptionsForTechnician.length === 0) return;
-    if (storeLeadUserId && managerOptionsForTechnician.some((item) => item.id === storeLeadUserId)) return;
+    if (!storeLeadUserId) return;
+    if (managerOptionsForTechnician.some((item) => item.id === storeLeadUserId)) return;
 
-    setStoreLeadUserId(preferredTrainerForFallback?.id ?? managerOptionsForTechnician[0]!.id);
-  }, [isStoreTechnicianRole, managerOptionsForTechnician, preferredTrainerForFallback, storeLeadUserId]);
+    setStoreLeadUserId("");
+  }, [isStoreTechnicianRole, managerOptionsForTechnician, storeLeadUserId]);
 
   useEffect(() => {
     if (isStoreManagerRole) {
@@ -355,11 +328,6 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
 
     if (registerStep === "form" && isStoreDepartment) {
       if (isStoreTechnicianRole) {
-        if (!storeLeadUserId) {
-          setError("Vui lòng chọn Cửa hàng trưởng quản lý.");
-          setIsSubmitting(false);
-          return;
-        }
       } else if (!isStoreTrainerRole) {
         const candidateBranchIds = isStoreManagerRole ? managerAreaBranches : storeBranchIds;
         if (candidateBranchIds.length === 0) {
@@ -377,13 +345,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
       }
     }
 
-    if (registerStep === "form" && isStoreTechnicianRole && validManagerOptionsForTechnician.length === 0) {
-      setError("Chưa có tài khoản Cửa hàng trưởng hoặc Trainer nào khả dụng để gán quản lý.");
-      setIsSubmitting(false);
-      return;
-    }
-
-    if (registerStep === "form" && isStoreTechnicianRole && storeLeadUserId && !validManagerOptionsForTechnician.some((item) => item.id === storeLeadUserId)) {
+    if (registerStep === "form" && isStoreTechnicianRole && storeLeadUserId && !managerOptionsForTechnician.some((item) => item.id === storeLeadUserId)) {
       setError("Người quản lý đã chọn không hợp lệ.");
         setIsSubmitting(false);
         return;
@@ -578,7 +540,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                   {isStoreTechnicianRole ? (
                     <label className="grid gap-2">
                       <span className="text-sm font-medium text-text">
-                        {isTechnicianUsingTrainerFallback ? "Trainer quản lý (fallback)" : "Cửa hàng trưởng quản lý"}
+                        Cửa hàng trưởng quản lý
                       </span>
                       <button
                         type="button"
@@ -594,22 +556,24 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                         <DialogContent className="max-w-lg rounded-2xl border border-[rgba(55,45,33,0.15)] bg-white p-0">
                           <DialogHeader className="border-b border-[rgba(55,45,33,0.12)] px-5 py-4">
                             <DialogTitle className="text-base font-semibold text-slate-900">
-                              {isTechnicianUsingTrainerFallback ? "Chọn trainer quản lý" : "Chọn cửa hàng trưởng quản lý"}
+                              Chọn cửa hàng trưởng quản lý
                             </DialogTitle>
                           </DialogHeader>
                           <div className="max-h-[60vh] space-y-2 overflow-y-auto px-3 py-3">
-                            {!isTechnicianUsingTrainerFallback && preferredTrainerForFallback ? (
-                              <button
-                                type="button"
-                                className="w-full rounded-xl border border-[rgba(55,45,33,0.12)] px-3 py-3 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                                onClick={() => {
-                                  setStoreLeadUserId(preferredTrainerForFallback.id);
-                                  setIsManagerPickerOpen(false);
-                                }}
-                              >
-                                Không có cửa hàng trưởng của bạn trong danh sách
-                              </button>
-                            ) : null}
+                            <button
+                              type="button"
+                              className={`w-full rounded-xl border px-3 py-3 text-left text-sm font-medium transition ${
+                                !storeLeadUserId
+                                  ? "border-orange-300 bg-orange-50 text-slate-900"
+                                  : "border-[rgba(55,45,33,0.12)] text-slate-700 hover:bg-slate-50"
+                              }`}
+                              onClick={() => {
+                                setStoreLeadUserId("");
+                                setIsManagerPickerOpen(false);
+                              }}
+                            >
+                              Không có
+                            </button>
                             {managerOptionsForTechnician.map((lead) => (
                               <button
                                 key={lead.id}
@@ -627,19 +591,14 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                                 {lead.name} ({lead.email})
                               </button>
                             ))}
-                            {isTechnicianUsingTrainerFallback && managerOptionsForTechnician.length === 0 ? (
+                            {managerOptionsForTechnician.length === 0 ? (
                               <div className="rounded-xl border border-[rgba(55,45,33,0.12)] bg-slate-50 px-3 py-3 text-sm text-slate-500">
-                                Chưa có trainer khả dụng.
+                                Chưa có cửa hàng trưởng khả dụng.
                               </div>
                             ) : null}
                           </div>
                         </DialogContent>
                       </Dialog>
-                      {isTechnicianUsingTrainerFallback && (
-                        <p className="text-xs text-muted">
-                          Cửa hàng này chưa có Cửa hàng trưởng khả dụng, hệ thống đang dùng Trainer để quản lý tạm thời.
-                        </p>
-                      )}
                     </label>
                   ) : isStoreTrainerRole ? null : (
                     <>
@@ -660,7 +619,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                             </select>
                           </label>
                           <p className="text-xs text-muted">
-                            Quản lí cửa hàng sẽ quản lý toàn bộ Cửa hàng trưởng và Kỹ thuật viên thuộc khu vực đã chọn.
+                            Quản lí khu vực sẽ quản lý toàn bộ Cửa hàng trưởng và Kỹ thuật viên thuộc khu vực đã chọn.
                           </p>
                         </>
                       ) : (

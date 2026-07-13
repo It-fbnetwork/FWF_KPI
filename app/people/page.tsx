@@ -91,6 +91,8 @@ const DEFAULT_FORM: PersonFormState = {
     timezone: "UTC+7",
 }
 
+const NO_STORE_LEAD_VALUE = "__none__"
+
 export default function PeoplePage() {
     const { user } = useAuth()
     const { people, teams, refresh } = useDirectory()
@@ -189,7 +191,7 @@ export default function PeoplePage() {
             : []
     const visibleTeams = isAdmin ? teams : teams.filter((team) => team.id === currentTeamId)
     const trainerManagedRoleSet = useMemo(
-        () => new Set(["Quản lí cửa hàng", "Cửa hàng trưởng", "Kỹ thuật viên", "Nhân viên cửa hàng"]),
+        () => new Set(["Quản lí khu vực", "Cửa hàng trưởng", "Kỹ thuật viên", "Nhân viên cửa hàng"]),
         []
     )
     const canTrainerManagePerson = (person: Person) =>
@@ -442,18 +444,10 @@ export default function PeoplePage() {
             })
             return
         }
-        if (canEditTechnicianSupervisor && !personForm.storeLeadUserId) {
-            toast({
-                title: "Thiếu cửa hàng trưởng",
-                description: "Vui lòng chọn cửa hàng trưởng quản lí kỹ thuật viên.",
-                variant: "destructive",
-            })
-            return
-        }
         if (canEditStoreLeadManager && !shouldEditStoreLeadLocation && !personForm.storeManagerUserId) {
             toast({
-                title: "Thiếu quản lí cửa hàng",
-                description: "Vui lòng chọn quản lí cửa hàng phụ trách cửa hàng trưởng.",
+                title: "Thiếu quản lí khu vực",
+                description: "Vui lòng chọn quản lí khu vực phụ trách cửa hàng trưởng.",
                 variant: "destructive",
             })
             return
@@ -846,11 +840,17 @@ export default function PeoplePage() {
                         {canEditTechnicianSupervisor && (
                             <div className="grid gap-2">
                                 <Label htmlFor="technician-supervisor">Cửa hàng trưởng quản lí</Label>
-                                <Select value={personForm.storeLeadUserId} onValueChange={(value) => updatePersonForm("storeLeadUserId", value)}>
+                                <Select
+                                    value={personForm.storeLeadUserId || NO_STORE_LEAD_VALUE}
+                                    onValueChange={(value) => updatePersonForm("storeLeadUserId", value === NO_STORE_LEAD_VALUE ? "" : value)}
+                                >
                                     <SelectTrigger id="technician-supervisor">
-                                        <SelectValue placeholder="Chọn cửa hàng trưởng" />
+                                        <SelectValue placeholder="Không có" />
                                     </SelectTrigger>
                                     <SelectContent>
+                                        <SelectItem value={NO_STORE_LEAD_VALUE}>
+                                            Không có
+                                        </SelectItem>
                                         {storeLeadOptions.map((lead) => (
                                             <SelectItem key={lead.userId} value={lead.userId as string}>
                                                 {lead.name}
@@ -925,10 +925,10 @@ export default function PeoplePage() {
                         )}
                         {canEditStoreLeadManager && !shouldEditStoreLeadLocation && (
                             <div className="grid gap-2">
-                                <Label htmlFor="store-lead-manager">Quản lí cửa hàng phụ trách</Label>
+                                <Label htmlFor="store-lead-manager">Quản lí khu vực phụ trách</Label>
                                 <Select value={personForm.storeManagerUserId} onValueChange={(value) => updatePersonForm("storeManagerUserId", value)}>
                                     <SelectTrigger id="store-lead-manager">
-                                        <SelectValue placeholder="Chọn quản lí cửa hàng" />
+                                        <SelectValue placeholder="Chọn quản lí khu vực" />
                                     </SelectTrigger>
                                     <SelectContent>
                                         {storeManagerOptions.map((manager) => (

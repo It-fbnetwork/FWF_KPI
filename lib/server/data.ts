@@ -643,10 +643,12 @@ function normalizePersonDisplayRole(role: string) {
       return "Cửa hàng trưởng";
     case "quan li cua hang":
     case "quản lí cửa hàng":
+    case "quản lí khu vực":
     case "quan ly cua hang":
     case "quản lý cửa hàng":
+    case "quản lý khu vực":
     case "store_manager":
-      return "Quản lí cửa hàng";
+      return "Quản lí khu vực";
     case "trainer":
     case "store_trainer":
       return "Trainer";
@@ -673,7 +675,7 @@ function mapStoreDisplayRoleToAuthRole(role: string): UserRole | undefined {
       return "store_technician";
     case "Cửa hàng trưởng":
       return "store_lead";
-    case "Quản lí cửa hàng":
+    case "Quản lí khu vực":
       return "store_manager";
     case "Trainer":
       return "store_trainer";
@@ -692,7 +694,7 @@ function isStoreManagerActor(actor: SessionActor) {
 
 function canStoreTrainerManageDisplayRole(role: string) {
   const normalized = normalizePersonDisplayRole(role);
-  return normalized === "Quản lí cửa hàng" || normalized === "Cửa hàng trưởng" || normalized === "Kỹ thuật viên" || normalized === "Nhân viên cửa hàng";
+  return normalized === "Quản lí khu vực" || normalized === "Cửa hàng trưởng" || normalized === "Kỹ thuật viên" || normalized === "Nhân viên cửa hàng";
 }
 
 function canStoreManagerManageDisplayRole(role: string) {
@@ -965,7 +967,7 @@ function mapRequestedRoleToDisplayRole(role: UserRole) {
   }
 
   if (role === "store_manager") {
-    return "Quản lí cửa hàng";
+    return "Quản lí khu vực";
   }
 
   if (role === "store_lead") {
@@ -1615,7 +1617,7 @@ function getTechnicianSupervisorProfile(
   const directSupervisor = user.storeLeadUserId
     ? users.find((candidate) => candidate.id === user.storeLeadUserId)
     : undefined;
-  if (directSupervisor) {
+  if (directSupervisor && directSupervisor.role === "store_lead" && directSupervisor.department === "Cửa hàng") {
     return {
       supervisorUserId: directSupervisor.id,
       supervisorName: directSupervisor.name,
@@ -2675,21 +2677,20 @@ export async function createRegistrationOtp(input: {
     if (input.department === "Cửa hàng") {
       const allowedStoreRoles = new Set<UserRole>(["store_trainer", "store_manager", "store_lead", "store_technician"]);
       if (!allowedStoreRoles.has(input.role)) {
-        return { ok: false, message: "Phòng ban Cửa hàng chỉ cho phép 4 role: Trainer, Quản lí cửa hàng, Cửa hàng trưởng, Kỹ thuật viên." };
+        return { ok: false, message: "Phòng ban Cửa hàng chỉ cho phép 4 role: Trainer, Quản lí khu vực, Cửa hàng trưởng, Kỹ thuật viên." };
       }
       if (input.role === "store_technician") {
-        if (!normalizedStoreLeadUserId) {
-          return { ok: false, message: "Vui lòng chọn người quản lý (Cửa hàng trưởng hoặc Trainer)." };
-        }
-        const leadUserRes = await pgQuery("select * from users where id = $1 and verified = true limit 1", [normalizedStoreLeadUserId]);
-        const leadRow = leadUserRes.rows[0];
-        const leadUser = leadRow ? mapDbUser(mapPgUserRow(leadRow)) : null;
-        const normalizedLeadRole = leadUser ? normalizeUserRole(leadUser.role) : null;
-        if (!leadUser || (normalizedLeadRole !== "store_lead" && normalizedLeadRole !== "store_trainer") || leadUser.department !== "Cửa hàng") {
-          return { ok: false, message: "Người quản lý đã chọn không hợp lệ." };
-        }
-        if (normalizedLeadRole === "store_lead" && (!leadUser.storeRegion || !leadUser.storeBranchIds || leadUser.storeBranchIds.length === 0)) {
-          return { ok: false, message: "Cửa hàng trưởng chưa có cấu hình khu vực/chi nhánh." };
+        if (normalizedStoreLeadUserId) {
+          const leadUserRes = await pgQuery("select * from users where id = $1 and verified = true limit 1", [normalizedStoreLeadUserId]);
+          const leadRow = leadUserRes.rows[0];
+          const leadUser = leadRow ? mapDbUser(mapPgUserRow(leadRow)) : null;
+          const normalizedLeadRole = leadUser ? normalizeUserRole(leadUser.role) : null;
+          if (!leadUser || normalizedLeadRole !== "store_lead" || leadUser.department !== "Cửa hàng") {
+            return { ok: false, message: "Người quản lý đã chọn không hợp lệ." };
+          }
+          if (!leadUser.storeRegion || !leadUser.storeBranchIds || leadUser.storeBranchIds.length === 0) {
+            return { ok: false, message: "Cửa hàng trưởng chưa có cấu hình khu vực/chi nhánh." };
+          }
         }
       } else if (input.role !== "store_trainer") {
         if (!normalizedStoreRegion || !(STORE_REGIONS as readonly string[]).includes(normalizedStoreRegion)) {
@@ -2730,7 +2731,7 @@ export async function createRegistrationOtp(input: {
         input.department === "Cửa hàng" && input.role !== "store_technician" && input.role !== "store_trainer"
           ? normalizedStoreBranchIds
           : undefined,
-      storeLeadUserId: input.department === "Cửa hàng" && input.role === "store_technician" ? normalizedStoreLeadUserId : undefined,
+      storeLeadUserId: input.department === "Cửa hàng" && input.role === "store_technician" && normalizedStoreLeadUserId ? normalizedStoreLeadUserId : undefined,
       otp,
       expiresAt: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
       createdAt: now.toISOString()
@@ -2829,19 +2830,18 @@ export async function createRegistrationOtp(input: {
   if (input.department === "Cửa hàng") {
     const allowedStoreRoles = new Set<UserRole>(["store_trainer", "store_manager", "store_lead", "store_technician"]);
     if (!allowedStoreRoles.has(input.role)) {
-      return { ok: false, message: "Phòng ban Cửa hàng chỉ cho phép 4 role: Trainer, Quản lí cửa hàng, Cửa hàng trưởng, Kỹ thuật viên." };
+      return { ok: false, message: "Phòng ban Cửa hàng chỉ cho phép 4 role: Trainer, Quản lí khu vực, Cửa hàng trưởng, Kỹ thuật viên." };
     }
     if (input.role === "store_technician") {
-      if (!normalizedStoreLeadUserId) {
-        return { ok: false, message: "Vui lòng chọn người quản lý (Cửa hàng trưởng hoặc Trainer)." };
-      }
-      const leadUser = await db.collection<DbUser>("users").findOne({ _id: normalizedStoreLeadUserId, verified: true });
-      const normalizedLeadRole = leadUser ? normalizeUserRole(leadUser.role) : null;
-      if (!leadUser || (normalizedLeadRole !== "store_lead" && normalizedLeadRole !== "store_trainer") || leadUser.department !== "Cửa hàng") {
-        return { ok: false, message: "Người quản lý đã chọn không hợp lệ." };
-      }
-      if (normalizedLeadRole === "store_lead" && (!leadUser.storeRegion || !leadUser.storeBranchIds || leadUser.storeBranchIds.length === 0)) {
-        return { ok: false, message: "Cửa hàng trưởng chưa có cấu hình khu vực/chi nhánh." };
+      if (normalizedStoreLeadUserId) {
+        const leadUser = await db.collection<DbUser>("users").findOne({ _id: normalizedStoreLeadUserId, verified: true });
+        const normalizedLeadRole = leadUser ? normalizeUserRole(leadUser.role) : null;
+        if (!leadUser || normalizedLeadRole !== "store_lead" || leadUser.department !== "Cửa hàng") {
+          return { ok: false, message: "Người quản lý đã chọn không hợp lệ." };
+        }
+        if (!leadUser.storeRegion || !leadUser.storeBranchIds || leadUser.storeBranchIds.length === 0) {
+          return { ok: false, message: "Cửa hàng trưởng chưa có cấu hình khu vực/chi nhánh." };
+        }
       }
     } else if (input.role !== "store_trainer") {
       if (!normalizedStoreRegion || !(STORE_REGIONS as readonly string[]).includes(normalizedStoreRegion)) {
@@ -2883,7 +2883,7 @@ export async function createRegistrationOtp(input: {
       input.department === "Cửa hàng" && input.role !== "store_technician" && input.role !== "store_trainer"
         ? normalizedStoreBranchIds
         : undefined,
-    storeLeadUserId: input.department === "Cửa hàng" && input.role === "store_technician" ? normalizedStoreLeadUserId : undefined,
+    storeLeadUserId: input.department === "Cửa hàng" && input.role === "store_technician" && normalizedStoreLeadUserId ? normalizedStoreLeadUserId : undefined,
     otp,
     expiresAt: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
     createdAt: now.toISOString()
@@ -3392,11 +3392,11 @@ function canActorAssignStoreManager(actor: SessionActor, managerUser: UserAccoun
 
 function assertCanAssignStoreLeadManager(actor: SessionActor, managerUser: UserAccount | null | undefined) {
   if (!managerUser || managerUser.role !== "store_manager" || managerUser.department !== "Cửa hàng" || !managerUser.verified) {
-    throw new Error("Quản lí cửa hàng phụ trách không hợp lệ.");
+    throw new Error("Quản lí khu vực phụ trách không hợp lệ.");
   }
 
   if (!canActorAssignStoreManager(actor, managerUser)) {
-    throw new Error("Bạn không có quyền gán cửa hàng trưởng cho quản lí cửa hàng này.");
+    throw new Error("Bạn không có quyền gán cửa hàng trưởng cho quản lí khu vực này.");
   }
 }
 
@@ -3451,13 +3451,13 @@ export async function createPersonRecord(
     if (isStoreTrainerActor(actor)) {
       if (input.team !== "store") throw new Error("Trainer chỉ được thêm nhân sự phòng ban Cửa hàng.");
       if (!canStoreTrainerManageDisplayRole(normalizedRole)) {
-        throw new Error("Trainer chỉ được thêm Quản lí cửa hàng, Cửa hàng trưởng hoặc Kỹ thuật viên.");
+        throw new Error("Trainer chỉ được thêm Quản lí khu vực, Cửa hàng trưởng hoặc Kỹ thuật viên.");
       }
     }
     if (isStoreManagerActor(actor)) {
-      if (input.team !== "store") throw new Error("Quản lí cửa hàng chỉ được thêm nhân sự phòng ban Cửa hàng.");
+      if (input.team !== "store") throw new Error("Quản lí khu vực chỉ được thêm nhân sự phòng ban Cửa hàng.");
       if (!canStoreManagerManageDisplayRole(normalizedRole)) {
-        throw new Error("Quản lí cửa hàng chỉ được thêm Cửa hàng trưởng hoặc Kỹ thuật viên.");
+        throw new Error("Quản lí khu vực chỉ được thêm Cửa hàng trưởng hoặc Kỹ thuật viên.");
       }
     }
     const storeLeadLocation = input.team === "store" && normalizedRole === "Cửa hàng trưởng"
@@ -3546,15 +3546,15 @@ export async function createPersonRecord(
       throw new Error("Trainer chỉ được thêm nhân sự phòng ban Cửa hàng.");
     }
     if (!canStoreTrainerManageDisplayRole(normalizedRole)) {
-      throw new Error("Trainer chỉ được thêm Quản lí cửa hàng, Cửa hàng trưởng hoặc Kỹ thuật viên.");
+      throw new Error("Trainer chỉ được thêm Quản lí khu vực, Cửa hàng trưởng hoặc Kỹ thuật viên.");
     }
   }
   if (isStoreManagerActor(actor)) {
     if (input.team !== "store") {
-      throw new Error("Quản lí cửa hàng chỉ được thêm nhân sự phòng ban Cửa hàng.");
+      throw new Error("Quản lí khu vực chỉ được thêm nhân sự phòng ban Cửa hàng.");
     }
     if (!canStoreManagerManageDisplayRole(normalizedRole)) {
-      throw new Error("Quản lí cửa hàng chỉ được thêm Cửa hàng trưởng hoặc Kỹ thuật viên.");
+      throw new Error("Quản lí khu vực chỉ được thêm Cửa hàng trưởng hoặc Kỹ thuật viên.");
     }
   }
   const storeLeadLocation = input.team === "store" && normalizedRole === "Cửa hàng trưởng"
@@ -3627,14 +3627,14 @@ export async function updatePersonRecord(
       if (!canAccessPerson(actor, personId)) throw new Error("Forbidden");
       if (existingPerson.teamId !== "store" || updates.team !== "store") throw new Error("Trainer chỉ được chỉnh nhân sự phòng ban Cửa hàng.");
       if (!canStoreTrainerManageDisplayRole(normalizedRole)) {
-        throw new Error("Trainer chỉ được chỉnh role Quản lí cửa hàng, Cửa hàng trưởng hoặc Kỹ thuật viên.");
+        throw new Error("Trainer chỉ được chỉnh role Quản lí khu vực, Cửa hàng trưởng hoặc Kỹ thuật viên.");
       }
     }
     if (isStoreManagerActor(actor)) {
       if (!canAccessPerson(actor, personId)) throw new Error("Forbidden");
-      if (existingPerson.teamId !== "store" || updates.team !== "store") throw new Error("Quản lí cửa hàng chỉ được chỉnh nhân sự phòng ban Cửa hàng.");
+      if (existingPerson.teamId !== "store" || updates.team !== "store") throw new Error("Quản lí khu vực chỉ được chỉnh nhân sự phòng ban Cửa hàng.");
       if (!canStoreManagerManageDisplayRole(normalizedRole)) {
-        throw new Error("Quản lí cửa hàng chỉ được chỉnh role Cửa hàng trưởng hoặc Kỹ thuật viên.");
+        throw new Error("Quản lí khu vực chỉ được chỉnh role Cửa hàng trưởng hoặc Kỹ thuật viên.");
       }
     }
     const directStoreLeadLocation = updates.team === "store" && normalizedRole === "Cửa hàng trưởng" && updates.storeBranchIds !== undefined
@@ -3642,10 +3642,20 @@ export async function updatePersonRecord(
       : null;
     const nextAuthRole = updates.team === "store" ? mapStoreDisplayRoleToAuthRole(normalizedRole) : undefined;
     let nextStoreLeadUser: UserAccount | null = null;
+    let shouldClearTechnicianSupervisor = false;
     if (updates.storeLeadUserId !== undefined) {
+      const normalizedStoreLeadUserId = updates.storeLeadUserId.trim();
+      if (!normalizedStoreLeadUserId) {
+        const targetUsersRes = await pgQuery("select * from users where person_id = $1 or email = $2", [personId, existingPerson.email]);
+        const targetUsers = targetUsersRes.rows.map((row) => mapDbUser(mapPgUserRow(row)));
+        if (!targetUsers.some((targetUser) => targetUser.role === "store_technician")) {
+          throw new Error("Chỉ được đổi cửa hàng trưởng quản lí cho tài khoản Kỹ thuật viên.");
+        }
+        shouldClearTechnicianSupervisor = true;
+      } else {
       const [targetUsersRes, leadUserRes] = await Promise.all([
         pgQuery("select * from users where person_id = $1 or email = $2", [personId, existingPerson.email]),
-        pgQuery("select * from users where id = $1 limit 1", [updates.storeLeadUserId])
+        pgQuery("select * from users where id = $1 limit 1", [normalizedStoreLeadUserId])
       ]);
       const targetUsers = targetUsersRes.rows.map((row) => mapDbUser(mapPgUserRow(row)));
       if (!targetUsers.some((targetUser) => targetUser.role === "store_technician")) {
@@ -3653,6 +3663,7 @@ export async function updatePersonRecord(
       }
       nextStoreLeadUser = leadUserRes.rows[0] ? mapDbUser(mapPgUserRow(leadUserRes.rows[0])) : null;
       assertCanAssignTechnicianStoreLead(actor, nextStoreLeadUser);
+      }
     }
     let targetStoreLeadUser: UserAccount | null = null;
     let nextStoreManagerUser: UserAccount | null = null;
@@ -3664,7 +3675,7 @@ export async function updatePersonRecord(
       const targetUsers = targetUsersRes.rows.map((row) => mapDbUser(mapPgUserRow(row)));
       targetStoreLeadUser = targetUsers.find((targetUser) => targetUser.role === "store_lead") ?? null;
       if (!targetStoreLeadUser) {
-        throw new Error("Chỉ được đổi quản lí cửa hàng phụ trách cho tài khoản Cửa hàng trưởng.");
+        throw new Error("Chỉ được đổi quản lí khu vực phụ trách cho tài khoản Cửa hàng trưởng.");
       }
       nextStoreManagerUser = managerUserRes.rows[0] ? mapDbUser(mapPgUserRow(managerUserRes.rows[0])) : null;
       assertCanAssignStoreLeadManager(actor, nextStoreManagerUser);
@@ -3714,6 +3725,14 @@ export async function updatePersonRecord(
           nextStoreLeadUser.id,
           now
         ]
+      );
+    }
+    if (shouldClearTechnicianSupervisor) {
+      await pgQuery(
+        `update users
+         set store_region=null, store_branch_ids='[]'::jsonb, store_lead_user_id=null, updated_at=$2::timestamptz
+         where person_id=$1`,
+        [personId, now]
       );
     }
     if (targetStoreLeadUser && nextStoreManagerUser) {
@@ -3811,7 +3830,7 @@ export async function updatePersonRecord(
       throw new Error("Trainer chỉ được chỉnh nhân sự phòng ban Cửa hàng.");
     }
     if (!canStoreTrainerManageDisplayRole(normalizedRole)) {
-      throw new Error("Trainer chỉ được chỉnh role Quản lí cửa hàng, Cửa hàng trưởng hoặc Kỹ thuật viên.");
+      throw new Error("Trainer chỉ được chỉnh role Quản lí khu vực, Cửa hàng trưởng hoặc Kỹ thuật viên.");
     }
   }
   if (isStoreManagerActor(actor)) {
@@ -3819,10 +3838,10 @@ export async function updatePersonRecord(
       throw new Error("Forbidden");
     }
     if (existingPerson.teamId !== "store" || updates.team !== "store") {
-      throw new Error("Quản lí cửa hàng chỉ được chỉnh nhân sự phòng ban Cửa hàng.");
+      throw new Error("Quản lí khu vực chỉ được chỉnh nhân sự phòng ban Cửa hàng.");
     }
     if (!canStoreManagerManageDisplayRole(normalizedRole)) {
-      throw new Error("Quản lí cửa hàng chỉ được chỉnh role Cửa hàng trưởng hoặc Kỹ thuật viên.");
+      throw new Error("Quản lí khu vực chỉ được chỉnh role Cửa hàng trưởng hoặc Kỹ thuật viên.");
     }
   }
   const directStoreLeadLocation = updates.team === "store" && normalizedRole === "Cửa hàng trưởng" && updates.storeBranchIds !== undefined
@@ -3830,10 +3849,20 @@ export async function updatePersonRecord(
     : null;
   const nextAuthRole = updates.team === "store" ? mapStoreDisplayRoleToAuthRole(normalizedRole) : undefined;
   let nextStoreLeadUser: UserAccount | null = null;
+  let shouldClearTechnicianSupervisor = false;
   if (updates.storeLeadUserId !== undefined) {
+    const normalizedStoreLeadUserId = updates.storeLeadUserId.trim();
+    if (!normalizedStoreLeadUserId) {
+      const targetUsers = await db.collection<DbUser>("users").find({ $or: [{ personId }, { email: existingPerson.email }] }).toArray();
+      const mappedTargetUsers = targetUsers.map(mapDbUser);
+      if (!mappedTargetUsers.some((targetUser) => targetUser.role === "store_technician")) {
+        throw new Error("Chỉ được đổi cửa hàng trưởng quản lí cho tài khoản Kỹ thuật viên.");
+      }
+      shouldClearTechnicianSupervisor = true;
+    } else {
     const [targetUsers, leadUserDocument] = await Promise.all([
       db.collection<DbUser>("users").find({ $or: [{ personId }, { email: existingPerson.email }] }).toArray(),
-      db.collection<DbUser>("users").findOne({ _id: updates.storeLeadUserId })
+      db.collection<DbUser>("users").findOne({ _id: normalizedStoreLeadUserId })
     ]);
     const mappedTargetUsers = targetUsers.map(mapDbUser);
     if (!mappedTargetUsers.some((targetUser) => targetUser.role === "store_technician")) {
@@ -3841,6 +3870,7 @@ export async function updatePersonRecord(
     }
     nextStoreLeadUser = leadUserDocument ? mapDbUser(leadUserDocument) : null;
     assertCanAssignTechnicianStoreLead(actor, nextStoreLeadUser);
+    }
   }
   let targetStoreLeadUser: UserAccount | null = null;
   let nextStoreManagerUser: UserAccount | null = null;
@@ -3852,7 +3882,7 @@ export async function updatePersonRecord(
     const mappedTargetUsers = targetUsers.map(mapDbUser);
     targetStoreLeadUser = mappedTargetUsers.find((targetUser) => targetUser.role === "store_lead") ?? null;
     if (!targetStoreLeadUser) {
-      throw new Error("Chỉ được đổi quản lí cửa hàng phụ trách cho tài khoản Cửa hàng trưởng.");
+      throw new Error("Chỉ được đổi quản lí khu vực phụ trách cho tài khoản Cửa hàng trưởng.");
     }
     nextStoreManagerUser = managerUserDocument ? mapDbUser(managerUserDocument) : null;
     assertCanAssignStoreLeadManager(actor, nextStoreManagerUser);
@@ -3905,6 +3935,19 @@ export async function updatePersonRecord(
           storeLeadUserId: nextStoreLeadUser.id,
           updatedAt: new Date().toISOString()
         }
+      }
+    );
+  }
+  if (shouldClearTechnicianSupervisor) {
+    await db.collection<DbUser>("users").updateMany(
+      { personId },
+      {
+        $set: {
+          storeRegion: undefined,
+          storeBranchIds: [],
+          updatedAt: new Date().toISOString()
+        },
+        $unset: { storeLeadUserId: "" }
       }
     );
   }
@@ -4674,8 +4717,8 @@ export async function deletePersonRecord(
     }
     if (isStoreManagerActor(actor)) {
       if (!canAccessPerson(actor, personId)) throw new Error("Forbidden");
-      if (existingPerson.teamId !== "store") throw new Error("Quản lí cửa hàng chỉ được xóa nhân sự phòng ban Cửa hàng.");
-      if (!canStoreManagerManageDisplayRole(existingPerson.role)) throw new Error("Quản lí cửa hàng không thể xóa role này.");
+      if (existingPerson.teamId !== "store") throw new Error("Quản lí khu vực chỉ được xóa nhân sự phòng ban Cửa hàng.");
+      if (!canStoreManagerManageDisplayRole(existingPerson.role)) throw new Error("Quản lí khu vực không thể xóa role này.");
     }
 
     const threadRes = await pgQuery(
@@ -4726,10 +4769,10 @@ export async function deletePersonRecord(
       throw new Error("Forbidden");
     }
     if (existingPerson.teamId !== "store") {
-      throw new Error("Quản lí cửa hàng chỉ được xóa nhân sự phòng ban Cửa hàng.");
+      throw new Error("Quản lí khu vực chỉ được xóa nhân sự phòng ban Cửa hàng.");
     }
     if (!canStoreManagerManageDisplayRole(existingPerson.role)) {
-      throw new Error("Quản lí cửa hàng không thể xóa role này.");
+      throw new Error("Quản lí khu vực không thể xóa role này.");
     }
   }
 

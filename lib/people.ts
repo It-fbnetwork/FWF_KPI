@@ -25,7 +25,7 @@ export const personDisplayRoles = [
   "Nhân viên cửa hàng",
   "Kỹ thuật viên",
   "Cửa hàng trưởng",
-  "Quản lí cửa hàng",
+  "Quản lí khu vực",
   "Trainer",
   "Leader",
   "Admin",
