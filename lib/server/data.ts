@@ -5957,33 +5957,84 @@ export async function createFolderRecord(
 export async function updateFolderRecord(
   sessionUserId: string | null | undefined,
   folderId: string,
-  input: { name: string }
+  input: { name?: string; parentId?: string | null }
 ) {
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
   if (!canCreateDocuments(actor)) throw new Error("Forbidden");
 
-  const folderName = input.name.trim();
-  if (!folderName) throw new Error("Folder name is required");
-
   if (shouldUseSupabasePhaseA()) {
+    const hasMissingParentIdColumn = (error: unknown) =>
+      (error instanceof Error ? error.message : String(error)).toLowerCase().includes("parent_id");
     const folderRes = await pgQuery("select * from document_folders where id = $1 limit 1", [folderId]);
     const row = folderRes.rows[0];
     if (!row) return null;
     const existing = mapPgFolderRow(row);
     if (!actor.isAdmin && existing.teamId !== actor.person.team) throw new Error("Forbidden");
 
+    const nextName = input.name !== undefined ? input.name.trim() : existing.name;
+    if (!nextName) throw new Error("Folder name is required");
+    const parentWasProvided = input.parentId !== undefined;
+    const nextParentIdRaw = parentWasProvided ? (input.parentId?.trim() || null) : (existing.parentId ?? null);
+
+    if (nextParentIdRaw && nextParentIdRaw === folderId) {
+      throw new Error("Folder cannot be moved into itself");
+    }
+
+    if (nextParentIdRaw) {
+      const parentRes = await pgQuery("select * from document_folders where id = $1 limit 1", [nextParentIdRaw]);
+      const parentRow = parentRes.rows[0];
+      if (!parentRow) throw new Error("Parent folder not found");
+      const parentFolder = mapPgFolderRow(parentRow);
+      if (!actor.isAdmin && parentFolder.teamId !== actor.person.team) throw new Error("Forbidden");
+    }
+
+    if (nextParentIdRaw) {
+      try {
+        const allFoldersRes = actor.isAdmin
+          ? await pgQuery("select id,parent_id from document_folders")
+          : await pgQuery("select id,parent_id from document_folders where team_id = $1", [actor.person.team]);
+        const parentById = new Map<string, string | null>(
+          allFoldersRes.rows.map((item) => [String(item.id), item.parent_id ? String(item.parent_id) : null])
+        );
+        let cursor: string | null = nextParentIdRaw;
+        while (cursor) {
+          if (cursor === folderId) {
+            throw new Error("Cannot move folder into its descendant");
+          }
+          cursor = parentById.get(cursor) ?? null;
+        }
+      } catch (error) {
+        if (!hasMissingParentIdColumn(error)) throw error;
+        throw new Error("Database chưa cập nhật cột parent_id cho document_folders. Vui lòng chạy migration schema trước khi di chuyển folder.");
+      }
+    }
+
     const updated: DbFolder = {
       ...existing,
-      name: folderName,
+      name: nextName,
+      parentId: nextParentIdRaw ?? undefined,
       updatedAt: new Date().toISOString()
     };
 
-    await pgQuery(
-      "update document_folders set name = $2, updated_at = $3::timestamptz, raw_json = $4::jsonb where id = $1",
-      [folderId, updated.name, updated.updatedAt, JSON.stringify(updated)]
-    );
-    await pgQuery("update documents set folder = $2 where folder_id = $1", [folderId, updated.name]);
+    try {
+      await pgQuery(
+        "update document_folders set name = $2, parent_id = $3, updated_at = $4::timestamptz, raw_json = $5::jsonb where id = $1",
+        [folderId, updated.name, updated.parentId ?? null, updated.updatedAt, JSON.stringify(updated)]
+      );
+    } catch (error) {
+      if (!hasMissingParentIdColumn(error)) throw error;
+      if (parentWasProvided) {
+        throw new Error("Database chưa cập nhật cột parent_id cho document_folders. Vui lòng chạy migration schema trước khi di chuyển folder.");
+      }
+      await pgQuery(
+        "update document_folders set name = $2, updated_at = $3::timestamptz, raw_json = $4::jsonb where id = $1",
+        [folderId, updated.name, updated.updatedAt, JSON.stringify(updated)]
+      );
+    }
+    if (updated.name !== existing.name) {
+      await pgQuery("update documents set folder = $2 where folder_id = $1", [folderId, updated.name]);
+    }
     return mapDbFolder(updated);
   }
 
@@ -5992,17 +6043,47 @@ export async function updateFolderRecord(
   if (!existing) return null;
   if (!actor.isAdmin && existing.teamId !== actor.person.team) throw new Error("Forbidden");
 
+  const nextName = input.name !== undefined ? input.name.trim() : existing.name;
+  if (!nextName) throw new Error("Folder name is required");
+  const parentWasProvided = input.parentId !== undefined;
+  const nextParentIdRaw = parentWasProvided ? (input.parentId?.trim() || null) : (existing.parentId ?? null);
+
+  if (nextParentIdRaw && nextParentIdRaw === folderId) {
+    throw new Error("Folder cannot be moved into itself");
+  }
+
+  if (nextParentIdRaw) {
+    const parentFolder = await db.collection<DbFolder>("document_folders").findOne({ _id: nextParentIdRaw });
+    if (!parentFolder) throw new Error("Parent folder not found");
+    if (!actor.isAdmin && parentFolder.teamId !== actor.person.team) throw new Error("Forbidden");
+  }
+
+  if (nextParentIdRaw) {
+    const folderQuery = actor.isAdmin ? {} : { teamId: actor.person.team };
+    const folders = await db.collection<DbFolder>("document_folders").find(folderQuery).toArray();
+    const parentById = new Map(folders.map((folder) => [folder._id, folder.parentId ?? null]));
+    let cursor: string | null = nextParentIdRaw;
+    while (cursor) {
+      if (cursor === folderId) {
+        throw new Error("Cannot move folder into its descendant");
+      }
+      cursor = parentById.get(cursor) ?? null;
+    }
+  }
+
   const updatedAt = new Date().toISOString();
   await db.collection<DbFolder>("document_folders").updateOne(
     { _id: folderId },
-    { $set: { name: folderName, updatedAt } }
+    { $set: { name: nextName, parentId: nextParentIdRaw ?? undefined, updatedAt } }
   );
-  await db.collection<DbDocument>("documents").updateMany(
-    { folderId },
-    { $set: { folder: folderName } }
-  );
+  if (nextName !== existing.name) {
+    await db.collection<DbDocument>("documents").updateMany(
+      { folderId },
+      { $set: { folder: nextName } }
+    );
+  }
 
-  return mapDbFolder({ ...existing, name: folderName, updatedAt });
+  return mapDbFolder({ ...existing, name: nextName, parentId: nextParentIdRaw ?? undefined, updatedAt });
 }
 
 export async function deleteFolderRecord(sessionUserId: string | null | undefined, folderId: string) {

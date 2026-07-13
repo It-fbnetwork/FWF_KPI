@@ -335,6 +335,12 @@ interface MoveDocumentDialogState {
     selectedFolderId: string | null
 }
 
+interface MoveFolderDialogState {
+    open: boolean
+    folder: Folder | null
+    selectedParentId: string | null
+}
+
 interface CreateDocumentDialogState {
     open: boolean
     name: string
@@ -475,6 +481,11 @@ export default function DocumentsPage() {
         open: false,
         document: null,
         selectedFolderId: null,
+    })
+    const [moveFolderDialog, setMoveFolderDialog] = useState<MoveFolderDialogState>({
+        open: false,
+        folder: null,
+        selectedParentId: null,
     })
     const [createDocumentDialog, setCreateDocumentDialog] = useState<CreateDocumentDialogState>(
         buildDefaultCreateDocumentDialog(user)
@@ -1618,6 +1629,53 @@ export default function DocumentsPage() {
         }
     }
 
+    const openMoveFolderDialog = (folder: Folder) => {
+        setMoveFolderDialog({
+            open: true,
+            folder,
+            selectedParentId: folder.parentId ?? null,
+        })
+    }
+
+    const handleConfirmMoveFolder = async () => {
+        const folder = moveFolderDialog.folder
+        if (!folder) return
+        setIsSubmitting(true)
+        try {
+            const res = await fetch(`/api/documents/folders/${folder.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ parentId: moveFolderDialog.selectedParentId }),
+            })
+            const payload = (await res.json()) as { ok: boolean; folder?: Folder; message?: string }
+            if (!res.ok || !payload.folder) throw new Error(payload.message || "Không thể di chuyển folder")
+            setFolders((prev) => prev.map((item) => (item.id === payload.folder!.id ? payload.folder! : item)))
+            setMoveFolderDialog({ open: false, folder: null, selectedParentId: null })
+            toast({ title: "Đã di chuyển folder" })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Không thể di chuyển folder"
+            toast({ title: message, variant: "destructive" })
+        } finally {
+            setIsSubmitting(false)
+        }
+    }
+
+    const getFolderDescendantIds = useCallback((folderId: string) => {
+        const ids = new Set<string>([folderId])
+        const queue: string[] = [folderId]
+        while (queue.length > 0) {
+            const current = queue.shift()!
+            const children = folderChildrenByParentId.get(current) ?? []
+            for (const child of children) {
+                if (ids.has(child.id)) continue
+                ids.add(child.id)
+                queue.push(child.id)
+            }
+        }
+        return ids
+    }, [folderChildrenByParentId])
+
     const renderMoveFolderOption = (folder: Folder, depth = 0): React.ReactNode => {
         const children = folderChildrenByParentId.get(folder.id) ?? []
         const selected = moveDocumentDialog.selectedFolderId === folder.id
@@ -1647,6 +1705,41 @@ export default function DocumentsPage() {
                     )}
                 </button>
                 {children.map((child) => renderMoveFolderOption(child, depth + 1))}
+            </div>
+        )
+    }
+
+    const renderMoveFolderTargetOption = (
+        folder: Folder,
+        excludedIds: Set<string>,
+        depth = 0
+    ): React.ReactNode => {
+        const children = folderChildrenByParentId.get(folder.id) ?? []
+        if (excludedIds.has(folder.id)) {
+            return children.map((child) => renderMoveFolderTargetOption(child, excludedIds, depth))
+        }
+        const selected = moveFolderDialog.selectedParentId === folder.id
+        return (
+            <div key={`move-folder-target-${folder.id}`}>
+                <button
+                    type="button"
+                    className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${
+                        selected
+                            ? "bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:ring-blue-700"
+                            : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                    }`}
+                    style={{ paddingLeft: `${12 + depth * 22}px` }}
+                    onClick={() => setMoveFolderDialog((state) => ({ ...state, selectedParentId: folder.id }))}
+                >
+                    {children.length > 0 ? (
+                        <ChevronRight className="h-3.5 w-3.5 text-gray-400" />
+                    ) : (
+                        <span className="h-3.5 w-3.5" />
+                    )}
+                    <FolderIcon className="h-4 w-4 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+                </button>
+                {children.map((child) => renderMoveFolderTargetOption(child, excludedIds, depth + 1))}
             </div>
         )
     }
@@ -3282,6 +3375,10 @@ export default function DocumentsPage() {
                                 <DropdownMenuItem onClick={() => void handleRenameFolder(folder)}>
                                     <Pencil className="mr-2 h-4 w-4" />
                                     Đổi tên
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => openMoveFolderDialog(folder)}>
+                                    <Move className="mr-2 h-4 w-4" />
+                                    Di chuyển folder
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                     className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
@@ -4956,6 +5053,68 @@ export default function DocumentsPage() {
                     </div>
                 </div>
             )}
+
+            {/* ── Move Folder Dialog ──────────────────────────────────── */}
+            {moveFolderDialog.open && moveFolderDialog.folder && (() => {
+                const excludedIds = getFolderDescendantIds(moveFolderDialog.folder.id)
+                const rootFolders = folderChildrenByParentId.get("__root__") ?? []
+                return (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3">
+                        <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-xl dark:bg-gray-800 sm:p-6">
+                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Di chuyển folder</h2>
+                            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                                Chọn vị trí mới cho <span className="font-medium text-gray-700 dark:text-gray-200">{moveFolderDialog.folder.name}</span>
+                            </p>
+                            <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
+                                Hiện tại: <span className="font-medium">{getFolderPathLabel(moveFolderDialog.folder.parentId)}</span>
+                            </div>
+
+                            <div className="mt-4 max-h-[55vh] overflow-y-auto rounded-xl border border-gray-200 p-2 dark:border-gray-700">
+                                <button
+                                    type="button"
+                                    className={`mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${
+                                        moveFolderDialog.selectedParentId === null
+                                            ? "bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:ring-blue-700"
+                                            : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                                    }`}
+                                    onClick={() => setMoveFolderDialog((state) => ({ ...state, selectedParentId: null }))}
+                                >
+                                    <FolderOpen className="h-4 w-4 shrink-0" />
+                                    <span className="font-medium">Ngoài folder (gốc Documents)</span>
+                                </button>
+
+                                {rootFolders.length === 0 ? (
+                                    <p className="px-3 py-4 text-sm italic text-gray-400 dark:text-gray-500">
+                                        Chưa có folder nào để chọn.
+                                    </p>
+                                ) : (
+                                    rootFolders.map((folder) => renderMoveFolderTargetOption(folder, excludedIds))
+                                )}
+                            </div>
+
+                            <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                                Folder đích: <span className="font-medium">{getFolderPathLabel(moveFolderDialog.selectedParentId)}</span>
+                            </div>
+
+                            <div className="mt-4 flex justify-end gap-2">
+                                <Button
+                                    variant="outline"
+                                    className="bg-transparent"
+                                    onClick={() => setMoveFolderDialog({ open: false, folder: null, selectedParentId: null })}
+                                >
+                                    Huỷ
+                                </Button>
+                                <Button
+                                    disabled={isSubmitting || moveFolderDialog.selectedParentId === (moveFolderDialog.folder.parentId ?? null)}
+                                    onClick={() => void handleConfirmMoveFolder()}
+                                >
+                                    Di chuyển
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            })()}
 
             {/* ── Create Document Dialog ──────────────────────────────── */}
             {createDocumentDialog.open && (

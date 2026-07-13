@@ -6,15 +6,24 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ fo
   try {
     const sessionUserId = await getSessionUserId();
     const { folderId } = await params;
-    const { name } = await request.json();
-    const folder = await updateFolderRecord(sessionUserId, folderId, { name });
+    const body = await request.json();
+    const name = typeof body?.name === "string" ? body.name : undefined;
+    const parentId = body && Object.prototype.hasOwnProperty.call(body, "parentId")
+      ? (body.parentId as string | null | undefined)
+      : undefined;
+    const folder = await updateFolderRecord(sessionUserId, folderId, { name, parentId });
     if (!folder) {
       return NextResponse.json({ ok: false, message: "Folder not found or forbidden." }, { status: 404 });
     }
     return NextResponse.json({ ok: true, folder });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to update folder.";
-    const status = message === "Unauthorized" ? 401 : 403;
+    const status =
+      message === "Unauthorized"
+        ? 401
+        : message.includes("Database chưa cập nhật cột parent_id")
+          ? 400
+          : 403;
     return NextResponse.json({ ok: false, message }, { status });
   }
 }
