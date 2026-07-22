@@ -183,10 +183,38 @@ type DbTest = {
   title: string;
   description: string;
   questions: string[];
+  quizQuestions?: Array<{
+    text: string;
+    options: string[];
+    correctIndex?: number;
+    explanation?: string;
+  }>;
   durationMinutes: number;
+  timePerQuestionSeconds?: number;
+  sourceFileName?: string;
+  targetRoles?: UserRole[];
   createdByPersonId: string;
   createdAt: string;
   updatedAt: string;
+};
+
+type DbTestSubmission = {
+  _id: string;
+  testId: string;
+  personId: string;
+  answers: number[];
+  textAnswers: string[];
+  submittedAt: string;
+};
+
+type DbTestSession = {
+  _id: string;
+  testId: string;
+  personId: string;
+  status: "in_progress" | "submitted";
+  startedAt: string;
+  updatedAt: string;
+  submittedAt?: string;
 };
 
 type DbQuizQuestion = {
@@ -329,9 +357,19 @@ function getManagedPersonIdsByHierarchy(
   const actorIsStoreRole = isStoreRole(actorRole);
   const actorBranches = new Set(actorUser.storeBranchIds ?? []);
   const userById = new Map(Array.from(userByPersonId.values()).map((user) => [user.id, user]));
+  const sharesActorBranch = (user: UserAccount | undefined) =>
+    Boolean(user && actorBranches.size > 0 && (user.storeBranchIds ?? []).some((branchId) => actorBranches.has(branchId)));
+  const sharesActorRegion = (user: UserAccount | undefined) =>
+    Boolean(user && actorUser.storeRegion && user.storeRegion === actorUser.storeRegion);
+  const isInActorStoreScope = (user: UserAccount | undefined) => {
+    if (!user) return false;
+    if (actorBranches.size > 0) return sharesActorBranch(user);
+    if (actorUser.storeRegion) return sharesActorRegion(user);
+    return actorRole === "store_trainer";
+  };
   const isStoreLeadManagedByActor = (user: UserAccount | undefined) => {
     if (!user || user.role !== "store_lead" || user.department !== "Cửa hàng") return false;
-    return (user.storeBranchIds ?? []).some((branchId) => actorBranches.has(branchId));
+    return isInActorStoreScope(user);
   };
 
   for (const candidate of allPeople) {
@@ -356,12 +394,12 @@ function getManagedPersonIdsByHierarchy(
     if (!canManageStoreRole(actorRole, candidateUser.role)) continue;
 
     if (actorRole === "store_trainer") {
-      managed.add(candidate.id);
+      if (isInActorStoreScope(candidateUser)) managed.add(candidate.id);
       continue;
     }
 
     if (actorRole === "store_manager") {
-      if (isStoreLeadManagedByActor(candidateUser)) {
+      if (isInActorStoreScope(candidateUser) || isStoreLeadManagedByActor(candidateUser)) {
         managed.add(candidate.id);
         continue;
       }
@@ -376,7 +414,10 @@ function getManagedPersonIdsByHierarchy(
     }
 
     if (actorRole === "store_lead") {
-      if (candidateUser.role === "store_technician" && candidateUser.storeLeadUserId === actorUser.id) {
+      if (
+        candidateUser.role === "store_technician" &&
+        (candidateUser.storeLeadUserId === actorUser.id || sharesActorBranch(candidateUser))
+      ) {
         managed.add(candidate.id);
       }
     }
@@ -473,10 +514,34 @@ export type TestRecord = {
   title: string;
   description: string;
   questions: string[];
+  quizQuestions?: QuizQuestion[];
   durationMinutes: number;
+  timePerQuestionSeconds?: number;
+  sourceFileName?: string;
+  targetRoles?: UserRole[];
   createdByPersonId: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type TestSubmissionRecord = {
+  id: string;
+  testId: string;
+  personId: string;
+  personName?: string;
+  personRole?: string;
+  answers: number[];
+  textAnswers: string[];
+  submittedAt: string;
+};
+
+export type TestProgressRow = {
+  personId: string;
+  personName: string;
+  personRole?: string;
+  status: "submitted" | "in_progress" | "not_submitted";
+  startedAt?: string;
+  submittedAt?: string;
 };
 
 export type QuizQuestion = {
@@ -576,6 +641,11 @@ declare global {
         checkedAt: number;
       }
     | undefined;
+  var __fwfTestSubmissionSchemaReady__:
+    | {
+        checkedAt: number;
+      }
+    | undefined;
 }
 
 async function ensureQuizAttemptResetSchemaReady() {
@@ -595,6 +665,40 @@ async function ensureQuizAttemptResetSchemaReady() {
   `);
   await pgQuery("create index if not exists idx_quiz_attempt_resets_doc_person on quiz_attempt_resets(document_id, person_id, reset_at desc)");
   globalThis.__fwfQuizAttemptResetSchemaReady__ = { checkedAt: Date.now() };
+}
+
+async function ensureTestSubmissionSchemaReady() {
+  if (!shouldUseSupabasePhaseA()) return;
+  const state = globalThis.__fwfTestSubmissionSchemaReady__;
+  if (state && Date.now() - state.checkedAt < 5 * 60 * 1000) return;
+
+  await pgQuery(`
+    create table if not exists test_submissions (
+      id text primary key,
+      test_id text not null,
+      person_id text not null,
+      answers jsonb,
+      text_answers jsonb,
+      submitted_at timestamptz not null,
+      raw_json jsonb
+    )
+  `);
+  await pgQuery("create index if not exists idx_test_submissions_test_person on test_submissions(test_id, person_id, submitted_at desc)");
+  await pgQuery(`
+    create table if not exists test_sessions (
+      id text primary key,
+      test_id text not null,
+      person_id text not null,
+      status text not null,
+      started_at timestamptz not null,
+      updated_at timestamptz not null,
+      submitted_at timestamptz,
+      raw_json jsonb
+    )
+  `);
+  await pgQuery("create unique index if not exists idx_test_sessions_test_person_unique on test_sessions(test_id, person_id)");
+  await pgQuery("create index if not exists idx_test_sessions_test_status on test_sessions(test_id, status)");
+  globalThis.__fwfTestSubmissionSchemaReady__ = { checkedAt: Date.now() };
 }
 
 function normalizeEmail(email: string) {
@@ -1432,10 +1536,27 @@ function mapDbTest(record: DbTest): TestRecord {
     title: record.title,
     description: record.description,
     questions: record.questions ?? [],
+    quizQuestions: record.quizQuestions,
     durationMinutes: record.durationMinutes,
+    timePerQuestionSeconds: record.timePerQuestionSeconds,
+    sourceFileName: record.sourceFileName,
+    targetRoles: record.targetRoles,
     createdByPersonId: record.createdByPersonId,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
+  };
+}
+
+function mapDbTestSubmission(record: DbTestSubmission, person?: { id?: string; _id?: string; name?: string; role?: string }): TestSubmissionRecord {
+  return {
+    id: record._id,
+    testId: record.testId,
+    personId: record.personId,
+    personName: person?.name,
+    personRole: person?.role,
+    answers: record.answers ?? [],
+    textAnswers: record.textAnswers ?? [],
+    submittedAt: record.submittedAt,
   };
 }
 
@@ -1605,7 +1726,9 @@ function buildPersonRolesMap(rows: Array<Record<string, unknown>>) {
 const storeBranchNameById = new Map(STORE_BRANCHES.map((branch) => [branch.id, branch.name]));
 
 function getStoreBranchNames(storeBranchIds: number[] | undefined) {
-  return (storeBranchIds ?? []).map((branchId) => storeBranchNameById.get(branchId) ?? `Cửa hàng ${branchId}`);
+  return (storeBranchIds ?? [])
+    .map((branchId) => storeBranchNameById.get(branchId))
+    .filter((name): name is string => Boolean(name));
 }
 
 function getTechnicianSupervisorProfile(
@@ -1874,15 +1997,44 @@ function mapPgScheduleRow(row: Record<string, unknown>): DbSchedule {
 }
 
 function mapPgTestRow(row: Record<string, unknown>): DbTest {
+  const rawJson = row.raw_json && typeof row.raw_json === "object" ? row.raw_json as Partial<DbTest> : {};
   return {
     _id: String(row.id),
     title: String(row.title ?? ""),
     description: String(row.description ?? ""),
     questions: Array.isArray(row.questions) ? (row.questions as string[]) : [],
+    quizQuestions: Array.isArray(rawJson.quizQuestions) ? (rawJson.quizQuestions as QuizQuestion[]) : undefined,
     durationMinutes: Number(row.duration_minutes ?? 0),
+    timePerQuestionSeconds: typeof rawJson.timePerQuestionSeconds === "number" ? rawJson.timePerQuestionSeconds : undefined,
+    sourceFileName: typeof rawJson.sourceFileName === "string" ? rawJson.sourceFileName : undefined,
+    targetRoles: normalizeTestTargetRoles(rawJson.targetRoles),
     createdByPersonId: String(row.created_by_person_id ?? ""),
     createdAt: toIsoStringOrUndefined(row.created_at) ?? new Date().toISOString(),
     updatedAt: toIsoStringOrUndefined(row.updated_at) ?? new Date().toISOString(),
+  };
+}
+
+function mapPgTestSubmissionRow(row: Record<string, unknown>): DbTestSubmission {
+  return {
+    _id: String(row.id),
+    testId: String(row.test_id ?? ""),
+    personId: String(row.person_id ?? ""),
+    answers: Array.isArray(row.answers) ? (row.answers as number[]) : [],
+    textAnswers: Array.isArray(row.text_answers) ? (row.text_answers as string[]) : [],
+    submittedAt: toIsoStringOrUndefined(row.submitted_at) ?? new Date().toISOString(),
+  };
+}
+
+function mapPgTestSessionRow(row: Record<string, unknown>): DbTestSession {
+  const rawStatus = String(row.status ?? "in_progress");
+  return {
+    _id: String(row.id),
+    testId: String(row.test_id ?? ""),
+    personId: String(row.person_id ?? ""),
+    status: rawStatus === "submitted" ? "submitted" : "in_progress",
+    startedAt: toIsoStringOrUndefined(row.started_at) ?? new Date().toISOString(),
+    updatedAt: toIsoStringOrUndefined(row.updated_at) ?? new Date().toISOString(),
+    submittedAt: toIsoStringOrUndefined(row.submitted_at),
   };
 }
 
@@ -2050,7 +2202,6 @@ export async function getDocumentRealtimeAudience(documentId: string) {
         const person = personById.get(personId);
         if (!person) return false;
         if (isAdminLikeRole(user.role)) return true;
-        if (ownerTeam && person.team !== ownerTeam) return false;
         const isLeader = user.role === "leader";
         const isVanHanhLeader = isLeader && person.team === "product";
         if (ownerIsLeaderCreator) {
@@ -2060,6 +2211,7 @@ export async function getDocumentRealtimeAudience(documentId: string) {
         if (visibility === "team") return person.team === ownerTeam || document.ownerId === person.id;
         if (visibility === "office") return person.team !== "store";
         if (visibility === "store") return person.team === "store" || isVanHanhLeader;
+        if (ownerTeam && person.team !== ownerTeam) return false;
         return document.ownerId === person.id || isLeader || visibleToPersonIds.includes(person.id);
       })
       .map((user) => user.personId as string);
@@ -2108,7 +2260,6 @@ export async function getDocumentRealtimeAudience(documentId: string) {
       const person = personById.get(personId);
       if (!person) return false;
       if (isAdminLikeRole(user.role)) return true;
-      if (ownerTeam && person.team !== ownerTeam) return false;
 
       const isLeader = user.role === "leader";
       const isVanHanhLeader = isLeader && person.team === "product";
@@ -2132,6 +2283,7 @@ export async function getDocumentRealtimeAudience(documentId: string) {
       if (visibility === "store") {
         return person.team === "store" || isVanHanhLeader;
       }
+      if (ownerTeam && person.team !== ownerTeam) return false;
       return document.ownerId === person.id || isLeader || visibleToPersonIds.includes(person.id);
     })
     .map((user) => user.personId as string);
@@ -2302,7 +2454,7 @@ async function getSessionActor(sessionUserId?: string | null): Promise<SessionAc
         .map((candidate) => [candidate.personId as string, candidate])
     );
     const managedPersonIds = getManagedPersonIdsByHierarchy(user, actorPerson, people, userByPersonId);
-    const teamMembers = people.filter((candidate) => managedPersonIds.has(candidate.id) || adminVisiblePersonIds.has(candidate.id));
+    const teamMembers = people.filter((candidate) => managedPersonIds.has(candidate.id) || (isAdmin && adminVisiblePersonIds.has(candidate.id)));
 
     return { user, person: actorPerson, teamMembers, isLeader, isAdmin };
   }
@@ -2363,7 +2515,7 @@ async function getSessionActor(sessionUserId?: string | null): Promise<SessionAc
       .map((candidate) => [candidate.personId as string, candidate])
   );
   const managedPersonIds = getManagedPersonIdsByHierarchy(user, actorPerson, people, userByPersonId);
-  const teamMembers = people.filter((candidate) => managedPersonIds.has(candidate.id) || adminVisiblePersonIds.has(candidate.id));
+  const teamMembers = people.filter((candidate) => managedPersonIds.has(candidate.id) || (isAdmin && adminVisiblePersonIds.has(candidate.id)));
 
   return {
     user,
@@ -2402,6 +2554,30 @@ function canManageTests(actor: SessionActor) {
   if (actor.isAdmin) return true;
   if (actor.user.role === "leader" && actor.user.department === "Vận hành") return true;
   return actor.user.role === "store_trainer" && actor.user.department === "Cửa hàng";
+}
+
+function canViewTests(actor: SessionActor) {
+  return Boolean(actor.user);
+}
+
+function normalizeTestTargetRoles(value: unknown): UserRole[] {
+  if (!Array.isArray(value)) return [];
+  const allowedRoles = new Set<UserRole>(["store_manager", "store_lead", "store_technician"]);
+  const normalizedRoles = value
+    .map((role) => normalizeUserRole(String(role ?? "employee") as StoredUserRole))
+    .filter((role): role is UserRole => allowedRoles.has(role));
+  return Array.from(new Set(normalizedRoles));
+}
+
+function canActorViewTest(actor: SessionActor, test: DbTest) {
+  if (canManageTests(actor)) return true;
+  return Boolean(test.targetRoles?.includes(actor.user.role));
+}
+
+function personMatchesTestTargetRoles(person: { role?: string }, targetRoles?: UserRole[]) {
+  if (!targetRoles || targetRoles.length === 0) return true;
+  const mappedRole = mapStoreDisplayRoleToAuthRole(person.role ?? "");
+  return mappedRole ? targetRoles.includes(mappedRole) : false;
 }
 
 function canManageLearningContent(actor: SessionActor) {
@@ -2469,10 +2645,8 @@ function canPersonAccessDocument(
     return true;
   }
 
-  if (ownerTeam && person.team !== ownerTeam) {
-    return false;
-  }
-
+  // Cross-team audiences must be evaluated before the owner-team gate.
+  // Otherwise admin/office owners creating visibility=store would match zero store staff.
   if (document.visibility === "specific") {
     return (document.visibleToPersonIds ?? []).includes(person.id);
   }
@@ -2481,6 +2655,10 @@ function canPersonAccessDocument(
   }
   if (document.visibility === "office") {
     return !isStorePerson(person);
+  }
+
+  if (ownerTeam && person.team !== ownerTeam) {
+    return false;
   }
   if (!ownerTeam) return true;
   return person.team === ownerTeam;
@@ -5415,13 +5593,16 @@ export async function getTestsData(sessionUserId: string | null | undefined) {
     throw new Error("Unauthorized");
   }
 
-  if (!canManageTests(actor)) {
+  if (!canViewTests(actor)) {
     throw new Error("Forbidden");
   }
 
   if (shouldUseSupabasePhaseA()) {
     const recordsRes = await pgQuery("select * from tests order by created_at desc nulls last");
-    return recordsRes.rows.map((row) => mapDbTest(mapPgTestRow(row)));
+    return recordsRes.rows
+      .map((row) => mapPgTestRow(row))
+      .filter((test) => canActorViewTest(actor, test))
+      .map(mapDbTest);
   }
 
   const db = await getMongoDb();
@@ -5430,12 +5611,44 @@ export async function getTestsData(sessionUserId: string | null | undefined) {
     .find({}, { sort: { createdAt: -1 } })
     .toArray();
 
-  return records.map(mapDbTest);
+  return records.filter((test) => canActorViewTest(actor, test)).map(mapDbTest);
+}
+
+export async function getMyTestSubmissionsData(sessionUserId: string | null | undefined) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canViewTests(actor)) throw new Error("Forbidden");
+
+  if (canManageTests(actor)) return [];
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    const submissionRes = await pgQuery(
+      "select * from test_submissions where person_id = $1 order by submitted_at desc",
+      [actor.person.id]
+    );
+    return submissionRes.rows.map((row) => mapDbTestSubmission(mapPgTestSubmissionRow(row), actor.person));
+  }
+
+  const db = await getMongoDb();
+  const submissions = await db.collection<DbTestSubmission>("test_submissions")
+    .find({ personId: actor.person.id }, { sort: { submittedAt: -1 } })
+    .toArray();
+  return submissions.map((submission) => mapDbTestSubmission(submission, actor.person));
 }
 
 export async function createTestRecord(
   sessionUserId: string | null | undefined,
-  input: { title: string; description?: string; questions: string[]; durationMinutes: number }
+  input: {
+    title: string;
+    description?: string;
+    questions: string[];
+    quizQuestions?: QuizQuestion[];
+    durationMinutes: number;
+    timePerQuestionSeconds?: number;
+    sourceFileName?: string;
+    targetRoles?: UserRole[];
+  }
 ) {
   const actor = await getSessionActor(sessionUserId);
   if (!actor) {
@@ -5450,6 +5663,16 @@ export async function createTestRecord(
   const normalizedQuestions = (input.questions ?? [])
     .map((question) => question.trim())
     .filter((question) => question.length > 0);
+  const normalizedQuizQuestions = (input.quizQuestions ?? [])
+    .map((question) => ({
+      text: question.text?.trim() ?? "",
+      options: Array.isArray(question.options)
+        ? question.options.slice(0, 4).map((option) => option.trim())
+        : [],
+      correctIndex: Number.isFinite(question.correctIndex) ? Math.max(0, Math.min(3, Math.floor(question.correctIndex ?? 0))) : 0,
+      explanation: question.explanation?.trim() ?? "",
+    }))
+    .filter((question) => question.text.length > 0 && question.options.length === 4 && question.options.every((option) => option.length > 0));
 
   if (!normalizedTitle) {
     throw new Error("Tiêu đề bài kiểm tra là bắt buộc.");
@@ -5459,9 +5682,19 @@ export async function createTestRecord(
     throw new Error("Cần ít nhất 1 câu hỏi.");
   }
 
-  const durationMinutes = Number.isFinite(input.durationMinutes)
+  const timePerQuestionSeconds = Number.isFinite(input.timePerQuestionSeconds)
+    ? Math.max(5, Math.floor(input.timePerQuestionSeconds ?? 60))
+    : undefined;
+  const calculatedDurationMinutes = timePerQuestionSeconds
+    ? Math.max(1, Math.ceil((normalizedQuestions.length * timePerQuestionSeconds) / 60))
+    : undefined;
+  const durationMinutes = calculatedDurationMinutes ?? (Number.isFinite(input.durationMinutes)
     ? Math.max(5, Math.floor(input.durationMinutes))
-    : 30;
+    : 30);
+  const targetRoles = normalizeTestTargetRoles(input.targetRoles);
+  if (targetRoles.length === 0) {
+    throw new Error("Cần chọn ít nhất 1 role tham gia làm bài.");
+  }
 
   const now = new Date().toISOString();
   const document: DbTest = {
@@ -5469,7 +5702,11 @@ export async function createTestRecord(
     title: normalizedTitle,
     description: input.description?.trim() ?? "",
     questions: normalizedQuestions,
+    quizQuestions: normalizedQuizQuestions.length > 0 ? normalizedQuizQuestions : undefined,
     durationMinutes,
+    timePerQuestionSeconds,
+    sourceFileName: input.sourceFileName?.trim() || undefined,
+    targetRoles,
     createdByPersonId: actor.person.id,
     createdAt: now,
     updatedAt: now
@@ -5497,6 +5734,379 @@ export async function createTestRecord(
   const db = await getMongoDb();
   await db.collection<DbTest>("tests").insertOne(document);
   return mapDbTest(document);
+}
+
+export async function updateTestRecord(
+  sessionUserId: string | null | undefined,
+  testId: string,
+  input: {
+    title?: string;
+    description?: string;
+    questions?: string[];
+    quizQuestions?: QuizQuestion[];
+    durationMinutes?: number;
+    timePerQuestionSeconds?: number;
+    sourceFileName?: string;
+    targetRoles?: UserRole[];
+  }
+) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canManageTests(actor)) throw new Error("Forbidden");
+
+  let existing: DbTest | null;
+  if (shouldUseSupabasePhaseA()) {
+    const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
+    existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
+  } else {
+    existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
+  }
+  if (!existing) throw new Error("Không tìm thấy bài thi.");
+
+  const normalizedQuestions = (input.questions ?? existing.questions ?? [])
+    .map((question) => question.trim())
+    .filter((question) => question.length > 0);
+  if (normalizedQuestions.length === 0) throw new Error("Cần ít nhất 1 câu hỏi.");
+
+  const normalizedQuizQuestions = (input.quizQuestions ?? existing.quizQuestions ?? [])
+    .map((question) => ({
+      text: question.text?.trim() ?? "",
+      options: Array.isArray(question.options) ? question.options.slice(0, 4).map((option) => option.trim()) : [],
+      correctIndex: Number.isFinite(question.correctIndex) ? Math.max(0, Math.min(3, Math.floor(question.correctIndex ?? 0))) : 0,
+      explanation: question.explanation?.trim() ?? "",
+    }))
+    .filter((question) => question.text.length > 0 && question.options.length === 4 && question.options.every((option) => option.length > 0));
+
+  const timePerQuestionSeconds = Number.isFinite(input.timePerQuestionSeconds)
+    ? Math.max(5, Math.floor(input.timePerQuestionSeconds ?? 60))
+    : existing.timePerQuestionSeconds;
+  const durationMinutes = timePerQuestionSeconds
+    ? Math.max(1, Math.ceil((normalizedQuestions.length * timePerQuestionSeconds) / 60))
+    : Number.isFinite(input.durationMinutes)
+      ? Math.max(1, Math.floor(input.durationMinutes ?? existing.durationMinutes))
+      : existing.durationMinutes;
+  const targetRoles = input.targetRoles !== undefined
+    ? normalizeTestTargetRoles(input.targetRoles)
+    : existing.targetRoles;
+  if (!targetRoles || targetRoles.length === 0) {
+    throw new Error("Cần chọn ít nhất 1 role tham gia làm bài.");
+  }
+
+  const updated: DbTest = {
+    ...existing,
+    title: input.title?.trim() || existing.title,
+    description: input.description !== undefined ? input.description.trim() : existing.description,
+    questions: normalizedQuestions,
+    quizQuestions: normalizedQuizQuestions.length > 0 ? normalizedQuizQuestions : undefined,
+    durationMinutes,
+    timePerQuestionSeconds,
+    sourceFileName: input.sourceFileName?.trim() || existing.sourceFileName,
+    targetRoles,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (shouldUseSupabasePhaseA()) {
+    await pgQuery(
+      `update tests set title=$2,description=$3,questions=$4::jsonb,duration_minutes=$5,updated_at=$6::timestamptz,raw_json=$7::jsonb where id=$1`,
+      [testId, updated.title, updated.description, JSON.stringify(updated.questions), updated.durationMinutes, updated.updatedAt, JSON.stringify(updated)]
+    );
+    return mapDbTest(updated);
+  }
+
+  const db = await getMongoDb();
+  await db.collection<DbTest>("tests").updateOne({ _id: testId }, { $set: updated });
+  return mapDbTest(updated);
+}
+
+export async function deleteTestRecord(sessionUserId: string | null | undefined, testId: string) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canManageTests(actor)) throw new Error("Forbidden");
+
+  let existing: DbTest | null;
+  if (shouldUseSupabasePhaseA()) {
+    const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
+    existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
+  } else {
+    existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
+  }
+  if (!existing) throw new Error("Không tìm thấy bài thi.");
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    await Promise.all([
+      pgQuery("delete from test_submissions where test_id = $1", [testId]),
+      pgQuery("delete from test_sessions where test_id = $1", [testId]),
+      pgQuery("delete from tests where id = $1", [testId]),
+    ]);
+    return true;
+  }
+
+  const db = await getMongoDb();
+  await Promise.all([
+    db.collection<DbTestSubmission>("test_submissions").deleteMany({ testId }),
+    db.collection<DbTestSession>("test_sessions").deleteMany({ testId }),
+    db.collection<DbTest>("tests").deleteOne({ _id: testId }),
+  ]);
+  return true;
+}
+
+export async function submitTestRecord(
+  sessionUserId: string | null | undefined,
+  testId: string,
+  input: { answers?: number[]; textAnswers?: string[] }
+) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (canManageTests(actor)) throw new Error("Forbidden");
+
+  let existing: DbTest | null;
+  if (shouldUseSupabasePhaseA()) {
+    const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
+    existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
+  } else {
+    existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
+  }
+  if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
+
+  const now = new Date().toISOString();
+  const submission: DbTestSubmission = {
+    _id: `tsub_${Date.now()}`,
+    testId,
+    personId: actor.person.id,
+    answers: Array.isArray(input.answers) ? input.answers.map((answer) => Math.floor(Number(answer))).filter(Number.isFinite) : [],
+    textAnswers: Array.isArray(input.textAnswers) ? input.textAnswers.map((answer) => answer.trim()) : [],
+    submittedAt: now,
+  };
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    await pgQuery(
+      `insert into test_submissions (id,test_id,person_id,answers,text_answers,submitted_at,raw_json)
+       values ($1,$2,$3,$4::jsonb,$5::jsonb,$6::timestamptz,$7::jsonb)`,
+      [
+        submission._id,
+        submission.testId,
+        submission.personId,
+        JSON.stringify(submission.answers),
+        JSON.stringify(submission.textAnswers),
+        submission.submittedAt,
+        JSON.stringify(submission),
+      ]
+    );
+    const session: DbTestSession = {
+      _id: `tsess_${testId}_${actor.person.id}`,
+      testId,
+      personId: actor.person.id,
+      status: "submitted",
+      startedAt: now,
+      updatedAt: now,
+      submittedAt: now,
+    };
+    await pgQuery(
+      `insert into test_sessions (id,test_id,person_id,status,started_at,updated_at,submitted_at,raw_json)
+       values ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::timestamptz,$8::jsonb)
+       on conflict (test_id, person_id) do update set
+         status = excluded.status,
+         updated_at = excluded.updated_at,
+         submitted_at = excluded.submitted_at,
+         raw_json = excluded.raw_json`,
+      [
+        session._id,
+        session.testId,
+        session.personId,
+        session.status,
+        session.startedAt,
+        session.updatedAt,
+        session.submittedAt,
+        JSON.stringify(session),
+      ]
+    );
+    return mapDbTestSubmission(submission, actor.person);
+  }
+
+  const db = await getMongoDb();
+  await db.collection<DbTestSubmission>("test_submissions").insertOne(submission);
+  await db.collection<DbTestSession>("test_sessions").updateOne(
+    { testId, personId: actor.person.id },
+    {
+      $set: {
+        status: "submitted",
+        updatedAt: now,
+        submittedAt: now,
+      },
+      $setOnInsert: {
+        _id: `tsess_${testId}_${actor.person.id}`,
+        testId,
+        personId: actor.person.id,
+        startedAt: now,
+      },
+    },
+    { upsert: true }
+  );
+  return mapDbTestSubmission(submission, actor.person);
+}
+
+export async function startTestRecord(sessionUserId: string | null | undefined, testId: string) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (canManageTests(actor)) throw new Error("Forbidden");
+
+  let existing: DbTest | null;
+  if (shouldUseSupabasePhaseA()) {
+    const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
+    existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
+  } else {
+    existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
+  }
+  if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
+
+  const now = new Date().toISOString();
+  const session: DbTestSession = {
+    _id: `tsess_${testId}_${actor.person.id}`,
+    testId,
+    personId: actor.person.id,
+    status: "in_progress",
+    startedAt: now,
+    updatedAt: now,
+  };
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    await pgQuery(
+      `insert into test_sessions (id,test_id,person_id,status,started_at,updated_at,raw_json)
+       values ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb)
+       on conflict (test_id, person_id) do update set
+         updated_at = excluded.updated_at,
+         raw_json = case
+           when test_sessions.status = 'submitted' then test_sessions.raw_json
+           else excluded.raw_json
+         end,
+         status = case
+           when test_sessions.status = 'submitted' then test_sessions.status
+           else excluded.status
+         end`,
+      [
+        session._id,
+        session.testId,
+        session.personId,
+        session.status,
+        session.startedAt,
+        session.updatedAt,
+        JSON.stringify(session),
+      ]
+    );
+    return { ok: true };
+  }
+
+  const db = await getMongoDb();
+  const current = await db.collection<DbTestSession>("test_sessions").findOne({ testId, personId: actor.person.id });
+  if (current?.status === "submitted") return { ok: true };
+  await db.collection<DbTestSession>("test_sessions").updateOne(
+    { testId, personId: actor.person.id },
+    {
+      $set: {
+        status: "in_progress",
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        _id: session._id,
+        testId,
+        personId: actor.person.id,
+        startedAt: now,
+      },
+    },
+    { upsert: true }
+  );
+  return { ok: true };
+}
+
+export async function getTestProgressData(sessionUserId: string | null | undefined, testId: string) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canManageTests(actor)) throw new Error("Forbidden");
+
+  let existing: DbTest | null;
+  if (shouldUseSupabasePhaseA()) {
+    const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
+    existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
+  } else {
+    existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
+  }
+  if (!existing) throw new Error("Không tìm thấy bài thi.");
+
+  const targetPeople = actor.teamMembers
+    .filter((person) => person.id !== actor.person.id)
+    .filter(isEmployeePerson)
+    .filter((person) => personMatchesTestTargetRoles(person, existing.targetRoles))
+    .sort((a, b) => a.name.localeCompare(b.name, "vi"));
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    const [submissionRes, sessionRes, peopleRes] = await Promise.all([
+      pgQuery("select * from test_submissions where test_id = $1 order by submitted_at desc", [testId]),
+      pgQuery("select * from test_sessions where test_id = $1", [testId]),
+      pgQuery("select id,name,role from people"),
+    ]);
+    const peopleById = new Map(peopleRes.rows.map((row) => [String(row.id), {
+      _id: String(row.id),
+      name: String(row.name ?? ""),
+      role: String(row.role ?? ""),
+    }]));
+    const submissions = submissionRes.rows.map((row) => {
+      const submission = mapPgTestSubmissionRow(row);
+      return mapDbTestSubmission(submission, peopleById.get(submission.personId));
+    });
+    const latestSubmissionByPersonId = new Map<string, TestSubmissionRecord>();
+    for (const submission of submissions) {
+      if (!latestSubmissionByPersonId.has(submission.personId)) latestSubmissionByPersonId.set(submission.personId, submission);
+    }
+    const sessionByPersonId = new Map<string, DbTestSession>();
+    for (const row of sessionRes.rows) {
+      const session = mapPgTestSessionRow(row);
+      sessionByPersonId.set(session.personId, session);
+    }
+    const statuses: TestProgressRow[] = targetPeople.map((person) => {
+      const submission = latestSubmissionByPersonId.get(person.id);
+      const session = sessionByPersonId.get(person.id);
+      return {
+        personId: person.id,
+        personName: person.name,
+        personRole: person.role,
+        status: submission ? "submitted" : session?.status === "in_progress" ? "in_progress" : "not_submitted",
+        startedAt: session?.startedAt,
+        submittedAt: submission?.submittedAt,
+      };
+    });
+    return { submissions, statuses };
+  }
+
+  const db = await getMongoDb();
+  const [submissions, sessions, people] = await Promise.all([
+    db.collection<DbTestSubmission>("test_submissions").find({ testId }, { sort: { submittedAt: -1 } }).toArray(),
+    db.collection<DbTestSession>("test_sessions").find({ testId }).toArray(),
+    db.collection<DbPerson>("people").find({}).toArray(),
+  ]);
+  const peopleById = new Map(people.map((person) => [person._id, person]));
+  const mappedSubmissions = submissions.map((submission) => mapDbTestSubmission(submission, peopleById.get(submission.personId)));
+  const latestSubmissionByPersonId = new Map<string, TestSubmissionRecord>();
+  for (const submission of mappedSubmissions) {
+    if (!latestSubmissionByPersonId.has(submission.personId)) latestSubmissionByPersonId.set(submission.personId, submission);
+  }
+  const sessionByPersonId = new Map(sessions.map((session) => [session.personId, session]));
+  const statuses: TestProgressRow[] = targetPeople.map((person) => {
+    const submission = latestSubmissionByPersonId.get(person.id);
+    const session = sessionByPersonId.get(person.id);
+    return {
+      personId: person.id,
+      personName: person.name,
+      personRole: person.role,
+      status: submission ? "submitted" : session?.status === "in_progress" ? "in_progress" : "not_submitted",
+      startedAt: session?.startedAt,
+      submittedAt: submission?.submittedAt,
+    };
+  });
+  return { submissions: mappedSubmissions, statuses };
 }
 
 export async function getDocumentsData(sessionUserId?: string | null, folderId?: string | null) {
@@ -5597,7 +6207,11 @@ export async function createDocumentRecord(
 ) {
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
-  if (!canCreateDocuments(actor)) {
+  const canUploadStoreVideo =
+    actor.user.department === "Cửa hàng" &&
+    isStoreRole(actor.user.role) &&
+    input.type === "mp4";
+  if (!canCreateDocuments(actor) && !canUploadStoreVideo) {
     throw new Error(
       `Forbidden: role=${actor.user.role}; department=${actor.user.department}; team=${actor.person.team}`
     );
@@ -5613,6 +6227,10 @@ export async function createDocumentRecord(
       const departmentPersonIdSet = new Set(departmentPeople.rows.map((row) => String(row.id)));
       normalizedVisibleToPersonIds = normalizedVisibleToPersonIds.filter((personId) => departmentPersonIdSet.has(personId));
       normalizedVisibility = normalizedVisibleToPersonIds.length > 0 ? "specific" : "team";
+    }
+    if (canUploadStoreVideo) {
+      normalizedVisibleToPersonIds = [];
+      normalizedVisibility = "team";
     }
 
     const now = new Date().toISOString();
@@ -5669,6 +6287,10 @@ export async function createDocumentRecord(
     const departmentPersonIdSet = new Set(departmentPeople.map((person) => person._id));
     normalizedVisibleToPersonIds = normalizedVisibleToPersonIds.filter((personId) => departmentPersonIdSet.has(personId));
     normalizedVisibility = normalizedVisibleToPersonIds.length > 0 ? "specific" : "team";
+  }
+  if (canUploadStoreVideo) {
+    normalizedVisibleToPersonIds = [];
+    normalizedVisibility = "team";
   }
 
   const now = new Date().toISOString();
@@ -7663,7 +8285,7 @@ export async function getTeamLearningStatusesForDocument(
     );
     const visibleTeamMemberIds = new Set(actor.teamMembers.map((member) => member.id));
     const targetPeople = mappedPeople.filter((person) => {
-      if (!visibleTeamMemberIds.has(person.id)) return false;
+      if (!actor.isAdmin && !visibleTeamMemberIds.has(person.id)) return false;
       if (!isEmployeePerson(person)) return false;
       if (actor.user.role === "store_lead" && person.id === actor.person.id) return false;
       return canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId);
@@ -7746,7 +8368,7 @@ export async function getTeamLearningStatusesForDocument(
   }
   const visibleTeamMemberIds = new Set(actor.teamMembers.map((member) => member.id));
   const targetPeople = mappedPeople.filter((person) => {
-    if (!visibleTeamMemberIds.has(person.id)) return false;
+    if (!actor.isAdmin && !visibleTeamMemberIds.has(person.id)) return false;
     if (!isEmployeePerson(person)) return false;
     if (actor.user.role === "store_lead" && person.id === actor.person.id) return false;
     return canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId);
@@ -7839,6 +8461,36 @@ export type QuizReportRow = {
   highestScore: number;
   lastAttemptAt?: string;
   attempts: QuizReportAttempt[];
+};
+
+export type TestReportAttempt = {
+  testId: string;
+  testTitle: string;
+  score: number;
+  correctAnswers: number;
+  totalQuestions: number;
+  attemptRound: number;
+  retakeCount: number;
+  submittedAt: string;
+};
+
+export type TestReportRow = {
+  personId: string;
+  personName: string;
+  teamId: string;
+  teamName: string;
+  testTotal: number;
+  testSubmitted: number;
+  testInProgress: number;
+  testNotStarted: number;
+  testProgressPercent: number;
+  totalAttempts: number;
+  retakeCount: number;
+  averageScore: number;
+  highestScore: number;
+  passCount: number;
+  lastAttemptAt?: string;
+  attempts: TestReportAttempt[];
 };
 
 export async function getQuizReport(
@@ -8081,6 +8733,168 @@ export async function getQuizReport(
   }
 
   rows.sort((a, b) => b.learningProgressPercent - a.learningProgressPercent || b.averageScore - a.averageScore);
+  return rows;
+}
+
+function getTestSubmissionScore(test: DbTest, submission: DbTestSubmission) {
+  const quizQuestions = test.quizQuestions ?? [];
+  const totalQuestions = quizQuestions.length || test.questions.length || 0;
+  if (quizQuestions.length === 0 || totalQuestions === 0) {
+    return { score: 0, correctAnswers: 0, totalQuestions };
+  }
+
+  const correctAnswers = quizQuestions.reduce((count, question, index) => {
+    return count + (submission.answers?.[index] === question.correctIndex ? 1 : 0);
+  }, 0);
+
+  return {
+    score: Math.round((correctAnswers / totalQuestions) * 100),
+    correctAnswers,
+    totalQuestions,
+  };
+}
+
+function computeTestAttemptRoundByPersonAndTest(submissions: DbTestSubmission[]) {
+  const grouped = new Map<string, DbTestSubmission[]>();
+  for (const submission of submissions) {
+    const key = `${submission.personId}:${submission.testId}`;
+    const list = grouped.get(key) ?? [];
+    list.push(submission);
+    grouped.set(key, list);
+  }
+
+  const rounds = new Map<string, number>();
+  for (const list of grouped.values()) {
+    list
+      .slice()
+      .sort((a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime())
+      .forEach((submission, index) => rounds.set(submission._id, index + 1));
+  }
+  return rounds;
+}
+
+export async function getTestReport(
+  sessionUserId: string | null | undefined
+): Promise<TestReportRow[]> {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canViewTests(actor)) throw new Error("Forbidden");
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    const [testsRes, submissionRes, sessionRes, peopleRes, teamsRes] = await Promise.all([
+      pgQuery("select * from tests order by created_at desc nulls last"),
+      pgQuery("select * from test_submissions order by submitted_at desc nulls last"),
+      pgQuery("select * from test_sessions"),
+      pgQuery("select * from people"),
+      pgQuery("select id,name from company_teams"),
+    ]);
+    const tests = testsRes.rows.map((row) => mapPgTestRow(row));
+    const submissions = submissionRes.rows.map((row) => mapPgTestSubmissionRow(row));
+    const sessions = sessionRes.rows.map((row) => mapPgTestSessionRow(row));
+    const mappedPeople = peopleRes.rows.map((row) => mapDbPerson(mapPgPersonRow(row)));
+    const teamNameMap = new Map(teamsRes.rows.map((team) => [String(team.id), String(team.name)]));
+    const targetPeople = actor.isAdmin ? mappedPeople : actor.isLeader ? actor.teamMembers : [actor.person];
+    return buildTestReportRows(targetPeople, tests, submissions, sessions, teamNameMap);
+  }
+
+  const db = await getMongoDb();
+  const [tests, submissions, sessions, people, companyTeams] = await Promise.all([
+    db.collection<DbTest>("tests").find({}, { sort: { createdAt: -1 } }).toArray(),
+    db.collection<DbTestSubmission>("test_submissions").find({}, { sort: { submittedAt: -1 } }).toArray(),
+    db.collection<DbTestSession>("test_sessions").find({}).toArray(),
+    db.collection<DbPerson>("people").find({}).toArray(),
+    db.collection<DbCompanyTeam>("company_teams").find({}).toArray(),
+  ]);
+  const mappedPeople = people.map(mapDbPerson);
+  const teamNameMap = new Map(companyTeams.map((team) => [team._id, team.name]));
+  const targetPeople = actor.isAdmin ? mappedPeople : actor.isLeader ? actor.teamMembers : [actor.person];
+  return buildTestReportRows(targetPeople, tests, submissions, sessions, teamNameMap);
+}
+
+function buildTestReportRows(
+  targetPeople: Person[],
+  tests: DbTest[],
+  submissions: DbTestSubmission[],
+  sessions: DbTestSession[],
+  teamNameMap: Map<string, string>
+): TestReportRow[] {
+  const attemptRounds = computeTestAttemptRoundByPersonAndTest(submissions);
+  const submissionsByPersonId = new Map<string, DbTestSubmission[]>();
+  for (const submission of submissions) {
+    const list = submissionsByPersonId.get(submission.personId) ?? [];
+    list.push(submission);
+    submissionsByPersonId.set(submission.personId, list);
+  }
+  const sessionByPersonAndTest = new Map(sessions.map((session) => [`${session.personId}:${session.testId}`, session]));
+
+  const rows = targetPeople
+    .filter(isEmployeePerson)
+    .map((person) => {
+      const assignedTests = tests.filter((test) => personMatchesTestTargetRoles(person, test.targetRoles));
+      const personSubmissions = submissionsByPersonId.get(person.id) ?? [];
+      const assignedTestIds = new Set(assignedTests.map((test) => test._id));
+      const personAssignedSubmissions = personSubmissions.filter((submission) => assignedTestIds.has(submission.testId));
+      const testById = new Map(assignedTests.map((test) => [test._id, test]));
+      const latestSubmissionByTestId = new Map<string, DbTestSubmission>();
+      for (const submission of personAssignedSubmissions) {
+        if (!latestSubmissionByTestId.has(submission.testId)) latestSubmissionByTestId.set(submission.testId, submission);
+      }
+
+      let testSubmitted = 0;
+      let testInProgress = 0;
+      for (const test of assignedTests) {
+        if (latestSubmissionByTestId.has(test._id)) {
+          testSubmitted++;
+          continue;
+        }
+        const session = sessionByPersonAndTest.get(`${person.id}:${test._id}`);
+        if (session?.status === "in_progress") testInProgress++;
+      }
+      const testTotal = assignedTests.length;
+      const testNotStarted = Math.max(testTotal - testSubmitted - testInProgress, 0);
+      const latestScores = Array.from(latestSubmissionByTestId.values()).map((submission) => {
+        const test = testById.get(submission.testId);
+        return test ? getTestSubmissionScore(test, submission).score : 0;
+      });
+      const passCount = latestScores.filter((score) => score >= 90).length;
+      const attempts: TestReportAttempt[] = personAssignedSubmissions.map((submission) => {
+        const test = testById.get(submission.testId);
+        const result = test ? getTestSubmissionScore(test, submission) : { score: 0, correctAnswers: 0, totalQuestions: 0 };
+        const attemptRound = Math.max(1, attemptRounds.get(submission._id) ?? 1);
+        return {
+          testId: submission.testId,
+          testTitle: test?.title ?? "Bài thi",
+          score: result.score,
+          correctAnswers: result.correctAnswers,
+          totalQuestions: result.totalQuestions,
+          attemptRound,
+          retakeCount: Math.max(0, attemptRound - 1),
+          submittedAt: submission.submittedAt,
+        };
+      });
+
+      return {
+        personId: person.id,
+        personName: person.name,
+        teamId: person.team,
+        teamName: teamNameMap.get(person.team) ?? person.team,
+        testTotal,
+        testSubmitted,
+        testInProgress,
+        testNotStarted,
+        testProgressPercent: testTotal > 0 ? Math.round((testSubmitted / testTotal) * 100) : 0,
+        totalAttempts: personAssignedSubmissions.length,
+        retakeCount: Math.max(0, personAssignedSubmissions.length - latestSubmissionByTestId.size),
+        averageScore: latestScores.length > 0 ? Math.round(latestScores.reduce((sum, score) => sum + score, 0) / latestScores.length) : 0,
+        highestScore: latestScores.length > 0 ? Math.max(...latestScores) : 0,
+        passCount,
+        lastAttemptAt: personAssignedSubmissions[0]?.submittedAt,
+        attempts,
+      };
+    });
+
+  rows.sort((a, b) => b.testProgressPercent - a.testProgressPercent || b.averageScore - a.averageScore || a.personName.localeCompare(b.personName, "vi"));
   return rows;
 }
 

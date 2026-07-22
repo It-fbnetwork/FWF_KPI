@@ -11,6 +11,7 @@ import { YoutubeLikePlayer } from "@/components/youtube-like-player"
 import { toast } from "@/components/ui/use-toast"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent } from "@/components/ui/card"
@@ -18,6 +19,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { documentTypes, formatFileSize, formatDate, type Document, type Folder } from "@/lib/documents"
 import { isAdminLikeRole, type UserAccount } from "@/lib/auth"
+import { STORE_BRANCHES } from "@/lib/store-branches"
 import { useIsMobile } from "@/components/hooks/use-mobile"
 import {
     Search,
@@ -63,6 +65,7 @@ import {
     Maximize2,
     Minimize2,
     FileDown,
+    Upload,
 } from "lucide-react"
 
 type LearningQuizQuestion = {
@@ -70,6 +73,59 @@ type LearningQuizQuestion = {
     options: string[]
     correctIndex?: number
     explanation?: string
+}
+
+type TestRecord = {
+    id: string
+    title: string
+    description: string
+    questions: string[]
+    quizQuestions?: LearningQuizQuestion[]
+    durationMinutes: number
+    timePerQuestionSeconds?: number
+    sourceFileName?: string
+    targetRoles?: string[]
+    createdByPersonId: string
+    createdAt: string
+    updatedAt: string
+}
+
+type TestSubmissionRecord = {
+    id: string
+    testId: string
+    personId: string
+    personName?: string
+    personRole?: string
+    answers: number[]
+    textAnswers: string[]
+    submittedAt: string
+}
+
+type TestProgressRow = {
+    personId: string
+    personName: string
+    personRole?: string
+    status: "submitted" | "in_progress" | "not_submitted"
+    startedAt?: string
+    submittedAt?: string
+}
+
+type TestStatusListDetail = {
+    title: string
+    rows: TestProgressRow[]
+}
+
+type TestResultDetail = {
+    test: TestRecord
+    score: number
+    correctAnswers: number
+    totalQuestions: number
+    answers: number[]
+}
+
+type TestHistoryDialogState = {
+    open: boolean
+    test: TestRecord | null
 }
 
 type LockableScreenOrientation = ScreenOrientation & {
@@ -120,6 +176,80 @@ type QuizAttemptRecord = {
 
 const getQuizRetakeCount = (attempt: Pick<QuizAttemptRecord, "attemptRound" | "retakeCount">) =>
     Math.max(0, attempt.retakeCount ?? ((attempt.attemptRound ?? 1) - 1))
+
+const formatQuestionDuration = (seconds?: number) => {
+    if (!seconds) return ""
+    return `${seconds} giây/câu`
+}
+
+const cleanImportedQuestionLine = (line: string) =>
+    line
+        .replace(/^[\s\-–—•●○]+/, "")
+        .replace(/^\s*(?:câu\s*)?\d+[\).:\-\s]+/i, "")
+        .trim()
+
+const splitImportedExamQuestions = (text: string) => {
+    const normalized = text
+        .replace(/\r/g, "\n")
+        .replace(/\u0000/g, "")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim()
+
+    const lines = normalized
+        .split("\n")
+        .map(cleanImportedQuestionLine)
+        .filter((line) => line.length > 0)
+
+    if (lines.length > 1) return lines
+
+    return (normalized.match(/[^?？]+[?？]?/g) ?? [])
+        .map(cleanImportedQuestionLine)
+        .filter((line) => line.length > 0)
+}
+
+const cleanLegacyDocText = (text: string) =>
+    text
+        .replace(/\u0000/g, " ")
+        .replace(/[^\S\r\n]+/g, " ")
+        .replace(/[^\p{L}\p{N}\p{P}\p{Zs}\r\n]/gu, " ")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim()
+
+const parseImportedMultipleChoiceQuestions = (text: string): QuizCreateQuestion[] => {
+    const blocks = Array.from(text.matchAll(/Câu\s+\d+\s*[.:]\s*([\s\S]*?)(?=\n\s*Câu\s+\d+\s*[.:]|\s*$)/gi))
+    return blocks
+        .map((match) => {
+            const block = (match[1] ?? "").replace(/\r/g, "\n").trim()
+            const answerMatch = block.match(/Đáp\s*án\s*:\s*([A-D])\s*(?:[—-]\s*)?([\s\S]*)$/i)
+            const correctLetter = answerMatch?.[1]?.toUpperCase()
+            const explanation = answerMatch?.[2]?.trim() ?? ""
+            const contentWithoutAnswer = block.replace(/\n?\s*Đáp\s*án\s*:\s*[A-D][\s\S]*$/i, "").trim()
+            const optionMatches = Array.from(contentWithoutAnswer.matchAll(/(?:^|\n)\s*([A-D])\.\s*([\s\S]*?)(?=\n\s*[A-D]\.|\s*$)/g))
+            if (optionMatches.length < 4 || !correctLetter) return null
+
+            const firstOptionIndex = contentWithoutAnswer.search(/(?:^|\n)\s*A\.\s*/)
+            const questionText = cleanImportedQuestionLine(
+                firstOptionIndex >= 0
+                    ? contentWithoutAnswer.slice(0, firstOptionIndex).trim()
+                    : contentWithoutAnswer
+            )
+            const optionMap = new Map(optionMatches.map((option) => [option[1], option[2].replace(/\s+/g, " ").trim()]))
+            const options = ["A", "B", "C", "D"].map((letter) => optionMap.get(letter) ?? "") as [string, string, string, string]
+            const correctIndex = ["A", "B", "C", "D"].indexOf(correctLetter)
+            if (!questionText || options.some((option) => !option) || correctIndex < 0) return null
+            return { text: questionText, options, correctIndex, explanation }
+        })
+        .filter((question): question is QuizCreateQuestion => Boolean(question))
+}
+
+const createBlankExamQuestion = (): QuizCreateQuestion => ({
+    text: "",
+    options: ["", "", "", ""],
+    correctIndex: 0,
+    explanation: "",
+})
 
 type QuizAttemptResetRecord = {
     id: string
@@ -453,6 +583,8 @@ export default function DocumentsPage() {
     const { people, refresh } = useDirectory()
     const { user } = useAuth()
     const isMobile = useIsMobile()
+    const canAccessELearning =
+        user?.department === "Cửa hàng" || user?.role === "admin" || user?.role === "ceo"
     const isLeaderOrAdmin =
         user?.role === "leader" ||
         user?.role === "admin" ||
@@ -463,6 +595,12 @@ export default function DocumentsPage() {
         (user?.department === "Cửa hàng" &&
             (user?.role === "store_manager" || user?.role === "store_lead"))
     const canResetTeamLearning = isAdminLikeRole(user?.role) || user?.role === "store_trainer"
+    const canManageTests =
+        isAdminLikeRole(user?.role) ||
+        (user?.role === "leader" && user?.department === "Vận hành") ||
+        (user?.role === "store_trainer" && user?.department === "Cửa hàng")
+    const canUploadDocuments = isLeaderOrAdmin || user?.department === "Cửa hàng"
+    const isStoreVideoOnlyUploader = !isLeaderOrAdmin && user?.department === "Cửa hàng"
 
     const [searchQuery, setSearchQuery] = useState("")
     const [sortBy, setSortBy] = useState<SortBy>("date")
@@ -507,11 +645,46 @@ export default function DocumentsPage() {
     const [pendingLockIds, setPendingLockIds] = useState<Set<string>>(new Set())
 
     // ── Learning / E-learning state ──────────────────────────────────
-    const [activeTab, setActiveTab] = useState<"all" | "learning">("all")
+    const [activeTab, setActiveTab] = useState<"all" | "learning" | "exams">("all")
     const [quizzes, setQuizzes] = useState<Record<string, LearningQuizRecord | null>>({})
     const [myAttempts, setMyAttempts] = useState<Record<string, QuizAttemptRecord | null>>({})
     const [learningDataLoaded, setLearningDataLoaded] = useState(false)
     const [learningDataLoading, setLearningDataLoading] = useState(false)
+    const [tests, setTests] = useState<TestRecord[]>([])
+    const [testsLoading, setTestsLoading] = useState(false)
+    const [testsDataLoaded, setTestsDataLoaded] = useState(false)
+    const [testTitle, setTestTitle] = useState("")
+    const [testDescription, setTestDescription] = useState("")
+    const [testTimePerQuestionMinutes, setTestTimePerQuestionMinutes] = useState("30")
+    const [testQuestionCount, setTestQuestionCount] = useState("1")
+    const [testSourceFileName, setTestSourceFileName] = useState("")
+    const [testTargetRoles, setTestTargetRoles] = useState<string[]>(["store_technician"])
+    const [isImportingTestFile, setIsImportingTestFile] = useState(false)
+    const [testQuestionsText, setTestQuestionsText] = useState("")
+    const [testQuestionBank, setTestQuestionBank] = useState<QuizCreateQuestion[]>([])
+    const [selectedTestQuestions, setSelectedTestQuestions] = useState<QuizCreateQuestion[]>([createBlankExamQuestion()])
+    const [testAnswers, setTestAnswers] = useState<Record<string, string>>({})
+    const [testChoiceAnswers, setTestChoiceAnswers] = useState<Record<string, number[]>>({})
+    const [submittedTestIds, setSubmittedTestIds] = useState<Set<string>>(new Set())
+    const [startedTestIds, setStartedTestIds] = useState<Set<string>>(new Set())
+    const [takingTestIds, setTakingTestIds] = useState<Set<string>>(new Set())
+    const [testCurrentQuestionById, setTestCurrentQuestionById] = useState<Record<string, number>>({})
+    const [testRemainingSecondsById, setTestRemainingSecondsById] = useState<Record<string, number>>({})
+    const [selectedTestId, setSelectedTestId] = useState<string | null>(null)
+    const [isCreatingTest, setIsCreatingTest] = useState(false)
+    const [editingTestId, setEditingTestId] = useState<string | null>(null)
+    const [testProgressModal, setTestProgressModal] = useState<{
+        open: boolean
+        isLoading: boolean
+        test: TestRecord | null
+        submissions: TestSubmissionRecord[]
+        statuses: TestProgressRow[]
+    }>({ open: false, isLoading: false, test: null, submissions: [], statuses: [] })
+    const [selectedTestStatusListDetail, setSelectedTestStatusListDetail] = useState<TestStatusListDetail | null>(null)
+    const [testStatusListSearch, setTestStatusListSearch] = useState("")
+    const [testResultDetail, setTestResultDetail] = useState<TestResultDetail | null>(null)
+    const [testSubmissionHistory, setTestSubmissionHistory] = useState<Record<string, TestSubmissionRecord[]>>({})
+    const [testHistoryDialog, setTestHistoryDialog] = useState<TestHistoryDialogState>({ open: false, test: null })
 
     const defaultQuizCreate = (): QuizCreateState => ({
         open: false, documentId: "", documentName: "", existingQuizId: null,
@@ -637,9 +810,56 @@ export default function DocumentsPage() {
         ) return "store_technician"
         return normalized
     }, [normalizeRoleValue])
-    const officeSelectablePeople = currentPerson
-        ? people.filter((person) => person.team === currentPerson.team)
-        : []
+    const testTargetRoleOptions = [
+        { value: "store_manager", label: "Quản lí khu vực" },
+        { value: "store_lead", label: "Cửa hàng trưởng" },
+        { value: "store_technician", label: "Kỹ thuật viên" },
+    ]
+    const getTestTargetRoleLabel = useCallback((role: string) => {
+        return testTargetRoleOptions.find((option) => option.value === role)?.label ?? role
+    }, [])
+    const isCeoOrAdmin = user?.role === "ceo" || user?.role === "admin"
+    const officeSelectablePeople = (() => {
+        if (isCeoOrAdmin) {
+            // Admin/CEO: toàn bộ nhân sự văn phòng (mọi phòng ban trừ cửa hàng)
+            return people.filter((person) => person.team !== "store")
+        }
+        if (!currentPerson) return []
+        return people.filter((person) => person.team === currentPerson.team)
+    })()
+    const storeAudiencePeople = isCeoOrAdmin
+        ? people.filter((person) => person.team === "store")
+        : currentPerson?.team === "store"
+            ? people.filter((person) => person.team === "store")
+            : []
+    const parsedTestQuestions = useMemo(
+        () =>
+            selectedTestQuestions
+                .map((item) => item.text.trim())
+                .filter((item) => item.length > 0),
+        [selectedTestQuestions]
+    )
+    const testTimePerQuestionSeconds = useMemo(() => {
+        const seconds = Number(testTimePerQuestionMinutes)
+        return Number.isFinite(seconds) ? Math.max(5, Math.round(seconds)) : 30
+    }, [testTimePerQuestionMinutes])
+    const selectedTestQuestionCount = useMemo(() => {
+        const count = Number(testQuestionCount)
+        return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0
+    }, [testQuestionCount])
+    const displayedTestQuestions = useMemo(() => {
+        const count = Math.max(1, selectedTestQuestionCount)
+        return Array.from({ length: count }, (_, index) => selectedTestQuestions[index] ?? createBlankExamQuestion())
+    }, [selectedTestQuestionCount, selectedTestQuestions])
+    const calculatedTestDurationMinutes = useMemo(
+        () => selectedTestQuestionCount === 0
+            ? 0
+            : Math.max(1, Math.ceil((selectedTestQuestionCount * testTimePerQuestionSeconds) / 60)),
+        [selectedTestQuestionCount, testTimePerQuestionSeconds]
+    )
+    const testTimePerQuestionLabel = useMemo(() => {
+        return `${testTimePerQuestionSeconds} giây/câu`
+    }, [testTimePerQuestionSeconds])
 
     useEffect(() => {
         if (isMobile) setIsLearningSidebarCollapsed(false)
@@ -902,7 +1122,7 @@ export default function DocumentsPage() {
     }, [exitNativeFullscreen, isLandscapeViewport, isLearningFullscreen, isMobile, requestNativeFullscreen, unlockLearningOrientation])
     const officeRoleOptions = useMemo(() => {
         const roles = new Set(officeSelectablePeople.map((person) => person.role))
-        if (currentPerson?.team === "store") {
+        if (currentPerson?.team === "store" || isCeoOrAdmin) {
             roles.add("Quản lí khu vực")
             roles.add("Cửa hàng trưởng")
             roles.add("Kỹ thuật viên")
@@ -922,7 +1142,7 @@ export default function DocumentsPage() {
         })
 
         return ["all", ...orderedRoles]
-    }, [currentPerson?.team, officeSelectablePeople])
+    }, [currentPerson?.team, isCeoOrAdmin, officeSelectablePeople])
     const matchesAnySelectedRole = useCallback(
         (personRole: string, selectedRoles: string[]) => {
             if (selectedRoles.length === 0) return true
@@ -1205,9 +1425,756 @@ export default function DocumentsPage() {
         return payload.document
     }
 
+    const loadTests = async () => {
+        setTestsLoading(true)
+        try {
+            const res = await fetch("/api/tests", { credentials: "include", cache: "no-store" })
+            if (!res.ok) return
+            const payload = (await res.json()) as { tests: TestRecord[]; submissions?: TestSubmissionRecord[] }
+            setTests(payload.tests)
+            const submissionsByTestId: Record<string, TestSubmissionRecord[]> = {}
+            ;(payload.submissions ?? []).forEach((submission) => {
+                submissionsByTestId[submission.testId] = [...(submissionsByTestId[submission.testId] ?? []), submission]
+            })
+            setTestSubmissionHistory(submissionsByTestId)
+            setSubmittedTestIds(new Set((payload.submissions ?? []).map((submission) => submission.testId)))
+            const nextVisibleTests = canManageTests
+                ? payload.tests
+                : payload.tests.filter((test) => Boolean(user?.role && test.targetRoles?.includes(user.role)))
+            setSelectedTestId((prev) => prev && nextVisibleTests.some((test) => test.id === prev) ? prev : (nextVisibleTests[0]?.id ?? null))
+        } catch {
+            // keep the rest of the workspace usable
+        } finally {
+            setTestsDataLoaded(true)
+            setTestsLoading(false)
+        }
+    }
+
+    const handleChangeTestQuestionCount = (value: string) => {
+        const count = Math.max(1, Math.floor(Number(value) || 1))
+        setTestQuestionCount(value)
+        if (testQuestionBank.length > 0) {
+            const resolvedCount = Math.min(count, testQuestionBank.length)
+            const nextQuestions = shuffleIndices(testQuestionBank.length)
+                .slice(0, resolvedCount)
+                .map((index) => ({ ...testQuestionBank[index]!, options: [...testQuestionBank[index]!.options] as [string, string, string, string] }))
+            setTestQuestionCount(String(resolvedCount))
+            setSelectedTestQuestions(nextQuestions)
+            setTestQuestionsText(nextQuestions.map((question) => question.text).join("\n"))
+            return
+        }
+        const nextQuestions = Array.from({ length: count }, (_, index) => selectedTestQuestions[index] ?? createBlankExamQuestion())
+        setSelectedTestQuestions(nextQuestions)
+        setTestQuestionsText(nextQuestions.map((question) => question.text).join("\n"))
+    }
+
+    const handleUpdateTestQuestion = (index: number, value: string) => {
+        setSelectedTestQuestions((prev) => {
+            const next = [...displayedTestQuestions]
+            next[index] = { ...(next[index] ?? createBlankExamQuestion()), text: value }
+            setTestQuestionsText(next.map((question) => question.text).join("\n"))
+            return next
+        })
+    }
+
+    const handleUpdateTestQuestionOption = (questionIndex: number, optionIndex: number, value: string) => {
+        setSelectedTestQuestions(() => {
+            const next = [...displayedTestQuestions]
+            const question = next[questionIndex] ?? createBlankExamQuestion()
+            const options = [...question.options] as [string, string, string, string]
+            options[optionIndex] = value
+            next[questionIndex] = { ...question, options }
+            setTestQuestionsText(next.map((item) => item.text).join("\n"))
+            return next
+        })
+    }
+
+    const handleUpdateTestQuestionExplanation = (questionIndex: number, value: string) => {
+        setSelectedTestQuestions(() => {
+            const next = [...displayedTestQuestions]
+            const question = next[questionIndex] ?? createBlankExamQuestion()
+            next[questionIndex] = { ...question, explanation: value }
+            setTestQuestionsText(next.map((item) => item.text).join("\n"))
+            return next
+        })
+    }
+
+    const handleSetTestQuestionCorrectIndex = (questionIndex: number, optionIndex: number) => {
+        setSelectedTestQuestions(() => {
+            const next = [...displayedTestQuestions]
+            const question = next[questionIndex] ?? createBlankExamQuestion()
+            next[questionIndex] = { ...question, correctIndex: optionIndex }
+            setTestQuestionsText(next.map((item) => item.text).join("\n"))
+            return next
+        })
+    }
+
+    const handleRemoveTestQuestion = (index: number) => {
+        const nextQuestions = displayedTestQuestions.filter((_, lineIndex) => lineIndex !== index)
+        const normalizedQuestions = nextQuestions.length > 0 ? nextQuestions : [createBlankExamQuestion()]
+        setTestQuestionCount(String(normalizedQuestions.length))
+        setSelectedTestQuestions(normalizedQuestions)
+        setTestQuestionsText(normalizedQuestions.map((question) => question.text).join("\n"))
+    }
+
+    const handleAddTestQuestion = () => {
+        const nextQuestions = [...displayedTestQuestions, createBlankExamQuestion()]
+        setTestQuestionCount(String(nextQuestions.length))
+        setSelectedTestQuestions(nextQuestions)
+        setTestQuestionsText(nextQuestions.map((question) => question.text).join("\n"))
+    }
+
+    const buildEditableQuestionsFromTest = (test: TestRecord): QuizCreateQuestion[] =>
+        (test.quizQuestions && test.quizQuestions.length > 0
+            ? test.quizQuestions
+            : test.questions.map((question) => ({
+                text: question,
+                options: ["", "", "", ""],
+                correctIndex: 0,
+                explanation: "",
+            }))
+        ).map((question) => ({
+            text: question.text,
+            options: [
+                question.options[0] ?? "",
+                question.options[1] ?? "",
+                question.options[2] ?? "",
+                question.options[3] ?? "",
+            ],
+            correctIndex: question.correctIndex ?? 0,
+            explanation: question.explanation ?? "",
+        }))
+
+    const handleEditTest = (test: TestRecord) => {
+        const questions = buildEditableQuestionsFromTest(test)
+        setEditingTestId(test.id)
+        setTestTitle(test.title)
+        setTestDescription(test.description ?? "")
+        setTestTimePerQuestionMinutes(String(test.timePerQuestionSeconds ?? 30))
+        setTestQuestionCount(String(Math.max(questions.length, 1)))
+        setTestSourceFileName(test.sourceFileName ?? "")
+        setTestTargetRoles(test.targetRoles && test.targetRoles.length > 0 ? test.targetRoles : ["store_technician"])
+        setTestQuestionBank([])
+        setSelectedTestQuestions(questions.length > 0 ? questions : [createBlankExamQuestion()])
+        setTestQuestionsText(questions.map((question) => question.text).join("\n"))
+        setIsCreatingTest(true)
+    }
+
+    const handleToggleTestTargetRole = (role: string) => {
+        setTestTargetRoles((prev) =>
+            prev.includes(role)
+                ? prev.filter((item) => item !== role)
+                : [...prev, role]
+        )
+    }
+
+    const applyImportedTestQuestions = (questions: QuizCreateQuestion[]) => {
+        const selectedCount = Math.min(Math.max(1, selectedTestQuestionCount), questions.length)
+        const nextQuestions = shuffleIndices(questions.length)
+            .slice(0, selectedCount)
+            .map((index) => ({ ...questions[index]!, options: [...questions[index]!.options] as [string, string, string, string] }))
+        setTestQuestionBank(questions)
+        setSelectedTestQuestions(nextQuestions)
+        setTestQuestionCount(String(selectedCount))
+        setTestQuestionsText(nextQuestions.map((question) => question.text).join("\n"))
+    }
+
+    const handleImportTestFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0]
+        event.target.value = ""
+        if (!file) return
+
+        const extension = file.name.split(".").pop()?.toLowerCase()
+        setTestSourceFileName(file.name)
+
+        if (extension !== "docx" && extension !== "doc") {
+            toast({ title: "Chỉ hỗ trợ file Word .docx/.doc", variant: "destructive" })
+            return
+        }
+
+        setIsImportingTestFile(true)
+        try {
+            let rawText = ""
+            if (extension === "docx") {
+                const [{ default: JSZip }] = await Promise.all([import("jszip")])
+                const zip = await JSZip.loadAsync(await file.arrayBuffer())
+                const documentXml = await zip.file("word/document.xml")?.async("text")
+                if (!documentXml) throw new Error("Không đọc được nội dung file Word.")
+
+                const xmlDoc = new DOMParser().parseFromString(documentXml, "application/xml")
+                const parserError = xmlDoc.getElementsByTagName("parsererror")[0]
+                if (parserError) throw new Error("File Word không hợp lệ.")
+
+                rawText = Array.from(xmlDoc.getElementsByTagName("w:p"))
+                    .map((paragraph) =>
+                        Array.from(paragraph.getElementsByTagName("w:t"))
+                            .map((node) => node.textContent ?? "")
+                            .join("")
+                            .trim()
+                    )
+                    .filter((line) => line.length > 0)
+                    .join("\n")
+            } else {
+                const buffer = await file.arrayBuffer()
+                const utf16Text = cleanLegacyDocText(new TextDecoder("utf-16le").decode(buffer))
+                const ansiText = cleanLegacyDocText(new TextDecoder("windows-1252").decode(buffer))
+                const textScore = (value: string) => (value.match(/[\p{L}\p{N}]{2,}/gu) ?? []).length
+                rawText = textScore(utf16Text) >= textScore(ansiText) ? utf16Text : ansiText
+            }
+
+            const importedQuestions = parseImportedMultipleChoiceQuestions(rawText)
+            if (importedQuestions.length === 0) {
+                throw new Error("Không tách được câu hỏi trắc nghiệm A/B/C/D từ file Word.")
+            }
+
+            applyImportedTestQuestions(importedQuestions)
+            toast({ title: `Đã đọc ${importedQuestions.length} câu hỏi, đã random ${Math.min(selectedTestQuestionCount, importedQuestions.length)} câu` })
+        } catch (error) {
+            setTestSourceFileName("")
+            toast({
+                title: error instanceof Error ? error.message : "Không thể đọc file Word",
+                variant: "destructive",
+            })
+        } finally {
+            setIsImportingTestFile(false)
+        }
+    }
+
+    const handleCreateTest = async () => {
+        if (!canManageTests) return
+        const shouldRandomizeFromBank = !editingTestId && testQuestionBank.length > 0
+        const questionsForSubmit = shouldRandomizeFromBank
+            ? shuffleIndices(testQuestionBank.length)
+                .slice(0, Math.min(Math.max(1, selectedTestQuestionCount), testQuestionBank.length))
+                .map((index) => ({ ...testQuestionBank[index]!, options: [...testQuestionBank[index]!.options] as [string, string, string, string] }))
+            : selectedTestQuestions
+        const submitQuestionTexts = questionsForSubmit.map((question) => question.text.trim()).filter((question) => question.length > 0)
+        const submitDurationMinutes = Math.max(1, Math.ceil((questionsForSubmit.length * testTimePerQuestionSeconds) / 60))
+        if (!testTitle.trim()) {
+            toast({ title: "Thiếu tiêu đề bài thi", variant: "destructive" })
+            return
+        }
+        if (submitQuestionTexts.length === 0) {
+            toast({ title: "Cần ít nhất 1 câu hỏi", variant: "destructive" })
+            return
+        }
+        if (questionsForSubmit.some((question) => !question.text.trim() || question.options.some((option) => !option.trim()))) {
+            toast({ title: "Cần nhập đầy đủ câu hỏi và 4 đáp án", variant: "destructive" })
+            return
+        }
+        if (selectedTestQuestionCount <= 0) {
+            toast({ title: "Cần chọn số câu", variant: "destructive" })
+            return
+        }
+        if (testTargetRoles.length === 0) {
+            toast({ title: "Cần chọn ít nhất 1 role tham gia làm bài", variant: "destructive" })
+            return
+        }
+        if (!shouldRandomizeFromBank && submitQuestionTexts.length !== selectedTestQuestionCount) {
+            toast({
+                title: "Số câu chưa khớp",
+                description: `Bạn chọn ${selectedTestQuestionCount} câu nhưng đang nhập ${submitQuestionTexts.length} câu.`,
+                variant: "destructive",
+            })
+            return
+        }
+
+        setIsSubmitting(true)
+        try {
+            const res = await fetch(editingTestId ? `/api/tests/${editingTestId}` : "/api/tests", {
+                method: editingTestId ? "PATCH" : "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({
+                    title: testTitle.trim(),
+                    description: testDescription.trim(),
+                    durationMinutes: shouldRandomizeFromBank ? submitDurationMinutes : calculatedTestDurationMinutes,
+                    timePerQuestionSeconds: testTimePerQuestionSeconds,
+                    sourceFileName: testSourceFileName,
+                    targetRoles: testTargetRoles,
+                    questions: questionsForSubmit.map((question) => question.text.trim()),
+                    quizQuestions: questionsForSubmit.map((question) => ({
+                        text: question.text.trim(),
+                        options: question.options.map((option) => option.trim()),
+                        correctIndex: question.correctIndex,
+                        explanation: question.explanation.trim(),
+                    })),
+                }),
+            })
+            const payload = (await res.json()) as { ok: boolean; test?: TestRecord; message?: string }
+            if (!res.ok || !payload.ok || !payload.test) {
+                throw new Error(payload.message || "Không thể tạo bài thi")
+            }
+            setTests((prev) => editingTestId
+                ? prev.map((test) => test.id === payload.test!.id ? payload.test! : test)
+                : [payload.test!, ...prev]
+            )
+            setTestTitle("")
+            setTestDescription("")
+            setTestTimePerQuestionMinutes("30")
+            setTestQuestionCount("1")
+            setTestSourceFileName("")
+            setTestTargetRoles(["store_technician"])
+            setTestQuestionsText("")
+            setTestQuestionBank([])
+            setSelectedTestQuestions([createBlankExamQuestion()])
+            setSelectedTestId(payload.test.id)
+            setIsCreatingTest(false)
+            setEditingTestId(null)
+            toast({ title: editingTestId ? "Đã cập nhật bài thi" : "Đã tạo bài thi" })
+        } catch (error) {
+            toast({
+                title: error instanceof Error ? error.message : "Không thể tạo bài thi",
+                variant: "destructive",
+            })
+        } finally {
+            setIsSubmitting(false)
+        }
+    }
+
+    const handleSubmitTestAnswer = async (testId: string) => {
+        const test = tests.find((item) => item.id === testId)
+        const quizQuestions = test?.quizQuestions ?? []
+        let payload: { answers?: number[]; textAnswers?: string[] }
+        let nextResult: TestResultDetail | null = null
+        if (quizQuestions.length > 0) {
+            const answers = testChoiceAnswers[testId] ?? []
+            const missingIndex = quizQuestions.findIndex((_, index) => answers[index] === undefined)
+            if (missingIndex >= 0) {
+                toast({ title: `Vui lòng chọn đáp án cho câu ${missingIndex + 1}`, variant: "destructive" })
+                return
+            }
+            payload = { answers }
+            if (test) {
+                const correctAnswers = quizQuestions.filter((question, index) => answers[index] === question.correctIndex).length
+                nextResult = {
+                    test,
+                    score: quizQuestions.length > 0 ? Math.round((correctAnswers / quizQuestions.length) * 100) : 0,
+                    correctAnswers,
+                    totalQuestions: quizQuestions.length,
+                    answers,
+                }
+            }
+        } else {
+            const missingIndex = (test?.questions ?? []).findIndex((_, index) => !(testAnswers[`${testId}:${index}`] ?? "").trim())
+            if (missingIndex >= 0) {
+                toast({ title: `Vui lòng nhập câu trả lời cho câu ${missingIndex + 1}`, variant: "destructive" })
+                return
+            }
+            payload = { textAnswers: (test?.questions ?? []).map((_, index) => (testAnswers[`${testId}:${index}`] ?? "").trim()) }
+        }
+
+        setIsSubmitting(true)
+        try {
+            const res = await fetch(`/api/tests/${testId}/submit`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify(payload),
+            })
+            const data = (await res.json()) as { ok: boolean; submission?: TestSubmissionRecord; message?: string }
+            if (!res.ok || !data.ok) throw new Error(data.message || "Không thể nộp bài")
+            setSubmittedTestIds((prev) => {
+                const next = new Set(prev)
+                next.add(testId)
+                return next
+            })
+            if (data.submission) {
+                setTestSubmissionHistory((prev) => ({
+                    ...prev,
+                    [testId]: [data.submission!, ...(prev[testId] ?? [])],
+                }))
+            }
+            setTakingTestIds((prev) => {
+                const next = new Set(prev)
+                next.delete(testId)
+                return next
+            })
+            if (document.fullscreenElement) {
+                void document.exitFullscreen().catch(() => undefined)
+            }
+            if (nextResult) {
+                setTestResultDetail(nextResult)
+            }
+            toast({ title: "Đã nộp bài" })
+        } catch (error) {
+            toast({ title: error instanceof Error ? error.message : "Không thể nộp bài", variant: "destructive" })
+        } finally {
+            setIsSubmitting(false)
+        }
+    }
+
+    const getTestSubmissionResult = (test: TestRecord, submission: TestSubmissionRecord | undefined) => {
+        const quizQuestions = test.quizQuestions ?? []
+        if (!submission || quizQuestions.length === 0) return null
+        const correctAnswers = quizQuestions.filter((question, index) => submission.answers[index] === question.correctIndex).length
+        return {
+            score: Math.round((correctAnswers / quizQuestions.length) * 100),
+            correctAnswers,
+            totalQuestions: quizQuestions.length,
+            didPass: Math.round((correctAnswers / quizQuestions.length) * 100) >= QUIZ_PASS_SCORE,
+        }
+    }
+
+    const handleSelectTestChoice = (testId: string, questionIndex: number, optionIndex: number) => {
+        void handleStartTest(testId)
+        setTestChoiceAnswers((prev) => {
+            const current = [...(prev[testId] ?? [])]
+            current[questionIndex] = optionIndex
+            return { ...prev, [testId]: current }
+        })
+    }
+
+    const handleStartTest = async (testId: string) => {
+        if (canManageTests || submittedTestIds.has(testId)) return false
+        if (startedTestIds.has(testId)) return true
+        setStartedTestIds((prev) => {
+            const next = new Set(prev)
+            next.add(testId)
+            return next
+        })
+        try {
+            const res = await fetch(`/api/tests/${testId}/start`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+            })
+            const data = (await res.json()) as { ok: boolean; message?: string }
+            if (!res.ok || !data.ok) throw new Error(data.message || "Không thể lưu trạng thái đang thi")
+            return true
+        } catch (error) {
+            setStartedTestIds((prev) => {
+                const next = new Set(prev)
+                next.delete(testId)
+                return next
+            })
+            toast({ title: error instanceof Error ? error.message : "Không thể lưu trạng thái đang thi", variant: "destructive" })
+            return false
+        }
+    }
+
+    const handleBeginTest = async (testId: string) => {
+        const ok = await handleStartTest(testId)
+        if (!ok) return
+        setTakingTestIds((prev) => {
+            const next = new Set(prev)
+            next.add(testId)
+            return next
+        })
+        if (!document.fullscreenElement) {
+            void document.documentElement.requestFullscreen?.().catch(() => undefined)
+        }
+        const test = tests.find((item) => item.id === testId)
+        if (test) {
+            setTestRemainingSecondsById((prev) => ({
+                ...prev,
+                [testId]: prev[testId] ?? Math.max(60, test.durationMinutes * 60),
+            }))
+        }
+        setTestCurrentQuestionById((prev) => ({ ...prev, [testId]: prev[testId] ?? 0 }))
+    }
+
+    const handleEndTakingTest = (testId: string) => {
+        const confirmed = window.confirm("Kết thúc làm bài mà chưa nộp? Bài thi vẫn được ghi nhận là đang thi cho đến khi bạn nộp bài.")
+        if (!confirmed) return
+        setTakingTestIds((prev) => {
+            const next = new Set(prev)
+            next.delete(testId)
+            return next
+        })
+        if (document.fullscreenElement) {
+            void document.exitFullscreen().catch(() => undefined)
+        }
+    }
+
+    const handleRetakeTestNow = (testId: string) => {
+        const test = tests.find((item) => item.id === testId)
+        setTestResultDetail(null)
+        setSubmittedTestIds((prev) => {
+            const next = new Set(prev)
+            next.delete(testId)
+            return next
+        })
+        setStartedTestIds((prev) => {
+            const next = new Set(prev)
+            next.add(testId)
+            return next
+        })
+        setTakingTestIds((prev) => {
+            const next = new Set(prev)
+            next.add(testId)
+            return next
+        })
+        setTestCurrentQuestionById((prev) => ({ ...prev, [testId]: 0 }))
+        setTestChoiceAnswers((prev) => ({ ...prev, [testId]: [] }))
+        setTestAnswers((prev) => {
+            const next = { ...prev }
+            Object.keys(next).forEach((key) => {
+                if (key.startsWith(`${testId}:`)) delete next[key]
+            })
+            return next
+        })
+        if (test) {
+            setTestRemainingSecondsById((prev) => ({
+                ...prev,
+                [testId]: Math.max(60, test.durationMinutes * 60),
+            }))
+        }
+        if (!document.fullscreenElement) {
+            void document.documentElement.requestFullscreen?.().catch(() => undefined)
+        }
+    }
+
+    const formatTestRemainingTime = (seconds: number) => {
+        const safeSeconds = Math.max(0, Math.floor(seconds))
+        const minutes = Math.floor(safeSeconds / 60)
+        const rest = safeSeconds % 60
+        return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`
+    }
+
+    const handleTrackTestProgress = async (test: TestRecord) => {
+        setTestProgressModal({ open: true, isLoading: true, test, submissions: [], statuses: [] })
+        try {
+            const res = await fetch(`/api/tests/${test.id}/progress`, { credentials: "include", cache: "no-store" })
+            const data = (await res.json()) as { ok: boolean; submissions?: TestSubmissionRecord[]; statuses?: TestProgressRow[]; message?: string }
+            if (!res.ok || !data.ok) throw new Error(data.message || "Không thể tải tiến độ")
+            setTestProgressModal({ open: true, isLoading: false, test, submissions: data.submissions ?? [], statuses: data.statuses ?? [] })
+        } catch (error) {
+            setTestProgressModal({ open: true, isLoading: false, test, submissions: [], statuses: [] })
+            toast({ title: error instanceof Error ? error.message : "Không thể tải tiến độ", variant: "destructive" })
+        }
+    }
+
+    const handleDeleteTest = async (test: TestRecord) => {
+        const confirmed = window.confirm(`Xóa bài thi "${test.title}"? Toàn bộ lịch sử nộp bài và tiến độ liên quan cũng sẽ bị xóa.`)
+        if (!confirmed) return
+        setIsSubmitting(true)
+        try {
+            const res = await fetch(`/api/tests/${test.id}`, {
+                method: "DELETE",
+                credentials: "include",
+            })
+            const data = (await res.json()) as { ok: boolean; message?: string }
+            if (!res.ok || !data.ok) throw new Error(data.message || "Không thể xóa bài thi")
+            setTests((prev) => {
+                const next = prev.filter((item) => item.id !== test.id)
+                setSelectedTestId((current) => current === test.id ? (next[0]?.id ?? null) : current)
+                return next
+            })
+            setSubmittedTestIds((prev) => {
+                const next = new Set(prev)
+                next.delete(test.id)
+                return next
+            })
+            setStartedTestIds((prev) => {
+                const next = new Set(prev)
+                next.delete(test.id)
+                return next
+            })
+            setTakingTestIds((prev) => {
+                const next = new Set(prev)
+                next.delete(test.id)
+                return next
+            })
+            setTestSubmissionHistory((prev) => {
+                const next = { ...prev }
+                delete next[test.id]
+                return next
+            })
+            toast({ title: "Đã xóa bài thi" })
+        } catch (error) {
+            toast({ title: error instanceof Error ? error.message : "Không thể xóa bài thi", variant: "destructive" })
+        } finally {
+            setIsSubmitting(false)
+        }
+    }
+
+    const openTestStatusListDetail = (title: string, rows: TestProgressRow[]) => {
+        setSelectedTestStatusListDetail({ title, rows })
+        setTestStatusListSearch("")
+    }
+
+    const closeTestProgressModal = () => {
+        setTestProgressModal({ open: false, isLoading: false, test: null, submissions: [], statuses: [] })
+        setSelectedTestStatusListDetail(null)
+        setTestStatusListSearch("")
+    }
+
+    const getTestStatusPersonDetail = (row: TestProgressRow) => {
+        const person = people.find((item) => item.id === row.personId)
+        const supervisor = person?.storeLeadUserId
+            ? people.find((item) => item.userId === person.storeLeadUserId)
+            : null
+        const storeBranchNameById = new Map(STORE_BRANCHES.map((branch) => [branch.id, branch.name]))
+        const storeNames = (person?.storeBranchIds ?? [])
+            .map((id) => storeBranchNameById.get(id))
+            .filter((name): name is string => Boolean(name))
+        const storeText = storeNames.length > 0 ? storeNames.join(", ") : "Chưa gán cửa hàng"
+        return {
+            email: person?.email ?? "",
+            role: person?.role ?? row.personRole ?? "Chưa rõ vai trò",
+            supervisorName: supervisor?.name ?? "Không có",
+            storeText,
+        }
+    }
+
+    const handleExportTestProgressExcel = useCallback(() => {
+        if (testProgressModal.isLoading || !testProgressModal.test) return
+        const test = testProgressModal.test
+        const formatDateTime = (value?: string) => value ? new Date(value).toLocaleString("vi-VN") : ""
+        const statusLabel: Record<TestProgressRow["status"], string> = {
+            submitted: "Đã thi",
+            in_progress: "Đang thi",
+            not_submitted: "Chưa thi",
+        }
+        const completedTests = testProgressModal.statuses.filter((item) => item.status === "submitted")
+        const inProgressTests = testProgressModal.statuses.filter((item) => item.status === "in_progress")
+        const notTakenTests = testProgressModal.statuses.filter((item) => item.status === "not_submitted")
+        const latestSubmissionByPersonId = new Map<string, TestSubmissionRecord>()
+        testProgressModal.submissions.forEach((submission) => {
+            if (!latestSubmissionByPersonId.has(submission.personId)) latestSubmissionByPersonId.set(submission.personId, submission)
+        })
+        const resultByPersonId = new Map<string, ReturnType<typeof getTestSubmissionResult>>()
+        testProgressModal.statuses.forEach((row) => {
+            resultByPersonId.set(row.personId, getTestSubmissionResult(test, latestSubmissionByPersonId.get(row.personId)))
+        })
+        const getRetakeCount = (personId: string) =>
+            Math.max(0, testProgressModal.submissions.filter((submission) => submission.personId === personId).length - 1)
+        const averageScore = completedTests.length > 0
+            ? Math.round(completedTests.reduce((sum, row) => sum + (resultByPersonId.get(row.personId)?.score ?? 0), 0) / completedTests.length)
+            : 0
+        const passedRows = completedTests.filter((row) => resultByPersonId.get(row.personId)?.didPass)
+        const failedRows = completedTests.filter((row) => {
+            const result = resultByPersonId.get(row.personId)
+            return result && !result.didPass
+        })
+        const statusRows = (rows: TestProgressRow[]) => rows.map((row) => {
+            const detail = getTestStatusPersonDetail(row)
+            const result = resultByPersonId.get(row.personId)
+            return [
+                detail.email,
+                result?.score ?? "",
+                row.personName,
+                detail.role,
+                detail.storeText,
+                detail.supervisorName,
+                statusLabel[row.status],
+                result ? `${result.correctAnswers}/${result.totalQuestions}` : "",
+                result ? (result.didPass ? "Đạt" : "Chưa đạt") : "",
+                getRetakeCount(row.personId),
+                formatDateTime(row.startedAt),
+                formatDateTime(row.submittedAt),
+            ]
+        })
+        const resultRows = testProgressModal.submissions.map((submission) => {
+            const row = testProgressModal.statuses.find((item) => item.personId === submission.personId)
+            const detail = row ? getTestStatusPersonDetail(row) : {
+                email: "",
+                role: submission.personRole ?? "",
+                storeText: "",
+                supervisorName: "",
+            }
+            const result = getTestSubmissionResult(test, submission)
+            const personSubmissions = testProgressModal.submissions.filter((item) => item.personId === submission.personId)
+            const attemptRound = personSubmissions
+                .slice()
+                .reverse()
+                .findIndex((item) => item.id === submission.id) + 1
+            return [
+                detail.email,
+                submission.personName ?? row?.personName ?? "Unknown",
+                detail.role,
+                detail.storeText,
+                detail.supervisorName,
+                result?.score ?? "",
+                result?.correctAnswers ?? "",
+                result?.totalQuestions ?? "",
+                attemptRound > 0 ? attemptRound : "",
+                attemptRound > 0 ? Math.max(0, attemptRound - 1) : "",
+                result ? (result.didPass ? "Đạt" : "Chưa đạt") : "",
+                formatDateTime(submission.submittedAt),
+            ]
+        })
+        const filename = `${sanitizeFilenamePart(test.title)}-tien-do-bai-thi-${new Date().toISOString().slice(0, 10)}.xls`
+
+        downloadExcelWorkbook(filename, [
+            {
+                name: "Bao cao",
+                filter: true,
+                widths: [210, 70, 190, 130, 240, 170, 110, 100, 110, 110, 150, 150],
+                rows: [
+                    ["Địa chỉ email", "Điểm số", "Nhập họ và tên của bạn", "Vị trí?", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    ...statusRows(testProgressModal.statuses),
+                ],
+            },
+            {
+                name: "Tong quan",
+                rows: [
+                    ["Báo cáo theo dõi tiến độ bài thi"],
+                    ["Bài thi", test.title],
+                    ["Số câu", test.questions.length],
+                    ["Thời lượng", `${test.durationMinutes} phút`],
+                    ["Thời gian/câu", test.timePerQuestionSeconds ? `${test.timePerQuestionSeconds} giây/câu` : ""],
+                    ["Xuất lúc", new Date().toLocaleString("vi-VN")],
+                    [],
+                    ["Nhóm", "Số lượng"],
+                    ["Tổng nhân viên", testProgressModal.statuses.length],
+                    ["Đã thi", completedTests.length],
+                    ["Đang thi", inProgressTests.length],
+                    ["Chưa thi", notTakenTests.length],
+                    ["Điểm trung bình", averageScore],
+                    [`Đạt >=${QUIZ_PASS_SCORE}`, passedRows.length],
+                    [`Chưa đạt (<${QUIZ_PASS_SCORE})`, failedRows.length],
+                    ["Tổng số lần làm lại", testProgressModal.submissions.length - completedTests.length],
+                ],
+            },
+            {
+                name: "Tien do bai thi",
+                filter: true,
+                rows: [
+                    ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    ...statusRows(testProgressModal.statuses),
+                ],
+            },
+            {
+                name: "Da thi",
+                filter: true,
+                rows: [
+                    ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    ...statusRows(completedTests),
+                ],
+            },
+            {
+                name: "Dang thi",
+                filter: true,
+                rows: [
+                    ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    ...statusRows(inProgressTests),
+                ],
+            },
+            {
+                name: "Chua thi",
+                filter: true,
+                rows: [
+                    ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    ...statusRows(notTakenTests),
+                ],
+            },
+            {
+                name: "Ket qua bai thi",
+                filter: true,
+                rows: [
+                    ["Email", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Điểm", "Câu đúng", "Tổng câu", "Lần làm", "Số lần làm lại", "Kết quả", "Nộp lúc"],
+                    ...resultRows,
+                ],
+            },
+        ])
+    }, [getTestStatusPersonDetail, getTestSubmissionResult, testProgressModal.isLoading, testProgressModal.statuses, testProgressModal.submissions, testProgressModal.test])
+
     const inferDocumentType = (fileName: string): Document["type"] => {
         const ext = fileName.split(".").pop()?.toLowerCase()
         switch (ext) {
+            case "mov": case "webm": case "m4v": return "mp4"
             case "pdf": case "docx": case "xlsx": case "pptx": case "txt":
             case "jpg": case "png": case "mp4": case "zip": return ext
             case "fig": case "figma": return "figma"
@@ -1323,6 +2290,7 @@ export default function DocumentsPage() {
     }
 
     const selectedUploadExt = createDocumentDialog.file?.name.split(".").pop()?.toLowerCase()
+    const isSelectedUploadVideo = selectedUploadExt === "mp4" || selectedUploadExt === "mov" || selectedUploadExt === "webm" || selectedUploadExt === "m4v"
 
     const handleCreateDocument = async () => {
         const { file, visibility } = createDocumentDialog
@@ -1330,8 +2298,13 @@ export default function DocumentsPage() {
         const normalizedName = (createDocumentDialog.name ?? "").trim()
         if (!file) return
         const ext = file.name.split(".").pop()?.toLowerCase()
-        if (ext !== "pdf" && ext !== "pptx") {
-            toast({ title: "Chỉ hỗ trợ upload file PDF hoặc PPTX", variant: "destructive" })
+        const isVideoUpload = ext === "mp4" || ext === "mov" || ext === "webm" || ext === "m4v"
+        if (isStoreVideoOnlyUploader && !isVideoUpload) {
+            toast({ title: "Nhân viên cửa hàng chỉ được upload video", variant: "destructive" })
+            return
+        }
+        if (ext !== "pdf" && ext !== "pptx" && !isVideoUpload) {
+            toast({ title: "Chỉ hỗ trợ upload file PDF, PPTX hoặc video", variant: "destructive" })
             return
         }
 
@@ -1349,7 +2322,9 @@ export default function DocumentsPage() {
             const contentType = file.type || (
                 inferredDocType === "pdf"
                     ? "application/pdf"
-                    : "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    : inferredDocType === "pptx"
+                        ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                        : "video/mp4"
             )
 
             const presignRes = await fetch("/api/documents/upload/presign", {
@@ -2115,6 +3090,57 @@ export default function DocumentsPage() {
         void loadLearningData(learningDocs)
     }, [activeTab, documentsLoading, learningDocsKey])
 
+    useEffect(() => {
+        if (activeTab !== "exams") return
+        void loadTests()
+    }, [activeTab])
+
+    useEffect(() => {
+        if (!canAccessELearning || testsDataLoaded) return
+        void loadTests()
+    }, [canAccessELearning, testsDataLoaded, user?.id])
+
+    useEffect(() => {
+        if (takingTestIds.size === 0) return
+        const interval = window.setInterval(() => {
+            setTestRemainingSecondsById((prev) => {
+                let changed = false
+                const next = { ...prev }
+                for (const testId of takingTestIds) {
+                    const current = next[testId]
+                    if (current === undefined) continue
+                    next[testId] = Math.max(0, current - 1)
+                    changed = changed || next[testId] !== current
+                }
+                return changed ? next : prev
+            })
+        }, 1000)
+        return () => window.clearInterval(interval)
+    }, [takingTestIds])
+
+    useEffect(() => {
+        if (takingTestIds.size === 0) return
+        const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+            event.preventDefault()
+            event.returnValue = ""
+        }
+        const handleVisibilityChange = () => {
+            if (document.hidden) {
+                toast({
+                    title: "Bạn đang trong bài thi.",
+                    description: "Không chuyển tab hoặc rời khỏi màn hình làm bài cho đến khi kết thúc.",
+                    variant: "destructive",
+                })
+            }
+        }
+        window.addEventListener("beforeunload", handleBeforeUnload)
+        document.addEventListener("visibilitychange", handleVisibilityChange)
+        return () => {
+            window.removeEventListener("beforeunload", handleBeforeUnload)
+            document.removeEventListener("visibilitychange", handleVisibilityChange)
+        }
+    }, [takingTestIds])
+
     const refreshLearningRealtimeData = useCallback(async () => {
         await loadFolders()
         const docs = await loadDocuments()
@@ -2694,12 +3720,17 @@ export default function DocumentsPage() {
     const canNavigateToQuestion = useCallback((targetIndex: number, state: QuizTakeState) => {
         if (targetIndex < 0) return false
         if (targetIndex >= (state.quiz?.questions.length ?? 0)) return false
-        if (targetIndex > state.currentQuestion) {
-            const currentOriginalIndex = state.questionOrder[state.currentQuestion] ?? state.currentQuestion
-            return state.answers[currentOriginalIndex] !== -1
-        }
         if (targetIndex === state.currentQuestion) return true
-        return !state.expiredQuestionIndexes.includes(targetIndex)
+        const currentOriginalIndex = state.questionOrder[state.currentQuestion] ?? state.currentQuestion
+        const hasCurrentAnswer = state.answers[currentOriginalIndex] !== -1
+        if (targetIndex === state.currentQuestion + 1) {
+            return hasCurrentAnswer
+        }
+        if (targetIndex < state.currentQuestion) {
+            const targetOriginalIndex = state.questionOrder[targetIndex] ?? targetIndex
+            return state.answers[targetOriginalIndex] !== -1 && !state.expiredQuestionIndexes.includes(targetIndex)
+        }
+        return false
     }, [])
 
     const moveToQuizQuestion = useCallback((targetIndex: number) => {
@@ -3514,6 +4545,26 @@ export default function DocumentsPage() {
     const quizCreateTargetDoc = documentsData.find((doc) => doc.id === quizCreateDialog.documentId)
     const quizCreateDocType = quizCreateTargetDoc?.type
     const canAutoGenerateByFormat = quizCreateDocType === "pdf" || quizCreateDocType === "pptx"
+    const visibleTests = canManageTests
+        ? tests
+        : tests.filter((test) => Boolean(user?.role && test.targetRoles?.includes(user.role)))
+    const activeTakingTest = visibleTests.find((test) => takingTestIds.has(test.id) && !submittedTestIds.has(test.id)) ?? null
+
+    if (!canAccessELearning) {
+        return (
+            <div className="p-3 sm:p-4 lg:p-6">
+                <div className="flex min-h-[55vh] flex-col items-center justify-center rounded-2xl border border-gray-200 bg-white p-6 text-center dark:border-gray-800 dark:bg-gray-900">
+                    <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-violet-100 dark:bg-violet-900/30">
+                        <GraduationCap className="h-6 w-6 text-violet-600 dark:text-violet-400" />
+                    </div>
+                    <h1 className="text-xl font-bold text-gray-900 dark:text-white">E-learning chỉ dành cho phòng ban Cửa hàng</h1>
+                    <p className="mt-2 max-w-md text-sm text-gray-500 dark:text-gray-400">
+                        Tài liệu đào tạo, bài kiểm tra và bài thi chỉ hiển thị với nhân sự thuộc phòng ban Cửa hàng.
+                    </p>
+                </div>
+            </div>
+        )
+    }
 
     return (
         <div className="p-3 sm:p-4 lg:p-6">
@@ -3535,6 +4586,9 @@ export default function DocumentsPage() {
                 >
                     <FileText className="w-4 h-4" />
                     Tài liệu
+                    <span className="ml-1 px-1.5 py-0.5 rounded-full text-xs bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+                        {documentsData.length}
+                    </span>
                 </button>
                 <button
                     onClick={handleEnterLearningTab}
@@ -3546,11 +4600,23 @@ export default function DocumentsPage() {
                 >
                     <GraduationCap className="w-4 h-4" />
                     {isLeaderOrAdmin ? "Bài Kiểm Tra" : "Học liệu"}
-                    {learningDocs.length > 0 && (
-                        <span className="ml-1 px-1.5 py-0.5 rounded-full text-xs bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
-                            {learningDocs.length}
-                        </span>
-                    )}
+                    <span className="ml-1 px-1.5 py-0.5 rounded-full text-xs bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+                        {learningDocs.length}
+                    </span>
+                </button>
+                <button
+                    onClick={() => setActiveTab("exams")}
+                    className={`flex items-center gap-2 whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === "exams"
+                            ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+                            : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                    }`}
+                >
+                    <ClipboardCheck className="w-4 h-4" />
+                    Bài thi
+                    <span className="ml-1 px-1.5 py-0.5 rounded-full text-xs bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+                        {visibleTests.length}
+                    </span>
                 </button>
             </div>
 
@@ -4503,6 +5569,738 @@ export default function DocumentsPage() {
                 )
             )}
 
+            {/* ── Bài thi tab ── */}
+            {activeTab === "exams" && (
+                testsLoading ? (
+                    <div className="flex min-h-[45vh] flex-col items-center justify-center gap-3 py-20 text-center">
+                        <Loader2 className="h-7 w-7 animate-spin text-violet-600 dark:text-violet-400" />
+                        <div>
+                            <p className="text-sm font-medium text-gray-700 dark:text-gray-200">Đang tải bài thi...</p>
+                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Vui lòng chờ dữ liệu bài thi hoàn tất.</p>
+                        </div>
+                    </div>
+                ) : visibleTests.length === 0 && !isCreatingTest ? (
+                    <div className="text-center py-20">
+                        <ClipboardCheck className="w-12 h-12 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
+                        <h3 className="text-base font-medium text-gray-700 dark:text-gray-300 mb-2">Chưa có bài thi</h3>
+                        {canManageTests ? (
+                            <div className="space-y-3">
+                                <p className="text-sm text-gray-500 dark:text-gray-400">Tạo bài thi đầu tiên cho nhân viên cửa hàng.</p>
+                                <Button onClick={() => setIsCreatingTest(true)}>
+                                    <Plus className="w-4 h-4 mr-2" />Tạo bài thi
+                                </Button>
+                            </div>
+                        ) : (
+                            <p className="text-sm text-gray-500 dark:text-gray-400">Chưa có bài thi nào cần làm.</p>
+                        )}
+                    </div>
+                ) : (() => {
+                    const selectedTest = visibleTests.find((test) => test.id === selectedTestId) ?? visibleTests[0] ?? null
+                    const currentTestIdx = selectedTest ? visibleTests.findIndex((test) => test.id === selectedTest.id) : -1
+                    const prevTest = currentTestIdx > 0 ? visibleTests[currentTestIdx - 1] ?? null : null
+                    const nextTest = currentTestIdx >= 0 && currentTestIdx < visibleTests.length - 1 ? visibleTests[currentTestIdx + 1] ?? null : null
+                    const selectedLatestSubmission = selectedTest ? testSubmissionHistory[selectedTest.id]?.[0] : undefined
+                    const selectedLatestResult = selectedTest ? getTestSubmissionResult(selectedTest, selectedLatestSubmission) : null
+                    const isSubmitted = Boolean(selectedLatestSubmission)
+
+                    return (
+                        <div
+                            className={`flex flex-col overflow-hidden border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 lg:flex-row ${
+                                isMobile ? "-mx-3 rounded-none border-x-0" : "rounded-xl"
+                            }`}
+                            style={{ minHeight: isMobile ? "calc(100dvh - 190px)" : "calc(100vh - 220px)" }}
+                        >
+                            <div className="w-full flex-shrink-0 border-b border-gray-200 transition-all duration-200 dark:border-gray-800 lg:w-72 lg:border-b-0 lg:border-r xl:w-80">
+                                <div className="border-b border-gray-200 px-5 py-4 dark:border-gray-800">
+                                    <div className="mb-1 flex items-center justify-between">
+                                        <h2 className="font-semibold text-gray-900 dark:text-white">Bài thi</h2>
+                                        <div className="flex items-center gap-1">
+                                            {canManageTests && (
+                                                <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    className="h-7 px-2 text-xs"
+                                                    onClick={() => {
+                                                        setIsCreatingTest(true)
+                                                        setSelectedTestId(null)
+                                                        setEditingTestId(null)
+                                                        setTestTitle("")
+                                                        setTestDescription("")
+                                                        setTestTimePerQuestionMinutes("30")
+                                                        setTestQuestionCount("1")
+                                                        setTestSourceFileName("")
+                                                        setTestTargetRoles(["store_technician"])
+                                                        setTestQuestionsText("")
+                                                        setTestQuestionBank([])
+                                                        setSelectedTestQuestions([createBlankExamQuestion()])
+                                                    }}
+                                                >
+                                                    <Plus className="w-3 h-3 mr-1" />Thêm
+                                                </Button>
+                                            )}
+                                            <Button
+                                                size="icon"
+                                                variant="ghost"
+                                                className="h-8 w-8"
+                                                onClick={() => void loadTests()}
+                                                aria-label="Tải lại bài thi"
+                                                title="Tải lại"
+                                            >
+                                                <RotateCcw className="h-4 w-4" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">{visibleTests.length} bài thi</p>
+                                </div>
+
+                                <div className="max-h-[42vh] overflow-y-auto lg:max-h-none lg:flex-1">
+                                    {visibleTests.map((test) => {
+                                        const selected = selectedTest?.id === test.id && !isCreatingTest
+                                        const latestSubmission = testSubmissionHistory[test.id]?.[0]
+                                        const latestResult = getTestSubmissionResult(test, latestSubmission)
+                                        const submitted = Boolean(latestSubmission)
+
+                                        return (
+                                            <button
+                                                key={test.id}
+                                                onClick={() => {
+                                                    setIsCreatingTest(false)
+                                                    setSelectedTestId(test.id)
+                                                }}
+                                                className={`w-full flex items-start gap-3 py-3.5 text-left transition-colors border-b border-gray-100 dark:border-gray-800/60 ${
+                                                    selected
+                                                        ? "bg-violet-50 dark:bg-violet-900/20 border-l-[3px] border-l-violet-500 pl-[13px] pr-4"
+                                                        : "px-4 hover:bg-gray-50 dark:hover:bg-gray-800/60"
+                                                }`}
+                                            >
+                                                <div className="mt-0.5 flex-shrink-0">
+                                                    {latestResult?.didPass
+                                                        ? <CheckCircle2 className="w-5 h-5 text-green-500" />
+                                                        : submitted
+                                                            ? <XCircle className="w-5 h-5 text-red-500" />
+                                                        : <div className={`w-5 h-5 rounded-full border-2 ${selected ? "border-violet-400" : "border-gray-300 dark:border-gray-600"}`} />}
+                                                </div>
+                                                <div className="min-w-0 flex-1">
+                                                    <p className={`text-sm leading-snug ${selected ? "font-semibold text-violet-700 dark:text-violet-300" : "font-medium text-gray-800 dark:text-gray-200"}`}>
+                                                        {test.title}
+                                                    </p>
+                                                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                                        <span className="text-xs text-violet-500 dark:text-violet-400">
+                                                            {test.questions.length} câu · {test.durationMinutes} phút
+                                                        </span>
+                                                        {test.timePerQuestionSeconds && (
+                                                            <span className="text-xs text-gray-400 dark:text-gray-500">
+                                                                · {formatQuestionDuration(test.timePerQuestionSeconds)}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {latestResult && (
+                                                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs">
+                                                            <span className={`font-semibold ${latestResult.didPass ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+                                                                {latestResult.score}/100 điểm
+                                                            </span>
+                                                            <span className={latestResult.didPass ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                                                                {latestResult.didPass ? "Đã hoàn thành" : "Làm bài lại"}
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                    {test.targetRoles && test.targetRoles.length > 0 && (
+                                                        <div className="mt-1 flex flex-wrap gap-1">
+                                                            {test.targetRoles.map((role) => (
+                                                                <span
+                                                                    key={`${test.id}-target-${role}`}
+                                                                    className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                                                                >
+                                                                    {getTestTargetRoleLabel(role)}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                {selected && <ChevronRight className="w-4 h-4 text-violet-400 flex-shrink-0 mt-0.5" />}
+                                            </button>
+                                        )
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="min-w-0 flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950">
+                                {isCreatingTest ? (
+                                    <div className="mx-auto max-w-3xl px-3 py-4 sm:px-5 sm:py-6 lg:px-6 lg:py-8">
+                                        <div className="flex max-h-[calc(100dvh-220px)] min-h-[620px] flex-col rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-800 dark:bg-gray-800">
+                                            <div className="flex items-center justify-between border-b border-gray-200 px-4 pb-4 pt-4 dark:border-gray-700 sm:px-6 sm:pt-5">
+                                                <div>
+                                                    <h1 className="text-lg font-bold text-gray-900 dark:text-white">
+                                                        {editingTestId ? "Sửa bài thi" : "Tạo bài thi"}
+                                                    </h1>
+                                                    <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                                                        Tạo bài kiểm tra tự luận cho nhân viên cửa hàng
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setIsCreatingTest(false)
+                                                        setEditingTestId(null)
+                                                        setSelectedTestId(visibleTests[0]?.id ?? null)
+                                                    }}
+                                                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                                                    aria-label="Đóng form tạo bài thi"
+                                                >
+                                                    <X className="h-5 w-5" />
+                                                </button>
+                                            </div>
+
+                                            <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
+                                                <div>
+                                                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                                                        Tên bài thi <span className="text-red-500">*</span>
+                                                    </label>
+                                                    <Input
+                                                        autoFocus
+                                                        placeholder="Nhập tên bài thi..."
+                                                        value={testTitle}
+                                                        onChange={(event) => setTestTitle(event.target.value)}
+                                                    />
+                                                </div>
+
+                                                <Textarea
+                                                    placeholder="Mô tả bài thi (tuỳ chọn)"
+                                                    value={testDescription}
+                                                    onChange={(event) => setTestDescription(event.target.value)}
+                                                />
+
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Timer className="h-4 w-4 text-gray-400" />
+                                                    <Input
+                                                        type="number"
+                                                        min={1}
+                                                        placeholder="Số câu"
+                                                        className="w-28"
+                                                        value={testQuestionCount}
+                                                        onChange={(event) => handleChangeTestQuestionCount(event.target.value)}
+                                                    />
+                                                    <span className="text-sm text-gray-500 dark:text-gray-400">câu</span>
+                                                    <Input
+                                                        type="number"
+                                                        min={0.1}
+                                                        step={0.1}
+                                                        placeholder="Thời gian/câu"
+                                                        className="w-44"
+                                                        value={testTimePerQuestionMinutes}
+                                                        onChange={(event) => setTestTimePerQuestionMinutes(event.target.value)}
+                                                    />
+                                                    <span className="text-sm text-gray-500 dark:text-gray-400">giây/câu</span>
+                                                    <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
+                                                        {calculatedTestDurationMinutes} phút
+                                                    </span>
+                                                </div>
+
+                                                <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/30">
+                                                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                                        <div>
+                                                            <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                                                                Role tham gia làm bài
+                                                            </p>
+                                                            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                                                                Chỉ những role được chọn mới thấy bài thi này và cần làm bài.
+                                                            </p>
+                                                        </div>
+                                                        <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                                                            {testTargetRoles.length} role
+                                                        </span>
+                                                    </div>
+                                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                                        {testTargetRoleOptions.map((role) => {
+                                                            const selected = testTargetRoles.includes(role.value)
+                                                            return (
+                                                                <button
+                                                                    key={`test-target-role-${role.value}`}
+                                                                    type="button"
+                                                                    onClick={() => handleToggleTestTargetRole(role.value)}
+                                                                    className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                                                                        selected
+                                                                            ? "border-violet-500 bg-violet-600 text-white shadow-sm"
+                                                                            : "border-gray-200 bg-white text-gray-600 hover:border-violet-300 hover:text-violet-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:border-violet-500 dark:hover:text-violet-300"
+                                                                    }`}
+                                                                >
+                                                                    <CheckCircle2 className={`h-4 w-4 ${selected ? "text-white" : "text-gray-300 dark:text-gray-600"}`} />
+                                                                    {role.label}
+                                                                </button>
+                                                            )
+                                                        })}
+                                                    </div>
+                                                </div>
+
+                                                <div className="rounded-xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-800 dark:bg-violet-900/20">
+                                                    <div className="mb-2 flex items-center gap-2">
+                                                        <Upload className="h-4 w-4 shrink-0 text-violet-600 dark:text-violet-400" />
+                                                        <p className="text-sm font-semibold text-violet-800 dark:text-violet-300">
+                                                            Upload đề thi
+                                                        </p>
+                                                    </div>
+                                                    <p className="mb-3 text-xs text-violet-600 dark:text-violet-400">
+                                                        Upload file Word .doc/.docx có cấu trúc Câu hỏi, A/B/C/D và Đáp án. Hệ thống sẽ đọc ngân hàng đề và random theo số câu bạn chọn.
+                                                    </p>
+                                                    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-violet-700 transition hover:border-violet-400 dark:border-violet-800 dark:bg-gray-900/40 dark:text-violet-300">
+                                                        <span className="min-w-0 truncate">
+                                                            {testSourceFileName || "Chọn file Word (.docx/.doc)"}
+                                                        </span>
+                                                        <span className="shrink-0 rounded-md bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white">
+                                                            {isImportingTestFile ? "Đang đọc..." : "Chọn file"}
+                                                        </span>
+                                                        <input
+                                                            type="file"
+                                                            accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                                            className="sr-only"
+                                                            disabled={isImportingTestFile}
+                                                            onChange={(event) => void handleImportTestFile(event)}
+                                                        />
+                                                    </label>
+                                                </div>
+
+                                                <div className="space-y-3">
+                                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                                        <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                                                            Câu hỏi ({parsedTestQuestions.length}/{selectedTestQuestionCount})
+                                                        </p>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-xs font-medium text-violet-600 dark:text-violet-400">
+                                                                {testTimePerQuestionLabel} · {calculatedTestDurationMinutes} phút
+                                                            </span>
+                                                            <Button
+                                                                type="button"
+                                                                size="sm"
+                                                                variant="outline"
+                                                                className="h-8 bg-transparent text-xs"
+                                                                onClick={handleAddTestQuestion}
+                                                            >
+                                                                <Plus className="mr-1 h-3.5 w-3.5" />
+                                                                Thêm câu hỏi
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                    <div className="space-y-3">
+                                                        {displayedTestQuestions.map((question, index) => (
+                                                            <div
+                                                                key={`test-question-${index}`}
+                                                                className="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/30"
+                                                            >
+                                                                <div className="space-y-3">
+                                                                    <div className="flex items-start gap-2">
+                                                                        <span className="mt-2.5 w-7 shrink-0 text-xs font-bold text-gray-400">
+                                                                            Q{index + 1}
+                                                                        </span>
+                                                                        <Input
+                                                                            placeholder="Nội dung câu hỏi"
+                                                                            value={question.text}
+                                                                            onChange={(event) => handleUpdateTestQuestion(index, event.target.value)}
+                                                                        />
+                                                                        {displayedTestQuestions.length > 1 && (
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleRemoveTestQuestion(index)}
+                                                                                className="mt-2 shrink-0 text-red-400 hover:text-red-600"
+                                                                                aria-label={`Xoá câu hỏi ${index + 1}`}
+                                                                            >
+                                                                                <X className="h-4 w-4" />
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                                                        {question.options.map((option, optionIndex) => (
+                                                                            <div
+                                                                                key={`test-question-${index}-option-${optionIndex}`}
+                                                                                className={`flex items-center gap-2 rounded-lg border p-2 ${
+                                                                                    question.correctIndex === optionIndex
+                                                                                        ? "border-green-500 bg-green-50 dark:bg-green-900/20"
+                                                                                        : "border-gray-200 dark:border-gray-700"
+                                                                                }`}
+                                                                            >
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => handleSetTestQuestionCorrectIndex(index, optionIndex)}
+                                                                                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${
+                                                                                        question.correctIndex === optionIndex
+                                                                                            ? "border-green-500 bg-green-500"
+                                                                                            : "border-gray-300"
+                                                                                    }`}
+                                                                                    aria-label={`Chọn đáp án ${["A", "B", "C", "D"][optionIndex]} là đáp án đúng`}
+                                                                                >
+                                                                                    {question.correctIndex === optionIndex && <span className="text-xs text-white">✓</span>}
+                                                                                </button>
+                                                                                <span className="shrink-0 text-xs font-bold text-gray-400">
+                                                                                    {["A", "B", "C", "D"][optionIndex]}
+                                                                                </span>
+                                                                                <input
+                                                                                    className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400 dark:text-white"
+                                                                                    placeholder={`Đáp án ${["A", "B", "C", "D"][optionIndex]}`}
+                                                                                    value={option}
+                                                                                    onChange={(event) => handleUpdateTestQuestionOption(index, optionIndex, event.target.value)}
+                                                                                />
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                    <Input
+                                                                        placeholder="Giải thích đáp án (tuỳ chọn)"
+                                                                        className="text-xs"
+                                                                        value={question.explanation}
+                                                                        onChange={(event) => handleUpdateTestQuestionExplanation(index, event.target.value)}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex justify-end gap-2 border-t border-gray-200 px-4 py-4 dark:border-gray-700 sm:px-6">
+                                                <Button
+                                                    variant="outline"
+                                                    className="bg-transparent"
+                                                    onClick={() => {
+                                                        setIsCreatingTest(false)
+                                                        setEditingTestId(null)
+                                                        setSelectedTestId(visibleTests[0]?.id ?? null)
+                                                    }}
+                                                >
+                                                    Huỷ
+                                                </Button>
+                                                <Button
+                                                    onClick={() => void handleCreateTest()}
+                                                    disabled={isSubmitting || !testTitle.trim() || parsedTestQuestions.length === 0 || selectedTestQuestionCount === 0 || testTargetRoles.length === 0}
+                                                    className="bg-violet-600 hover:bg-violet-700"
+                                                >
+                                                    <ClipboardCheck className="mr-2 h-4 w-4" />
+                                                        {isSubmitting ? "Đang lưu..." : (editingTestId ? "Cập nhật bài thi" : "Tạo bài thi")}
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : selectedTest ? (
+                                    <div className="mx-auto max-w-3xl space-y-4 px-3 py-4 sm:space-y-5 sm:px-5 sm:py-6 lg:px-6 lg:py-8">
+                                        {canManageTests ? (
+                                            <div className="overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-900 shadow-sm">
+                                                <div className="border-b border-slate-700/70 bg-[#201a46] px-5 py-5 sm:px-7">
+                                                    <div className="flex items-center gap-3">
+                                                        <ClipboardCheck className="h-7 w-7 text-violet-300" />
+                                                        <h1 className="text-2xl font-bold text-white">Bài kiểm tra</h1>
+                                                    </div>
+                                                </div>
+                                                <div className="px-5 py-8 sm:px-7">
+                                                    <h2 className="text-xl font-bold text-white">{selectedTest.title}</h2>
+                                                    {selectedTest.description && (
+                                                        <p className="mt-2 max-w-2xl text-sm text-slate-400">{selectedTest.description}</p>
+                                                    )}
+                                                    <div className="mt-4 flex flex-wrap items-center gap-5 text-lg text-slate-400">
+                                                        <span className="inline-flex items-center gap-2">
+                                                            <ClipboardCheck className="h-5 w-5 text-violet-300" />
+                                                            {selectedTest.questions.length} câu hỏi
+                                                        </span>
+                                                        <span className="inline-flex items-center gap-2">
+                                                            <Timer className="h-5 w-5 text-violet-300" />
+                                                            {selectedTest.durationMinutes} phút
+                                                        </span>
+                                                        {selectedTest.timePerQuestionSeconds && (
+                                                            <span className="inline-flex items-center gap-2 text-sm">
+                                                                {formatQuestionDuration(selectedTest.timePerQuestionSeconds)}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {selectedTest.sourceFileName && (
+                                                        <p className="mt-3 text-xs text-slate-500">File đề thi: {selectedTest.sourceFileName}</p>
+                                                    )}
+                                                    {selectedTest.targetRoles && selectedTest.targetRoles.length > 0 && (
+                                                        <div className="mt-4 flex flex-wrap items-center gap-2">
+                                                            <span className="text-sm font-semibold text-slate-300">Role làm bài:</span>
+                                                            {selectedTest.targetRoles.map((role) => (
+                                                                <span
+                                                                    key={`${selectedTest.id}-summary-role-${role}`}
+                                                                    className="rounded-full border border-violet-400/40 bg-violet-400/10 px-3 py-1 text-xs font-semibold text-violet-200"
+                                                                >
+                                                                    {getTestTargetRoleLabel(role)}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                    <div className="mt-8 flex flex-wrap gap-3">
+                                                        <Button
+                                                            variant="outline"
+                                                            className="h-12 border-slate-700 bg-transparent px-6 text-base font-semibold text-white hover:bg-slate-800 hover:text-white"
+                                                            onClick={() => handleEditTest(selectedTest)}
+                                                        >
+                                                            <Pencil className="mr-3 h-5 w-5" />
+                                                            Sửa bài thi
+                                                        </Button>
+                                                        <Button
+                                                            variant="outline"
+                                                            className="h-12 border-slate-700 bg-transparent px-6 text-base font-semibold text-white hover:bg-slate-800 hover:text-white"
+                                                            onClick={() => void handleTrackTestProgress(selectedTest)}
+                                                        >
+                                                            <Users className="mr-3 h-5 w-5" />
+                                                            Theo dõi tiến độ nhân viên
+                                                        </Button>
+                                                        <Button
+                                                            variant="outline"
+                                                            className="h-12 border-red-500/60 bg-transparent px-6 text-base font-semibold text-red-300 hover:bg-red-950/30 hover:text-red-200"
+                                                            disabled={isSubmitting}
+                                                            onClick={() => void handleDeleteTest(selectedTest)}
+                                                        >
+                                                            <Trash2 className="mr-3 h-5 w-5" />
+                                                            Xóa bài thi
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            (() => {
+                                                const questions = selectedTest.quizQuestions && selectedTest.quizQuestions.length > 0
+                                                    ? selectedTest.quizQuestions
+                                                    : selectedTest.questions.map((question) => ({
+                                                        text: question,
+                                                        options: [],
+                                                        correctIndex: undefined,
+                                                        explanation: "",
+                                                    }))
+                                                const currentQuestionIndex = Math.min(
+                                                    Math.max(testCurrentQuestionById[selectedTest.id] ?? 0, 0),
+                                                    Math.max(questions.length - 1, 0)
+                                                )
+                                                const currentQuestion = questions[currentQuestionIndex]
+                                                const selectedAnswer = testChoiceAnswers[selectedTest.id]?.[currentQuestionIndex]
+                                                const isTakingTest = takingTestIds.has(selectedTest.id)
+
+                                                if (!isTakingTest) {
+                                                    return (
+                                                        <div className="overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-900 shadow-sm">
+                                                            <div className="border-b border-slate-700/70 bg-[#201a46] px-5 py-5 sm:px-7">
+                                                                <div className="flex items-center gap-3">
+                                                                    <ClipboardCheck className="h-7 w-7 text-violet-300" />
+                                                                    <h1 className="text-2xl font-bold text-white">Bài thi</h1>
+                                                                </div>
+                                                            </div>
+                                                            <div className="px-5 py-8 sm:px-7">
+                                                                <h2 className="text-xl font-bold text-white">{selectedTest.title}</h2>
+                                                                {selectedTest.description && (
+                                                                    <p className="mt-2 max-w-2xl text-sm text-slate-400">{selectedTest.description}</p>
+                                                                )}
+                                                                <div className="mt-4 flex flex-wrap items-center gap-5 text-lg text-slate-400">
+                                                                    <span className="inline-flex items-center gap-2">
+                                                                        <ClipboardCheck className="h-5 w-5 text-violet-300" />
+                                                                        {selectedTest.questions.length} câu hỏi
+                                                                    </span>
+                                                                    <span className="inline-flex items-center gap-2">
+                                                                        <Timer className="h-5 w-5 text-violet-300" />
+                                                                        {selectedTest.durationMinutes} phút
+                                                                    </span>
+                                                                </div>
+                                                                <div className="mt-8">
+                                                                    {selectedLatestResult ? (
+                                                                        <div className="space-y-4">
+                                                                            <div className={`inline-flex items-center gap-4 rounded-xl px-4 py-3 ${
+                                                                                selectedLatestResult.didPass ? "bg-green-500/15" : "bg-red-500/15"
+                                                                            }`}>
+                                                                                <Trophy className={`h-8 w-8 ${selectedLatestResult.didPass ? "text-green-400" : "text-red-400"}`} />
+                                                                                <div>
+                                                                                    <p className="text-2xl font-bold text-white">{selectedLatestResult.score}/100 điểm</p>
+                                                                                    <p className={`text-sm font-semibold ${selectedLatestResult.didPass ? "text-green-300" : "text-amber-300"}`}>
+                                                                                        {selectedLatestResult.didPass ? "Đã hoàn thành" : "Làm bài lại"}
+                                                                                    </p>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="flex flex-wrap gap-2">
+                                                                                {!selectedLatestResult.didPass && (
+                                                                                    <Button
+                                                                                        onClick={() => handleRetakeTestNow(selectedTest.id)}
+                                                                                        className="h-12 bg-blue-700 px-6 text-base font-semibold text-white hover:bg-blue-800"
+                                                                                    >
+                                                                                        <ClipboardCheck className="mr-3 h-5 w-5" />
+                                                                                        Làm bài lại
+                                                                                    </Button>
+                                                                                )}
+                                                                                <Button
+                                                                                    variant="outline"
+                                                                                    className="h-12 border-slate-700 bg-transparent px-6 text-base font-semibold text-white hover:bg-slate-800 hover:text-white"
+                                                                                    onClick={() => setTestHistoryDialog({ open: true, test: selectedTest })}
+                                                                                >
+                                                                                    <BarChart2 className="mr-3 h-5 w-5" />
+                                                                                    Xem lịch sử bài làm
+                                                                                </Button>
+                                                                            </div>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <Button
+                                                                            onClick={() => void handleBeginTest(selectedTest.id)}
+                                                                            className="h-12 bg-blue-700 px-8 text-base font-semibold text-white hover:bg-blue-800"
+                                                                        >
+                                                                            <ClipboardCheck className="mr-3 h-5 w-5" />
+                                                                            Bắt đầu thi
+                                                                        </Button>
+                                                                    )}
+                                                                </div>
+                                                                <p className="mt-5 text-sm text-slate-300">
+                                                                    Bấm bắt đầu thi để mở đề. Thời gian và trạng thái đang thi sẽ được ghi nhận từ lúc bắt đầu.
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                    )
+                                                }
+
+                                                return (
+                                                    <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                                                        <div className="border-b border-gray-200 p-5 dark:border-gray-800 sm:p-6">
+                                                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                                                <div className="min-w-0 flex-1">
+                                                                    <p className="text-xs uppercase tracking-wide text-violet-500 dark:text-violet-400">Bài thi bắt buộc</p>
+                                                                    <h1 className="mt-1 text-xl font-bold leading-snug text-gray-900 dark:text-white">{selectedTest.title}</h1>
+                                                                </div>
+                                                                {isSubmitted && (
+                                                                    <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1.5 text-sm font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                                                                        <CheckCircle2 className="h-4 w-4" />
+                                                                        Đã nộp
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                                                                <span className="text-sm font-semibold text-gray-600 dark:text-gray-300">
+                                                                    Câu {currentQuestionIndex + 1}/{questions.length}
+                                                                </span>
+                                                                <span className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400">
+                                                                    <Timer className="h-4 w-4 text-violet-400" />
+                                                                    {selectedTest.durationMinutes} phút
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                        {currentQuestion && (
+                                                            <div className="space-y-4 p-5 sm:p-6">
+                                                                <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/50">
+                                                                    <div className="flex gap-3">
+                                                                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-600 text-xs font-semibold text-white">
+                                                                            {currentQuestionIndex + 1}
+                                                                        </span>
+                                                                        <p className="pt-0.5 text-sm font-medium leading-relaxed text-gray-900 dark:text-white">{currentQuestion.text}</p>
+                                                                    </div>
+                                                                    {currentQuestion.options.length > 0 ? (
+                                                                        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                                                            {currentQuestion.options.map((option, optionIndex) => (
+                                                                                <button
+                                                                                    key={`${selectedTest.id}-take-question-${currentQuestionIndex}-option-${optionIndex}`}
+                                                                                    type="button"
+                                                                                    disabled={isSubmitted}
+                                                                                    onClick={() => handleSelectTestChoice(selectedTest.id, currentQuestionIndex, optionIndex)}
+                                                                                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition ${
+                                                                                        selectedAnswer === optionIndex
+                                                                                            ? "border-violet-500 bg-violet-50 text-violet-800 dark:bg-violet-900/20 dark:text-violet-200"
+                                                                                            : "border-gray-200 text-gray-700 hover:border-violet-300 dark:border-gray-700 dark:text-gray-300"
+                                                                                    } disabled:cursor-not-allowed disabled:opacity-80`}
+                                                                                >
+                                                                                    <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${
+                                                                                        selectedAnswer === optionIndex ? "border-violet-500 bg-violet-500" : "border-gray-300"
+                                                                                    }`}>
+                                                                                        {selectedAnswer === optionIndex && <span className="h-2 w-2 rounded-full bg-white" />}
+                                                                                    </span>
+                                                                                    <span className="font-bold">{["A", "B", "C", "D"][optionIndex]}</span>
+                                                                                    <span>{option}</span>
+                                                                                </button>
+                                                                            ))}
+                                                                        </div>
+                                                                    ) : (
+                                                                        <Textarea
+                                                                            className="mt-3 min-h-[130px]"
+                                                                            placeholder="Nhập câu trả lời..."
+                                                                            disabled={isSubmitted}
+                                                                            value={testAnswers[`${selectedTest.id}:${currentQuestionIndex}`] ?? ""}
+                                                                            onChange={(event) => {
+                                                                                void handleStartTest(selectedTest.id)
+                                                                                setTestAnswers((prev) => ({
+                                                                                    ...prev,
+                                                                                    [`${selectedTest.id}:${currentQuestionIndex}`]: event.target.value,
+                                                                                }))
+                                                                            }}
+                                                                        />
+                                                                    )}
+                                                                </div>
+                                                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                                                    <div className="flex gap-2">
+                                                                        {questions.map((_, index) => (
+                                                                            <button
+                                                                                key={`${selectedTest.id}-question-nav-${index}`}
+                                                                                type="button"
+                                                                                onClick={() => setTestCurrentQuestionById((prev) => ({ ...prev, [selectedTest.id]: index }))}
+                                                                                className={`h-8 w-8 rounded-lg text-xs font-semibold ${
+                                                                                    index === currentQuestionIndex
+                                                                                        ? "bg-violet-600 text-white"
+                                                                                        : testChoiceAnswers[selectedTest.id]?.[index] !== undefined || (testAnswers[`${selectedTest.id}:${index}`] ?? "").trim()
+                                                                                            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                                                                                            : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                                                                                }`}
+                                                                            >
+                                                                                {index + 1}
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+                                                                    <div className="flex gap-2">
+                                                                        <Button
+                                                                            variant="outline"
+                                                                            className="bg-transparent"
+                                                                            disabled={currentQuestionIndex === 0}
+                                                                            onClick={() => setTestCurrentQuestionById((prev) => ({ ...prev, [selectedTest.id]: currentQuestionIndex - 1 }))}
+                                                                        >
+                                                                            Câu trước
+                                                                        </Button>
+                                                                        {currentQuestionIndex < questions.length - 1 ? (
+                                                                            <Button onClick={() => setTestCurrentQuestionById((prev) => ({ ...prev, [selectedTest.id]: currentQuestionIndex + 1 }))}>
+                                                                                Câu tiếp theo
+                                                                            </Button>
+                                                                        ) : (
+                                                                            <Button
+                                                                                disabled={isSubmitted || isSubmitting}
+                                                                                onClick={() => handleSubmitTestAnswer(selectedTest.id)}
+                                                                                className="bg-violet-600 hover:bg-violet-700"
+                                                                            >
+                                                                                {isSubmitted ? "Đã nộp" : (isSubmitting ? "Đang nộp..." : "Nộp bài")}
+                                                                            </Button>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )
+                                            })()
+                                        )}
+
+                                        <div className="flex items-center justify-between gap-2 pt-2 pb-4">
+                                            <Button
+                                                variant="outline"
+                                                className={`bg-transparent ${!prevTest ? "invisible" : ""}`}
+                                                onClick={() => prevTest && setSelectedTestId(prevTest.id)}
+                                            >
+                                                <ChevronLeft className="w-4 h-4 mr-2" />Bài trước
+                                            </Button>
+                                            <span className="text-sm text-gray-400 dark:text-gray-500">
+                                                {currentTestIdx + 1} / {visibleTests.length}
+                                            </span>
+                                            <Button
+                                                variant={nextTest ? "default" : "outline"}
+                                                className={nextTest ? "bg-violet-600 hover:bg-violet-700 text-white" : "bg-transparent invisible"}
+                                                onClick={() => nextTest && setSelectedTestId(nextTest.id)}
+                                            >
+                                                Bài tiếp theo<ChevronRight className="w-4 h-4 ml-2" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="flex h-full items-center justify-center">
+                                        <p className="text-sm text-gray-400">Chọn một bài thi từ danh sách bên trái</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )
+                })()
+            )}
+
             {/* ── Tài liệu tab ── */}
             {activeTab === "all" && <>
 
@@ -4567,19 +6365,21 @@ export default function DocumentsPage() {
                         </>
                     )}
 
-                    {isLeaderOrAdmin && (
+                    {canUploadDocuments && (
                         <>
-                            <Button
-                                variant="outline"
-                                className="border-dashed border-gray-300 bg-transparent text-gray-600 dark:border-gray-600 dark:text-gray-400"
-                                onClick={() => openNewFolderDialog(activeFolderId)}
-                            >
-                                <FolderPlus className="w-4 h-4 mr-2" />
-                                {activeFolder ? "Tạo folder con" : "Tạo folder"}
-                            </Button>
+                            {isLeaderOrAdmin && (
+                                <Button
+                                    variant="outline"
+                                    className="border-dashed border-gray-300 bg-transparent text-gray-600 dark:border-gray-600 dark:text-gray-400"
+                                    onClick={() => openNewFolderDialog(activeFolderId)}
+                                >
+                                    <FolderPlus className="w-4 h-4 mr-2" />
+                                    {activeFolder ? "Tạo folder con" : "Tạo folder"}
+                                </Button>
+                            )}
                             <Button className="bg-blue-600 hover:bg-blue-700" onClick={openCreateDocumentDialog}>
                                 <Plus className="w-4 h-4 mr-2" />
-                                Tạo tài liệu
+                                {isStoreVideoOnlyUploader ? "Tải video" : "Tạo tài liệu"}
                             </Button>
                         </>
                     )}
@@ -4616,19 +6416,21 @@ export default function DocumentsPage() {
                     </div>
 
                     {/* Actions inside folder — leader/admin only */}
-                    {isLeaderOrAdmin && (
+                    {canUploadDocuments && (
                         <div className="ml-auto flex w-full justify-end gap-2 sm:w-auto">
-                            <Button size="sm" variant="outline"
-                                className="border-blue-300 text-blue-700 dark:text-blue-300 bg-transparent"
-                                onClick={() => openNewFolderDialog(activeFolderId)}>
-                                <FolderPlus className="w-3.5 h-3.5 mr-1" />
-                                Tạo folder con
-                            </Button>
+                            {isLeaderOrAdmin && (
+                                <Button size="sm" variant="outline"
+                                    className="border-blue-300 text-blue-700 dark:text-blue-300 bg-transparent"
+                                    onClick={() => openNewFolderDialog(activeFolderId)}>
+                                    <FolderPlus className="w-3.5 h-3.5 mr-1" />
+                                    Tạo folder con
+                                </Button>
+                            )}
                             <Button size="sm" variant="outline"
                                 className="border-blue-300 text-blue-700 dark:text-blue-300 bg-transparent"
                                 onClick={openCreateDocumentDialog}>
                                 <Plus className="w-3.5 h-3.5 mr-1" />
-                                Tạo tài liệu
+                                {isStoreVideoOnlyUploader ? "Tải video" : "Tạo tài liệu"}
                             </Button>
                         </div>
                     )}
@@ -5120,12 +6922,17 @@ export default function DocumentsPage() {
             {createDocumentDialog.open && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3">
                     <div className="w-full max-w-md max-h-[calc(100dvh-1.5rem)] overflow-y-auto rounded-2xl bg-white p-4 shadow-xl dark:bg-gray-800 space-y-4 sm:p-6">
-                        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Tạo tài liệu</h2>
+                        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                            {isStoreVideoOnlyUploader ? "Tải video" : "Tạo tài liệu"}
+                        </h2>
 
                         <div className="space-y-3">
                             <Input
                                 type="file"
-                                accept=".pdf,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                                accept={isStoreVideoOnlyUploader
+                                    ? ".mp4,.mov,.webm,.m4v,video/mp4,video/quicktime,video/webm"
+                                    : ".pdf,.pptx,.mp4,.mov,.webm,.m4v,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,video/mp4,video/quicktime,video/webm"
+                                }
                                 onChange={(e) => {
                                     const file = e.target.files?.[0] ?? null
                                     setCreateDocumentDialog((s) => ({
@@ -5145,18 +6952,23 @@ export default function DocumentsPage() {
                                     }
                                 />
                             </div>
-                            <div className="space-y-1">
-                                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Deadline học liệu (tuỳ chọn)</p>
-                                <Input
-                                    type="datetime-local"
-                                    value={createDocumentDialog.deadlineAt}
-                                    onChange={(e) =>
-                                        setCreateDocumentDialog((s) => ({ ...s, deadlineAt: e.target.value }))
-                                    }
-                                />
-                            </div>
+                            {!isStoreVideoOnlyUploader && !isSelectedUploadVideo && (
+                                <div className="space-y-1">
+                                    <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Deadline học liệu (tuỳ chọn)</p>
+                                    <Input
+                                        type="datetime-local"
+                                        value={createDocumentDialog.deadlineAt}
+                                        onChange={(e) =>
+                                            setCreateDocumentDialog((s) => ({ ...s, deadlineAt: e.target.value }))
+                                        }
+                                    />
+                                </div>
+                            )}
                             <p className="text-xs text-gray-500 dark:text-gray-400">
-                                Chỉ nhận file định dạng PDF hoặc PPTX.
+                                {isStoreVideoOnlyUploader
+                                    ? "Chỉ nhận video MP4, MOV, WEBM hoặc M4V."
+                                    : "Nhận file PDF, PPTX hoặc video MP4, MOV, WEBM, M4V."
+                                }
                             </p>
                             {selectedUploadExt === "pptx" ? (
                                 <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
@@ -5166,25 +6978,49 @@ export default function DocumentsPage() {
                                 <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-2.5 text-xs text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">
                                     Định dạng PDF thường cho kết quả hiển thị ổn định và ít lỗi font nhất trên mọi thiết bị.
                                 </div>
+                            ) : isSelectedUploadVideo ? (
+                                <div className="rounded-lg border border-sky-200 bg-sky-50/70 p-2.5 text-xs text-sky-800 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-300">
+                                    Video sẽ được lưu vào kho file và hiển thị trong Documents của team cửa hàng.
+                                </div>
                             ) : (
                                 <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-2.5 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300">
                                     Mẹo: nếu tài liệu cần hiển thị chính xác tuyệt đối, hãy ưu tiên PDF.
                                 </div>
                             )}
                         </div>
-                        <VisibilityPicker
-                            user={user}
-                            visibility={createDocumentDialog.visibility}
-                            onChange={(v) => setCreateDocumentDialog((s) => ({
-                                ...s,
-                                visibility: v,
-                                selectedOfficePersonIds: (v === "team" || v === "office") ? (s.selectedOfficePersonIds ?? []) : [],
-                            }))}
-                        />
-                        {(createDocumentDialog.visibility === "team" || createDocumentDialog.visibility === "office") && officeSelectablePeople.length > 0 && (
+                        {!isStoreVideoOnlyUploader && (
+                            <VisibilityPicker
+                                user={user}
+                                visibility={createDocumentDialog.visibility}
+                                onChange={(v) => setCreateDocumentDialog((s) => ({
+                                    ...s,
+                                    visibility: v,
+                                    selectedOfficePersonIds: (v === "team" || v === "office") ? (s.selectedOfficePersonIds ?? []) : [],
+                                }))}
+                            />
+                        )}
+                        {!isStoreVideoOnlyUploader && createDocumentDialog.visibility === "store" && storeAudiencePeople.length > 0 && (
                             <div className="space-y-2">
                                 <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                    Nhân viên trực thuộc phòng ban
+                                    Nhân viên cửa hàng sẽ thấy tài liệu
+                                </p>
+                                <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-3 text-xs text-teal-800 dark:border-teal-900/50 dark:bg-teal-950/30 dark:text-teal-300">
+                                    Áp dụng cho toàn bộ <span className="font-semibold">{storeAudiencePeople.length}</span> nhân sự cửa hàng trong hệ thống.
+                                </div>
+                                <div className="max-h-44 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 p-2 space-y-2 bg-white/60 dark:bg-gray-900/20">
+                                    {storeAudiencePeople.map((person) => (
+                                        <div key={person.id} className="rounded-lg px-3 py-2 text-left">
+                                            <p className="text-sm font-medium text-gray-900 dark:text-white">{person.name}</p>
+                                            <p className="text-xs text-gray-500 dark:text-gray-400">{person.email} · {person.role}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {!isStoreVideoOnlyUploader && (createDocumentDialog.visibility === "team" || createDocumentDialog.visibility === "office") && officeSelectablePeople.length > 0 && (
+                            <div className="space-y-2">
+                                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                    {isCeoOrAdmin ? "Nhân viên văn phòng trong hệ thống" : "Nhân viên trực thuộc phòng ban"}
                                 </p>
                                 <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-3 dark:border-gray-700 dark:bg-gray-900/30">
                                     <div className="space-y-2">
@@ -5320,7 +7156,7 @@ export default function DocumentsPage() {
                                     ? "Đang upload..."
                                     : isSubmitting
                                         ? "Đang tạo..."
-                                        : "Tạo"}
+                                        : "Tải lên"}
                             </Button>
                         </div>
                     </div>
@@ -5380,10 +7216,28 @@ export default function DocumentsPage() {
                                 selectedOfficePersonIds: (v === "team" || v === "office") ? (s.selectedOfficePersonIds ?? []) : [],
                             }))}
                         />
+                        {visibilityDialog.visibility === "store" && storeAudiencePeople.length > 0 && (
+                            <div className="space-y-2">
+                                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                    Nhân viên cửa hàng sẽ thấy tài liệu
+                                </p>
+                                <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-3 text-xs text-teal-800 dark:border-teal-900/50 dark:bg-teal-950/30 dark:text-teal-300">
+                                    Áp dụng cho toàn bộ <span className="font-semibold">{storeAudiencePeople.length}</span> nhân sự cửa hàng trong hệ thống.
+                                </div>
+                                <div className="max-h-44 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 p-2 space-y-2 bg-white/60 dark:bg-gray-900/20">
+                                    {storeAudiencePeople.map((person) => (
+                                        <div key={person.id} className="rounded-lg px-3 py-2 text-left">
+                                            <p className="text-sm font-medium text-gray-900 dark:text-white">{person.name}</p>
+                                            <p className="text-xs text-gray-500 dark:text-gray-400">{person.email} · {person.role}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                         {(visibilityDialog.visibility === "team" || visibilityDialog.visibility === "office") && officeSelectablePeople.length > 0 && (
                             <div className="space-y-2">
                                 <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                    Nhân viên trực thuộc phòng ban
+                                    {isCeoOrAdmin ? "Nhân viên văn phòng trong hệ thống" : "Nhân viên trực thuộc phòng ban"}
                                 </p>
                                 <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-3 dark:border-gray-700 dark:bg-gray-900/30">
                                     <div className="space-y-2">
@@ -5519,6 +7373,593 @@ export default function DocumentsPage() {
             )}
 
             </> /* end activeTab === "all" */}
+
+            {activeTakingTest && (() => {
+                const questions = activeTakingTest.quizQuestions && activeTakingTest.quizQuestions.length > 0
+                    ? activeTakingTest.quizQuestions
+                    : activeTakingTest.questions.map((question) => ({
+                        text: question,
+                        options: [],
+                        correctIndex: undefined,
+                        explanation: "",
+                    }))
+                const currentQuestionIndex = Math.min(
+                    Math.max(testCurrentQuestionById[activeTakingTest.id] ?? 0, 0),
+                    Math.max(questions.length - 1, 0)
+                )
+                const currentQuestion = questions[currentQuestionIndex]
+                const selectedAnswer = testChoiceAnswers[activeTakingTest.id]?.[currentQuestionIndex]
+                const remainingSeconds = testRemainingSecondsById[activeTakingTest.id] ?? activeTakingTest.durationMinutes * 60
+                const isQuestionAnswered = (index: number) =>
+                    testChoiceAnswers[activeTakingTest.id]?.[index] !== undefined ||
+                    Boolean((testAnswers[`${activeTakingTest.id}:${index}`] ?? "").trim())
+                const isCurrentQuestionAnswered = isQuestionAnswered(currentQuestionIndex)
+
+                return (
+                    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-3 sm:p-4">
+                        <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-800 shadow-2xl">
+                            <div className="flex items-start justify-between gap-4 border-b border-slate-700 px-5 py-5 sm:px-6">
+                                <div className="min-w-0">
+                                    <h2 className="truncate text-xl font-bold text-white">{activeTakingTest.title}</h2>
+                                    <p className="mt-2 text-sm text-slate-400">Câu {currentQuestionIndex + 1}/{questions.length}</p>
+                                </div>
+                                <div className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-bold ${
+                                    remainingSeconds <= 60
+                                        ? "bg-red-500/20 text-red-300"
+                                        : "bg-slate-700 text-slate-200"
+                                }`}>
+                                    <Timer className="h-4 w-4" />
+                                    {formatTestRemainingTime(remainingSeconds)}
+                                </div>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-6">
+                                {currentQuestion && (
+                                    <div className="space-y-5">
+                                        <p className="text-base font-semibold leading-relaxed text-white">
+                                            {currentQuestion.text}
+                                        </p>
+
+                                        {currentQuestion.options.length > 0 ? (
+                                            <div className="space-y-3">
+                                                {currentQuestion.options.map((option, optionIndex) => (
+                                                    <button
+                                                        key={`${activeTakingTest.id}-locked-option-${currentQuestionIndex}-${optionIndex}`}
+                                                        type="button"
+                                                        onClick={() => handleSelectTestChoice(activeTakingTest.id, currentQuestionIndex, optionIndex)}
+                                                        className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition ${
+                                                            selectedAnswer === optionIndex
+                                                                ? "border-blue-500 bg-blue-950/30 text-white"
+                                                                : "border-slate-600 bg-slate-800 text-slate-200 hover:border-blue-400"
+                                                        }`}
+                                                    >
+                                                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-slate-400 text-sm font-bold">
+                                                            {["A", "B", "C", "D"][optionIndex]}
+                                                        </span>
+                                                        <span className="text-sm sm:text-base">{option}</span>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <Textarea
+                                                className="min-h-[180px] border-slate-600 bg-slate-900 text-white placeholder:text-slate-500 focus-visible:ring-blue-500"
+                                                placeholder="Nhập câu trả lời..."
+                                                value={testAnswers[`${activeTakingTest.id}:${currentQuestionIndex}`] ?? ""}
+                                                onChange={(event) => {
+                                                    void handleStartTest(activeTakingTest.id)
+                                                    setTestAnswers((prev) => ({
+                                                        ...prev,
+                                                        [`${activeTakingTest.id}:${currentQuestionIndex}`]: event.target.value,
+                                                    }))
+                                                }}
+                                            />
+                                        )}
+
+                                        <div className="flex flex-wrap gap-2 pt-2">
+                                            {questions.map((_, index) => {
+                                                const answered = isQuestionAnswered(index)
+                                                const canOpenQuestion = index === currentQuestionIndex || (index < currentQuestionIndex && answered)
+                                                return (
+                                                    <button
+                                                        key={`${activeTakingTest.id}-locked-question-${index}`}
+                                                        type="button"
+                                                        disabled={!canOpenQuestion}
+                                                        onClick={() => setTestCurrentQuestionById((prev) => ({ ...prev, [activeTakingTest.id]: index }))}
+                                                        className={`h-8 w-8 rounded-full text-xs font-bold transition disabled:cursor-not-allowed ${
+                                                            index === currentQuestionIndex
+                                                                ? "bg-blue-600 text-white"
+                                                                : answered
+                                                                    ? "bg-green-600/30 text-green-200 hover:bg-green-600/40"
+                                                                    : "bg-slate-700 text-slate-500 opacity-50"
+                                                        }`}
+                                                    >
+                                                        {index + 1}
+                                                    </button>
+                                                )
+                                            })}
+                                        </div>
+                                        {!isCurrentQuestionAnswered && (
+                                            <p className="text-sm font-medium text-amber-300">
+                                                Vui lòng chọn hoặc nhập câu trả lời để qua câu tiếp theo.
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-700 px-5 py-4 sm:px-6">
+                                <Button
+                                    variant="outline"
+                                    className="border-slate-600 bg-transparent text-slate-200 hover:bg-slate-700 hover:text-white"
+                                    onClick={() => handleEndTakingTest(activeTakingTest.id)}
+                                >
+                                    Kết thúc làm bài
+                                </Button>
+                                <div className="flex gap-2">
+                                    <Button
+                                        variant="outline"
+                                        className="border-slate-600 bg-transparent text-slate-200 hover:bg-slate-700 hover:text-white"
+                                        disabled={currentQuestionIndex === 0 || !isQuestionAnswered(currentQuestionIndex - 1)}
+                                        onClick={() => {
+                                            const previousIndex = currentQuestionIndex - 1
+                                            if (previousIndex >= 0 && isQuestionAnswered(previousIndex)) {
+                                                setTestCurrentQuestionById((prev) => ({ ...prev, [activeTakingTest.id]: previousIndex }))
+                                            }
+                                        }}
+                                    >
+                                        Trước
+                                    </Button>
+                                    {currentQuestionIndex < questions.length - 1 ? (
+                                        <Button
+                                            className="bg-blue-600 text-white hover:bg-blue-700"
+                                            disabled={!isCurrentQuestionAnswered}
+                                            onClick={() => setTestCurrentQuestionById((prev) => ({ ...prev, [activeTakingTest.id]: currentQuestionIndex + 1 }))}
+                                        >
+                                            Tiếp
+                                            <ChevronRight className="ml-2 h-4 w-4" />
+                                        </Button>
+                                    ) : (
+                                        <Button
+                                            disabled={isSubmitting || !isCurrentQuestionAnswered}
+                                            onClick={() => handleSubmitTestAnswer(activeTakingTest.id)}
+                                            className="bg-violet-600 text-white hover:bg-violet-700"
+                                        >
+                                            {isSubmitting ? "Đang nộp..." : "Nộp bài"}
+                                        </Button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )
+            })()}
+
+            {testResultDetail && (() => {
+                const didPass = testResultDetail.score >= QUIZ_PASS_SCORE
+                return (
+                    <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/75 p-3 sm:p-4">
+                        <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-800 shadow-2xl">
+                            <div className="flex-1 overflow-y-auto px-5 py-8 text-center sm:px-8">
+                                <div className={`mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-full ${
+                                    didPass ? "bg-green-500/20" : testResultDetail.score >= 50 ? "bg-amber-500/20" : "bg-red-500/20"
+                                }`}>
+                                    <Trophy className={`h-10 w-10 ${
+                                        didPass ? "text-green-400" : testResultDetail.score >= 50 ? "text-amber-400" : "text-red-400"
+                                    }`} />
+                                </div>
+                                <h2 className="text-3xl font-bold text-white">{testResultDetail.score}/100 điểm</h2>
+                                <p className="mt-2 text-base text-slate-400">
+                                    {testResultDetail.correctAnswers}/{testResultDetail.totalQuestions} câu đúng
+                                </p>
+                                {!didPass && (
+                                    <p className="mx-auto mt-4 max-w-md text-sm font-semibold text-red-300">
+                                        Chưa đạt yêu cầu {QUIZ_PASS_SCORE}%. Bạn có thể làm lại bài thi sau.
+                                    </p>
+                                )}
+
+                                {testResultDetail.test.quizQuestions && (
+                                    <div className="mt-7 max-h-80 space-y-3 overflow-y-auto pr-2 text-left">
+                                        {testResultDetail.test.quizQuestions.map((question, index) => {
+                                            const myAnswer = testResultDetail.answers[index]
+                                            const correct = question.correctIndex ?? 0
+                                            const isCorrect = myAnswer === correct
+                                            return (
+                                                <div
+                                                    key={`${testResultDetail.test.id}-result-${index}`}
+                                                    className={`rounded-xl border p-3 ${
+                                                        isCorrect
+                                                            ? "border-green-500/70 bg-green-950/20"
+                                                            : "border-red-400/70 bg-red-950/20"
+                                                    }`}
+                                                >
+                                                    <div className="flex items-start gap-2">
+                                                        {isCorrect
+                                                            ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-400" />
+                                                            : <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+                                                        }
+                                                        <p className="text-sm font-semibold text-slate-100">{question.text}</p>
+                                                    </div>
+                                                    <p className="mt-2 pl-6 text-xs text-slate-400">
+                                                        Đáp án đúng: <strong>{["A", "B", "C", "D"][correct]} — {question.options[correct]}</strong>
+                                                        {!isCorrect && myAnswer >= 0 && <> · Bạn chọn: {["A", "B", "C", "D"][myAnswer]}</>}
+                                                    </p>
+                                                    {question.explanation && (
+                                                        <p className="mt-1 pl-6 text-xs text-blue-300">{question.explanation}</p>
+                                                    )}
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex flex-wrap justify-center gap-3 border-t border-slate-700 px-5 py-5 sm:px-8">
+                                <Button
+                                    variant="outline"
+                                    className="border-slate-600 bg-transparent px-8 text-slate-200 hover:bg-slate-700 hover:text-white"
+                                    onClick={() => setTestResultDetail(null)}
+                                >
+                                    Làm lại sau
+                                </Button>
+                                <Button
+                                    className="bg-blue-600 px-8 text-white hover:bg-blue-700"
+                                    onClick={() => handleRetakeTestNow(testResultDetail.test.id)}
+                                >
+                                    <ClipboardCheck className="mr-2 h-4 w-4" />
+                                    Làm lại ngay
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            })()}
+
+            {testHistoryDialog.open && testHistoryDialog.test && (() => {
+                const history = testSubmissionHistory[testHistoryDialog.test.id] ?? []
+                return (
+                    <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/65 p-3 sm:p-4">
+                        <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+                            <div className="flex items-start justify-between gap-4 border-b border-slate-700 px-5 py-5 sm:px-6">
+                                <div>
+                                    <h3 className="text-lg font-bold text-white">Lịch sử bài làm</h3>
+                                    <p className="mt-1 text-sm text-slate-400">{testHistoryDialog.test.title}</p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setTestHistoryDialog({ open: false, test: null })}
+                                    className="text-slate-400 hover:text-white"
+                                    aria-label="Đóng lịch sử bài làm"
+                                >
+                                    <X className="h-5 w-5" />
+                                </button>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-5 sm:p-6">
+                                {history.length === 0 ? (
+                                    <p className="rounded-xl border border-slate-700 bg-slate-800/40 p-4 text-sm text-slate-400">
+                                        Chưa có lịch sử làm bài.
+                                    </p>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {history.map((submission, index) => {
+                                            const result = getTestSubmissionResult(testHistoryDialog.test!, submission)
+                                            return (
+                                                <div
+                                                    key={submission.id}
+                                                    className={`rounded-xl border p-4 ${
+                                                        result?.didPass
+                                                            ? "border-green-500/60 bg-green-950/20"
+                                                            : "border-red-500/60 bg-red-950/20"
+                                                    }`}
+                                                >
+                                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                                        <div>
+                                                            <p className="text-sm font-semibold text-slate-300">Lần làm {history.length - index}</p>
+                                                            <p className="mt-1 text-xs text-slate-500">
+                                                                {new Date(submission.submittedAt).toLocaleString("vi-VN")}
+                                                            </p>
+                                                        </div>
+                                                        {result && (
+                                                            <div className="text-right">
+                                                                <p className="text-xl font-bold text-white">{result.score}/100</p>
+                                                                <p className={`text-xs font-semibold ${result.didPass ? "text-green-300" : "text-amber-300"}`}>
+                                                                    {result.didPass ? "Đã hoàn thành" : "Chưa đạt"}
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    {result && (
+                                                        <p className="mt-3 text-sm text-slate-400">
+                                                            {result.correctAnswers}/{result.totalQuestions} câu đúng
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )
+            })()}
+
+            {testProgressModal.open && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
+                    <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-6xl flex-col rounded-2xl border border-slate-700/70 bg-slate-900 shadow-2xl sm:max-h-[88vh]">
+                        <div className="flex items-center justify-between border-b border-slate-700/70 px-5 pb-5 pt-5 sm:px-7">
+                            <div>
+                                <h2 className="text-xl font-bold text-white">Tiến độ làm bài thi</h2>
+                                <p className="mt-1 text-sm text-slate-400">{testProgressModal.test?.title}</p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <Button
+                                    type="button"
+                                    onClick={handleExportTestProgressExcel}
+                                    disabled={testProgressModal.isLoading}
+                                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                                >
+                                    <FileDown className="mr-2 h-4 w-4" />
+                                    Xuất Excel
+                                </Button>
+                                <button
+                                    type="button"
+                                    onClick={closeTestProgressModal}
+                                    className="text-slate-400 hover:text-white"
+                                    aria-label="Đóng tiến độ bài thi"
+                                >
+                                    <X className="h-5 w-5" />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-7">
+                            {testProgressModal.isLoading ? (
+                                <div className="flex items-center justify-center gap-2 py-16 text-sm text-slate-300">
+                                    <Loader2 className="h-5 w-5 animate-spin" />
+                                    Đang tải tiến độ...
+                                </div>
+                            ) : (
+                                (() => {
+                                    const statuses = testProgressModal.statuses
+                                    const completedTests = statuses.filter((item) => item.status === "submitted")
+                                    const notTakenTests = statuses.filter((item) => item.status === "not_submitted")
+                                    const inProgressTests = statuses.filter((item) => item.status === "in_progress")
+                                    const renderStatusList = (
+                                        rows: TestProgressRow[],
+                                        emptyText: string,
+                                        tone: "blue" | "white" | "gray",
+                                        title: string,
+                                    ) => (
+                                        <div className="max-h-[320px] space-y-3 overflow-y-auto pr-2">
+                                            {rows.length === 0 ? (
+                                                <p className="rounded-xl border border-slate-700/80 bg-slate-800/50 p-4 text-sm text-slate-400">
+                                                    {emptyText}
+                                                </p>
+                                            ) : rows.map((row) => (
+                                                (() => {
+                                                    const statusTime = row.submittedAt ?? row.startedAt
+                                                    const rowSubmission = testProgressModal.submissions.find((submission) => submission.personId === row.personId)
+                                                    const rowResult = testProgressModal.test ? getTestSubmissionResult(testProgressModal.test, rowSubmission) : null
+                                                    return (
+                                                <div
+                                                    key={row.personId}
+                                                    onClick={() => openTestStatusListDetail(title, rows)}
+                                                    className={`cursor-pointer rounded-xl border px-4 py-3 text-left transition hover:border-violet-400/70 ${
+                                                        tone === "blue"
+                                                            ? "border-blue-500 bg-blue-950/30"
+                                                            : tone === "white"
+                                                                ? "border-transparent bg-transparent hover:bg-slate-800/50"
+                                                                : "border-slate-700 bg-slate-800/30"
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <p className={`truncate text-base font-semibold ${
+                                                            tone === "blue" ? "text-blue-100" : tone === "gray" ? "text-slate-200" : "text-white"
+                                                        }`}>
+                                                            {row.personName}
+                                                        </p>
+                                                        {statusTime && (
+                                                            <span className="shrink-0 text-xs text-slate-500">
+                                                                {new Date(statusTime).toLocaleDateString("vi-VN")}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {rowResult && (
+                                                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                                                            <span className={`font-bold ${rowResult.didPass ? "text-green-300" : "text-red-300"}`}>
+                                                                {rowResult.score}/100 điểm
+                                                            </span>
+                                                            <span className={rowResult.didPass ? "text-green-300" : "text-amber-300"}>
+                                                                {rowResult.correctAnswers}/{rowResult.totalQuestions} câu đúng · {rowResult.didPass ? "Đạt" : "Chưa đạt"}
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                    )
+                                                })()
+                                            ))}
+                                        </div>
+                                    )
+
+                                    return (
+                                        <div className="space-y-6">
+                                            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openTestStatusListDetail("Đã thi", completedTests)}
+                                                    className="rounded-xl bg-blue-950/50 px-5 py-5 text-center transition hover:ring-2 hover:ring-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                                                >
+                                                    <p className="text-3xl font-bold text-blue-300">{completedTests.length}</p>
+                                                    <p className="mt-1 text-sm font-medium text-blue-300">Đã thi</p>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openTestStatusListDetail("Chưa thi", notTakenTests)}
+                                                    className="rounded-xl bg-transparent px-5 py-5 text-center transition hover:ring-2 hover:ring-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                                                >
+                                                    <p className="text-3xl font-bold text-white">{notTakenTests.length}</p>
+                                                    <p className="mt-1 text-sm font-medium text-white">Chưa thi</p>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openTestStatusListDetail("Đang thi", inProgressTests)}
+                                                    className="rounded-xl bg-slate-800/80 px-5 py-5 text-center transition hover:ring-2 hover:ring-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                                                >
+                                                    <p className="text-3xl font-bold text-white">{inProgressTests.length}</p>
+                                                    <p className="mt-1 text-sm font-medium text-slate-400">Đang thi</p>
+                                                </button>
+                                            </div>
+
+                                            <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+                                                <div
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => openTestStatusListDetail("Đã thi", completedTests)}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter" || event.key === " ") openTestStatusListDetail("Đã thi", completedTests)
+                                                    }}
+                                                    className="rounded-xl border border-blue-600 bg-slate-800/50 p-5 outline-none transition hover:border-blue-400 focus:ring-2 focus:ring-blue-400"
+                                                >
+                                                    <h3 className="mb-4 text-base font-bold text-blue-200">Đã thi</h3>
+                                                    {renderStatusList(completedTests, "Chưa có nhân viên nào thi xong.", "blue", "Đã thi")}
+                                                </div>
+                                                <div
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => openTestStatusListDetail("Chưa thi", notTakenTests)}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter" || event.key === " ") openTestStatusListDetail("Chưa thi", notTakenTests)
+                                                    }}
+                                                    className="rounded-xl p-5 outline-none transition hover:bg-slate-800/20 focus:ring-2 focus:ring-slate-400"
+                                                >
+                                                    <h3 className="mb-4 text-base font-bold text-white">Chưa thi</h3>
+                                                    {renderStatusList(notTakenTests, "Tất cả nhân viên đã thi.", "white", "Chưa thi")}
+                                                </div>
+                                                <div
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => openTestStatusListDetail("Đang thi", inProgressTests)}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter" || event.key === " ") openTestStatusListDetail("Đang thi", inProgressTests)
+                                                    }}
+                                                    className="rounded-xl border border-slate-600 bg-slate-800/30 p-5 outline-none transition hover:border-violet-400 focus:ring-2 focus:ring-violet-400"
+                                                >
+                                                    <h3 className="mb-4 text-base font-bold text-slate-200">Đang thi</h3>
+                                                    {renderStatusList(inProgressTests, "Chưa có nhân viên đang thi.", "gray", "Đang thi")}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )
+                                })()
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {selectedTestStatusListDetail && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-3 sm:p-4">
+                    <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-5xl flex-col rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl sm:max-h-[82vh]">
+                        <div className="flex items-start justify-between gap-4 border-b border-slate-700/80 px-5 py-5 sm:px-6">
+                            <div>
+                                <h3 className="text-lg font-bold text-white">{selectedTestStatusListDetail.title}</h3>
+                                <p className="mt-1 text-sm text-slate-400">
+                                    {selectedTestStatusListDetail.rows.length}/{testProgressModal.statuses.length} nhân viên
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSelectedTestStatusListDetail(null)
+                                    setTestStatusListSearch("")
+                                }}
+                                className="text-slate-400 hover:text-white"
+                                aria-label="Đóng danh sách chi tiết"
+                            >
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+                        <div className="space-y-4 px-5 py-4 sm:px-6">
+                            <div className="relative">
+                                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                                <Input
+                                    value={testStatusListSearch}
+                                    onChange={(event) => setTestStatusListSearch(event.target.value)}
+                                    placeholder="Tìm theo tên hoặc email..."
+                                    className="border-slate-700 bg-slate-950 pl-9 text-slate-100 placeholder:text-slate-500 focus-visible:ring-violet-500"
+                                />
+                            </div>
+                        </div>
+                        <div className="flex-1 overflow-y-auto px-5 pb-6 sm:px-6">
+                            {(() => {
+                                const query = testStatusListSearch.toLowerCase().trim()
+                                const filteredRows = selectedTestStatusListDetail.rows.filter((row) => {
+                                    const detail = getTestStatusPersonDetail(row)
+                                    return (
+                                        !query ||
+                                        row.personName.toLowerCase().includes(query) ||
+                                        detail.email.toLowerCase().includes(query)
+                                    )
+                                })
+                                const toneClassByStatus: Record<TestProgressRow["status"], string> = {
+                                    submitted: "border-green-500/80 bg-emerald-950/20",
+                                    in_progress: "border-amber-500/80 bg-amber-950/10",
+                                    not_submitted: "border-red-500/80 bg-red-950/10",
+                                }
+
+                                if (filteredRows.length === 0) {
+                                    return (
+                                        <p className="rounded-xl border border-slate-700 bg-slate-800/40 p-5 text-sm text-slate-400">
+                                            Không tìm thấy nhân viên phù hợp.
+                                        </p>
+                                    )
+                                }
+
+                                return (
+                                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                                        {filteredRows.map((row) => {
+                                            const detail = getTestStatusPersonDetail(row)
+                                            const rowSubmission = testProgressModal.submissions.find((submission) => submission.personId === row.personId)
+                                            const rowResult = testProgressModal.test ? getTestSubmissionResult(testProgressModal.test, rowSubmission) : null
+                                            return (
+                                                <div
+                                                    key={`test-status-detail-${row.personId}`}
+                                                    className={`rounded-xl border p-4 ${toneClassByStatus[row.status]}`}
+                                                >
+                                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                                        <div>
+                                                            <p className="text-base font-bold text-white">{row.personName}</p>
+                                                            <p className="mt-0.5 text-sm text-slate-400">{detail.email || "Chưa có email"}</p>
+                                                        </div>
+                                                        {rowResult && (
+                                                            <div className="text-right">
+                                                                <p className="text-lg font-bold text-white">{rowResult.score}/100</p>
+                                                                <p className={`text-xs font-semibold ${rowResult.didPass ? "text-green-300" : "text-amber-300"}`}>
+                                                                    {rowResult.didPass ? "Đạt" : "Chưa đạt"}
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <p className="mt-1 text-sm text-slate-300">{detail.role}</p>
+                                                    {rowResult && (
+                                                        <p className="mt-1 text-sm text-slate-400">
+                                                            {rowResult.correctAnswers}/{rowResult.totalQuestions} câu đúng
+                                                        </p>
+                                                    )}
+                                                    <p className="mt-2 text-sm text-slate-200">
+                                                        Phụ trách: <span className="font-semibold">{detail.supervisorName}</span>
+                                                    </p>
+                                                    <p className="mt-1 text-sm text-slate-400">
+                                                        Cửa hàng: {detail.storeText}
+                                                    </p>
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                )
+                            })()}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ── Quiz Create Dialog ───────────────────────────────────── */}
             {quizCreateDialog.open && (
@@ -5794,7 +8235,10 @@ export default function DocumentsPage() {
                                         <ChevronLeft className="w-4 h-4 mr-1" />Trước
                                     </Button>
                                     {quizTakeModal.currentQuestion < quizTakeModal.quiz.questions.length - 1 ? (
-                                        <Button onClick={() => moveToQuizQuestion(quizTakeModal.currentQuestion + 1)}>
+                                        <Button
+                                            disabled={!canNavigateToQuestion(quizTakeModal.currentQuestion + 1, quizTakeModal)}
+                                            onClick={() => moveToQuizQuestion(quizTakeModal.currentQuestion + 1)}
+                                        >
                                             Tiếp <ChevronRight className="w-4 h-4 ml-1" />
                                         </Button>
                                     ) : (
@@ -5832,7 +8276,7 @@ export default function DocumentsPage() {
                                 </p>
                                 {!didPass && (
                                     <p className="mt-2 max-w-md text-sm font-medium text-red-600 dark:text-red-400">
-                                        Chưa đạt yêu cầu {QUIZ_PASS_SCORE}%. Bạn cần làm lại bài kiểm tra ngay để hoàn thành.
+                                        Chưa đạt yêu cầu {QUIZ_PASS_SCORE}%. Bạn cần làm lại bài kiểm tra để hoàn thành.
                                     </p>
                                 )}
                                 <div className="mb-6" />
@@ -5862,13 +8306,22 @@ export default function DocumentsPage() {
                                 {didPass ? (
                                     <Button className="mt-6" onClick={() => setQuizTakeModal(defaultQuizTake())}>Đóng</Button>
                                 ) : (
-                                    <Button
-                                        className="mt-6 bg-blue-600 text-white hover:bg-blue-700"
-                                        onClick={() => currentDoc && handleOpenQuizTake(currentDoc)}
-                                    >
-                                        <ClipboardCheck className="mr-2 h-4 w-4" />
-                                        Làm lại ngay
-                                    </Button>
+                                    <div className="mt-6 flex flex-wrap justify-center gap-3">
+                                        <Button
+                                            variant="outline"
+                                            className="bg-transparent"
+                                            onClick={() => setQuizTakeModal(defaultQuizTake())}
+                                        >
+                                            Làm lại sau
+                                        </Button>
+                                        <Button
+                                            className="bg-blue-600 text-white hover:bg-blue-700"
+                                            onClick={() => currentDoc && handleOpenQuizTake(currentDoc)}
+                                        >
+                                            <ClipboardCheck className="mr-2 h-4 w-4" />
+                                            Làm lại ngay
+                                        </Button>
+                                    </div>
                                 )}
                                         </>
                                     )

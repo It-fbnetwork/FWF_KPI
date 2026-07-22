@@ -28,7 +28,11 @@ export default function TestsPage() {
   const [durationMinutes, setDurationMinutes] = useState("30");
   const [questionsText, setQuestionsText] = useState("");
 
-  const canManageTests = user?.role === "leader" && user?.department === "Vận hành";
+  const canManageTests =
+    user?.role === "admin" ||
+    user?.role === "ceo" ||
+    (user?.role === "leader" && user?.department === "Vận hành") ||
+    (user?.role === "store_trainer" && user?.department === "Cửa hàng");
 
   const parsedQuestions = useMemo(
     () =>
