@@ -191,15 +191,27 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         timezone: currentUser.workingHours.timezone,
     })
 
-    const sidebarItems: SidebarItem[] = [
-        { name: "Dashboard", icon: BarChart3, path: "/dashboard" },
-        { name: "Teams", icon: FileText, path: "/projects" },
-        { name: "My Task", icon: CheckCircle, path: "/" },
-        { name: "People", icon: Users, path: "/people" },
-        { name: "Chats", icon: MessageSquare, path: "/chats" },
-        { name: "E-learning", icon: FileText, path: "/documents" },
-        { name: "Receipts", icon: Receipt, path: "/recipts" },
-    ]
+    const canAccessELearning =
+        user?.department === "Cửa hàng" || user?.role === "admin" || user?.role === "ceo"
+    const isStoreSidebarUser =
+        !isAdminLikeRole(user?.role) &&
+        (user?.department === "Cửa hàng" || user?.role?.startsWith("store_"))
+    const sidebarItems: SidebarItem[] = isStoreSidebarUser
+        ? [
+            { name: "Dashboard", icon: BarChart3, path: "/dashboard" },
+            { name: "People", icon: Users, path: "/people" },
+            { name: "E-learning", icon: FileText, path: "/documents" },
+            { name: "Chats", icon: MessageSquare, path: "/chats" },
+        ]
+        : [
+            { name: "Dashboard", icon: BarChart3, path: "/dashboard" },
+            { name: "Teams", icon: FileText, path: "/projects" },
+            { name: "My Task", icon: CheckCircle, path: "/" },
+            { name: "People", icon: Users, path: "/people" },
+            { name: "Chats", icon: MessageSquare, path: "/chats" },
+            ...(canAccessELearning ? [{ name: "E-learning", icon: FileText, path: "/documents" } as SidebarItem] : []),
+            { name: "Receipts", icon: Receipt, path: "/recipts" },
+        ]
     const isOperationsLeader = user?.role === "leader" && user?.department === "Vận hành"
     if (isOperationsLeader) {
         sidebarItems.splice(3, 0, { name: "Tạo bài kiểm tra", icon: ClipboardCheck, path: "/tests" })
@@ -658,6 +670,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     })}
                 </nav>
 
+                {!isStoreSidebarUser && (
                 <div className="p-4 border-t border-gray-200 dark:border-gray-700">
                     <div className="mb-4">
                         <div className="flex items-center justify-between mb-2">
@@ -794,6 +807,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         </button>
                     </div>
                 </div>
+                )}
             </div>
 
             {/* Main Content */}
@@ -1071,14 +1085,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         </button>
                     )
                 })}
-                {/* More button → opens sidebar */}
-                <button
-                    onClick={() => setIsSidebarOpen(true)}
-                    className="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium text-gray-500 dark:text-gray-400"
-                >
-                    <Menu className="h-5 w-5 text-gray-400 dark:text-gray-500" />
-                    <span>Thêm</span>
-                </button>
+                {sidebarItems.length > mobileBottomNavItems.length && (
+                    <button
+                        onClick={() => setIsSidebarOpen(true)}
+                        className="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium text-gray-500 dark:text-gray-400"
+                    >
+                        <Menu className="h-5 w-5 text-gray-400 dark:text-gray-500" />
+                        <span>Thêm</span>
+                    </button>
+                )}
             </nav>
 
             <Dialog open={isProfileDialogOpen} onOpenChange={setIsProfileDialogOpen}>

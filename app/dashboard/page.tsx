@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react"
 import { Pie, PieChart, Cell } from "recharts"
-import { CalendarDays, ChevronDown, Search, GraduationCap, ChevronRight, CheckCircle2, XCircle } from "lucide-react"
+import { CalendarDays, ChevronDown, Search, GraduationCap, ChevronRight, CheckCircle2, XCircle, ClipboardCheck } from "lucide-react"
 
 import { useAuth } from "@/components/auth-provider"
 import { useDirectory } from "@/components/directory-provider"
@@ -49,6 +49,36 @@ type QuizReportRow = {
     highestScore: number
     lastAttemptAt?: string
     attempts: QuizReportAttempt[]
+}
+
+type TestReportAttempt = {
+    testId: string
+    testTitle: string
+    score: number
+    correctAnswers: number
+    totalQuestions: number
+    attemptRound: number
+    retakeCount: number
+    submittedAt: string
+}
+
+type TestReportRow = {
+    personId: string
+    personName: string
+    teamId: string
+    teamName: string
+    testTotal: number
+    testSubmitted: number
+    testInProgress: number
+    testNotStarted: number
+    testProgressPercent: number
+    totalAttempts: number
+    retakeCount: number
+    averageScore: number
+    highestScore: number
+    passCount: number
+    lastAttemptAt?: string
+    attempts: TestReportAttempt[]
 }
 
 type ViewMode = "employee" | "project"
@@ -144,8 +174,13 @@ export default function DashboardPage() {
     const [searchQuery, setSearchQuery] = useState("")
     const [quizReport, setQuizReport] = useState<QuizReportRow[]>([])
     const [quizReportLoading, setQuizReportLoading] = useState(true)
+    const [testReport, setTestReport] = useState<TestReportRow[]>([])
+    const [testReportLoading, setTestReportLoading] = useState(true)
     const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
+    const [expandedTestRows, setExpandedTestRows] = useState<Set<string>>(new Set())
     const [quizSearchQuery, setQuizSearchQuery] = useState("")
+    const [testSearchQuery, setTestSearchQuery] = useState("")
+    const [activeReport, setActiveReport] = useState<"quiz" | "test">("quiz")
     const [showParticipantModal, setShowParticipantModal] = useState(false)
     const isAdminUser = isAdminLikeRole(user?.role)
     const currentUser =
@@ -163,6 +198,10 @@ export default function DashboardPage() {
         isAdminUser ||
         user?.role === "leader" ||
         currentUser.role.toLowerCase() === "leader"
+    const isStoreDashboardUser =
+        !isAdminUser &&
+        user?.role !== "ceo" &&
+        (user?.department === "Cửa hàng" || currentUser.team === "store")
     const accessibleMemberIds = useMemo(
         () =>
             canViewAllData
@@ -216,12 +255,21 @@ export default function DashboardPage() {
     useEffect(() => {
         const load = async () => {
             try {
-                const res = await fetch("/api/learning/report", { credentials: "include", cache: "no-store" })
-                if (!res.ok) return
-                const data = (await res.json()) as { rows: QuizReportRow[] }
-                setQuizReport(data.rows ?? [])
+                const [quizRes, testRes] = await Promise.all([
+                    fetch("/api/learning/report", { credentials: "include", cache: "no-store" }),
+                    fetch("/api/tests/report", { credentials: "include", cache: "no-store" }),
+                ])
+                if (quizRes.ok) {
+                    const data = (await quizRes.json()) as { rows: QuizReportRow[] }
+                    setQuizReport(data.rows ?? [])
+                }
+                if (testRes.ok) {
+                    const data = (await testRes.json()) as { rows: TestReportRow[] }
+                    setTestReport(data.rows ?? [])
+                }
             } catch { /* ignore */ } finally {
                 setQuizReportLoading(false)
+                setTestReportLoading(false)
             }
         }
         void load()
@@ -359,22 +407,13 @@ export default function DashboardPage() {
         [tableRows],
     )
 
-    // Accessible people (scoped by permission)
-    const accessiblePeople = useMemo(
-        () => people.filter((p) => accessibleMemberIds.includes(p.id)),
-        [people, accessibleMemberIds]
-    )
     const quizParticipants = useMemo(
         () => quizReport.filter((row) => row.totalAttempts > 0),
         [quizReport]
     )
-    const participantPersonIds = useMemo(
-        () => new Set(quizParticipants.map((r) => r.personId)),
-        [quizParticipants]
-    )
     const nonParticipants = useMemo(
-        () => accessiblePeople.filter((p) => !participantPersonIds.has(p.id)),
-        [accessiblePeople, participantPersonIds]
+        () => quizReport.filter((row) => row.totalAttempts === 0),
+        [quizReport]
     )
 
     return (
@@ -386,6 +425,8 @@ export default function DashboardPage() {
                     </h1>
                 </div>
 
+                {!isStoreDashboardUser && (
+                <>
                 <Card className="border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
                     <CardContent className="flex flex-col gap-4 p-3 sm:p-4 lg:flex-row lg:items-center lg:justify-between lg:p-5">
                         <div className="flex flex-wrap items-center gap-6">
@@ -677,8 +718,38 @@ export default function DashboardPage() {
                         </div>
                     </CardContent>
                 </Card>
+                </>
+                )}
+
+                <div className="flex w-full gap-1 overflow-x-auto rounded-xl bg-gray-100 p-1 dark:bg-gray-800 sm:w-fit">
+                    <button
+                        type="button"
+                        onClick={() => setActiveReport("quiz")}
+                        className={`flex items-center gap-2 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition-all ${
+                            activeReport === "quiz"
+                                ? "bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white"
+                                : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                        }`}
+                    >
+                        <GraduationCap className="h-4 w-4" />
+                        Kiểm tra học liệu
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setActiveReport("test")}
+                        className={`flex items-center gap-2 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition-all ${
+                            activeReport === "test"
+                                ? "bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white"
+                                : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                        }`}
+                    >
+                        <ClipboardCheck className="h-4 w-4" />
+                        Bài thi
+                    </button>
+                </div>
 
                 {/* ── Quiz / E-learning Report ─────────────────────────── */}
+                {activeReport === "quiz" && (
                 <Card className="border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
                     <CardHeader className="pb-2">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -913,6 +984,246 @@ export default function DashboardPage() {
                         })()}
                     </CardContent>
                 </Card>
+                )}
+
+                {/* ── Test Report ─────────────────────────────────────── */}
+                {activeReport === "test" && (
+                <Card className="border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                    <CardHeader className="pb-2">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex items-center gap-2">
+                                <ClipboardCheck className="h-5 w-5 text-violet-500" />
+                                <CardTitle className="text-xl text-gray-900 dark:text-white">
+                                    Báo cáo kết quả bài thi
+                                </CardTitle>
+                            </div>
+                            <div className="relative w-full min-w-0 sm:w-[240px]">
+                                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                                <Input
+                                    value={testSearchQuery}
+                                    onChange={(e) => setTestSearchQuery(e.target.value)}
+                                    placeholder="Tìm nhân viên..."
+                                    className="pl-9 h-9"
+                                />
+                            </div>
+                        </div>
+                    </CardHeader>
+                    <CardContent className="pt-2">
+                        {testReportLoading ? (
+                            <div className="flex items-center justify-center py-12 text-sm text-gray-400">
+                                Đang tải dữ liệu...
+                            </div>
+                        ) : testReport.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-14 text-center">
+                                <ClipboardCheck className="mb-3 h-10 w-10 text-gray-300 dark:text-gray-600" />
+                                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Chưa có dữ liệu bài thi nào</p>
+                                <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                                    Kết quả bài thi sẽ hiển thị khi có bài thi trong phạm vi của bạn.
+                                </p>
+                            </div>
+                        ) : (() => {
+                            const filtered = testReport.filter((row) =>
+                                !testSearchQuery.trim() ||
+                                row.personName.toLowerCase().includes(testSearchQuery.trim().toLowerCase()) ||
+                                row.teamName.toLowerCase().includes(testSearchQuery.trim().toLowerCase())
+                            )
+                            const assignedPeople = filtered.filter((row) => row.testTotal > 0)
+                            const completedPeople = filtered.filter((row) => row.testTotal > 0 && row.testSubmitted >= row.testTotal)
+                            const inProgressPeople = filtered.filter((row) => row.testInProgress > 0)
+                            const totalAttempts = filtered.reduce((sum, row) => sum + row.totalAttempts, 0)
+                            const rowsWithAttempts = filtered.filter((row) => row.totalAttempts > 0)
+                            const avgScore = rowsWithAttempts.length === 0
+                                ? 0
+                                : Math.round(rowsWithAttempts.reduce((sum, row) => sum + row.averageScore, 0) / rowsWithAttempts.length)
+                            const passPeople = filtered.filter((row) => row.highestScore >= QUIZ_PASS_SCORE).length
+
+                            return (
+                                <div className="space-y-4">
+                                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                        <div className="rounded-xl bg-violet-50 px-4 py-3 dark:bg-violet-900/20">
+                                            <p className="text-xs text-violet-600 dark:text-violet-400">Nhân viên cần thi</p>
+                                            <p className="mt-1 text-2xl font-bold text-violet-700 dark:text-violet-300">{assignedPeople.length}</p>
+                                        </div>
+                                        <div className="rounded-xl bg-emerald-50 px-4 py-3 dark:bg-emerald-900/20">
+                                            <p className="text-xs text-emerald-600 dark:text-emerald-400">Đã hoàn thành</p>
+                                            <p className="mt-1 text-2xl font-bold text-emerald-700 dark:text-emerald-300">{completedPeople.length}</p>
+                                        </div>
+                                        <div className="rounded-xl bg-blue-50 px-4 py-3 dark:bg-blue-900/20">
+                                            <p className="text-xs text-blue-600 dark:text-blue-400">Đang thi</p>
+                                            <p className="mt-1 text-2xl font-bold text-blue-700 dark:text-blue-300">{inProgressPeople.length}</p>
+                                        </div>
+                                        <div className="rounded-xl bg-amber-50 px-4 py-3 dark:bg-amber-900/20">
+                                            <p className="text-xs text-amber-600 dark:text-amber-400">Điểm TB toàn bộ</p>
+                                            <p className="mt-1 text-2xl font-bold text-amber-700 dark:text-amber-300">{avgScore}</p>
+                                        </div>
+                                        <div className="rounded-xl bg-green-50 px-4 py-3 dark:bg-green-900/20">
+                                            <p className="text-xs text-green-600 dark:text-green-400">Đạt ≥ {QUIZ_PASS_SCORE} điểm</p>
+                                            <p className="mt-1 text-2xl font-bold text-green-700 dark:text-green-300">{passPeople}</p>
+                                        </div>
+                                        <div className="rounded-xl bg-slate-50 px-4 py-3 dark:bg-slate-800/70">
+                                            <p className="text-xs text-slate-500 dark:text-slate-400">Tổng lượt nộp</p>
+                                            <p className="mt-1 text-2xl font-bold text-slate-800 dark:text-slate-100">{totalAttempts}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
+                                        <div className="overflow-x-auto">
+                                            <table className="min-w-full text-sm">
+                                                <thead className="bg-gray-50 dark:bg-gray-800/80">
+                                                    <tr className="text-left text-gray-600 dark:text-gray-300">
+                                                        <th className="w-8 px-3 py-3" />
+                                                        <th className="px-5 py-3 font-semibold">Nhân viên</th>
+                                                        <th className="px-5 py-3 font-semibold">Phòng ban</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Bài cần thi</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Đã thi</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Đang thi</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Chưa thi</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Làm lại</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Điểm TB</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Điểm cao nhất</th>
+                                                        <th className="px-5 py-3 font-semibold">Xếp loại</th>
+                                                        <th className="px-5 py-3 font-semibold">Lần cuối</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+                                                    {filtered.length === 0 ? (
+                                                        <tr>
+                                                            <td colSpan={12} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                                                                Không tìm thấy nhân viên phù hợp.
+                                                            </td>
+                                                        </tr>
+                                                    ) : filtered.map((row) => {
+                                                        const isExpanded = expandedTestRows.has(row.personId)
+                                                        const scoreColor = row.averageScore >= QUIZ_PASS_SCORE
+                                                            ? "text-green-600 dark:text-green-400"
+                                                            : row.averageScore >= 50
+                                                                ? "text-amber-600 dark:text-amber-400"
+                                                                : "text-red-500 dark:text-red-400"
+                                                        const rank = row.testTotal === 0
+                                                            ? "Không có bài thi"
+                                                            : row.highestScore >= QUIZ_PASS_SCORE && row.testSubmitted >= row.testTotal
+                                                                ? "Đã hoàn thành"
+                                                                : row.totalAttempts > 0
+                                                                    ? "Cần làm lại"
+                                                                    : row.testInProgress > 0
+                                                                        ? "Đang thi"
+                                                                        : "Chưa thi"
+                                                        const rankColor = row.testTotal === 0
+                                                            ? "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+                                                            : row.highestScore >= QUIZ_PASS_SCORE && row.testSubmitted >= row.testTotal
+                                                                ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
+                                                                : row.totalAttempts > 0
+                                                                    ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
+                                                                    : row.testInProgress > 0
+                                                                        ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
+                                                                        : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+
+                                                        return (
+                                                            <Fragment key={row.personId}>
+                                                                <tr
+                                                                    className="cursor-pointer bg-white transition-colors hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800/50"
+                                                                    onClick={() => setExpandedTestRows((prev) => {
+                                                                        const next = new Set(prev)
+                                                                        if (next.has(row.personId)) next.delete(row.personId)
+                                                                        else next.add(row.personId)
+                                                                        return next
+                                                                    })}
+                                                                >
+                                                                    <td className="px-3 py-4 text-gray-400">
+                                                                        <ChevronRight className={`h-4 w-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                                                                    </td>
+                                                                    <td className="px-5 py-4 font-medium text-gray-900 dark:text-white">
+                                                                        <div className="flex items-center gap-2.5">
+                                                                            <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold text-white ${row.highestScore >= QUIZ_PASS_SCORE ? "bg-green-500" : row.testInProgress > 0 ? "bg-blue-500" : row.totalAttempts > 0 ? "bg-red-500" : "bg-gray-500"}`}>
+                                                                                {row.personName.split(" ").slice(-1)[0]?.[0] ?? "?"}
+                                                                            </div>
+                                                                            {row.personName}
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-5 py-4 text-gray-500 dark:text-gray-400">{row.teamName || row.teamId}</td>
+                                                                    <td className="px-5 py-4 text-center font-semibold text-gray-900 dark:text-white">{row.testTotal}</td>
+                                                                    <td className="px-5 py-4 text-center font-semibold text-green-600 dark:text-green-400">{row.testSubmitted}</td>
+                                                                    <td className="px-5 py-4 text-center font-semibold text-blue-600 dark:text-blue-400">{row.testInProgress}</td>
+                                                                    <td className="px-5 py-4 text-center font-semibold text-gray-500 dark:text-gray-400">{row.testNotStarted}</td>
+                                                                    <td className={`px-5 py-4 text-center font-semibold ${row.retakeCount > 0 ? "text-red-600 dark:text-red-400" : "text-gray-500 dark:text-gray-400"}`}>{row.retakeCount}</td>
+                                                                    <td className={`px-5 py-4 text-center text-lg font-bold ${scoreColor}`}>{row.totalAttempts > 0 ? row.averageScore : "-"}</td>
+                                                                    <td className={`px-5 py-4 text-center font-semibold ${scoreColor}`}>{row.totalAttempts > 0 ? row.highestScore : "-"}</td>
+                                                                    <td className="px-5 py-4">
+                                                                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${rankColor}`}>
+                                                                            {rank}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td className="px-5 py-4 text-xs text-gray-500 dark:text-gray-400">
+                                                                        {row.lastAttemptAt ? new Date(row.lastAttemptAt).toLocaleDateString("vi-VN") : "-"}
+                                                                    </td>
+                                                                </tr>
+
+                                                                {isExpanded && (
+                                                                    <>
+                                                                        <tr className="bg-violet-50/70 dark:bg-violet-950/20">
+                                                                            <td className="px-3 py-3" />
+                                                                            <td colSpan={11} className="px-5 py-3 text-xs text-violet-800 dark:text-violet-200">
+                                                                                Bài thi: {row.testSubmitted} đã thi · {row.testInProgress} đang thi · {row.testNotStarted} chưa thi
+                                                                            </td>
+                                                                        </tr>
+                                                                        {row.attempts.length === 0 ? (
+                                                                            <tr className="bg-gray-50/80 dark:bg-gray-800/40">
+                                                                                <td className="px-3 py-3" />
+                                                                                <td colSpan={11} className="px-5 py-3 text-xs text-gray-500 dark:text-gray-400">
+                                                                                    Chưa có lịch sử nộp bài.
+                                                                                </td>
+                                                                            </tr>
+                                                                        ) : row.attempts.map((attempt, index) => (
+                                                                            <tr key={`${row.personId}-${attempt.testId}-${index}`} className="bg-gray-50/80 dark:bg-gray-800/40">
+                                                                                <td className="px-3 py-3" />
+                                                                                <td colSpan={4} className="px-5 py-3">
+                                                                                    <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                                                                        {attempt.score >= QUIZ_PASS_SCORE
+                                                                                            ? <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-green-500" />
+                                                                                            : <XCircle className="h-4 w-4 flex-shrink-0 text-red-400" />}
+                                                                                        <span className="max-w-[260px] truncate font-medium" title={attempt.testTitle}>{attempt.testTitle}</span>
+                                                                                    </div>
+                                                                                </td>
+                                                                                <td className="px-5 py-3 text-center text-xs text-gray-500 dark:text-gray-400">
+                                                                                    {attempt.correctAnswers}/{attempt.totalQuestions} câu
+                                                                                </td>
+                                                                                <td className={`px-5 py-3 text-center text-xs font-semibold ${attempt.retakeCount > 0 ? "text-red-600 dark:text-red-400" : "text-gray-500 dark:text-gray-400"}`}>
+                                                                                    Lần {attempt.attemptRound} · Làm lại {attempt.retakeCount}
+                                                                                </td>
+                                                                                <td className={`px-5 py-3 text-center font-bold ${attempt.score >= QUIZ_PASS_SCORE ? "text-green-600" : attempt.score >= 50 ? "text-amber-500" : "text-red-500"}`}>
+                                                                                    {attempt.score}
+                                                                                </td>
+                                                                                <td className="px-5 py-3 text-center">
+                                                                                    <div className="flex items-center justify-center">
+                                                                                        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                                                                                            <div
+                                                                                                className={`h-full rounded-full ${attempt.score >= QUIZ_PASS_SCORE ? "bg-green-500" : attempt.score >= 50 ? "bg-amber-400" : "bg-red-400"}`}
+                                                                                                style={{ width: `${attempt.score}%` }}
+                                                                                            />
+                                                                                        </div>
+                                                                                    </div>
+                                                                                </td>
+                                                                                <td className="px-5 py-3" />
+                                                                                <td className="px-5 py-3 text-xs text-gray-400">
+                                                                                    {new Date(attempt.submittedAt).toLocaleDateString("vi-VN")}
+                                                                                </td>
+                                                                            </tr>
+                                                                        ))}
+                                                                    </>
+                                                                )}
+                                                            </Fragment>
+                                                        )
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            )
+                        })()}
+                    </CardContent>
+                </Card>
+                )}
             </div>
 
             {/* ── Participant Detail Modal ────────────────────────────── */}
@@ -940,16 +1251,12 @@ export default function DashboardPage() {
                         {/* Body */}
                         <div className="overflow-y-auto flex-1 px-6 py-4 space-y-5">
                             {(() => {
-                                const officeParticipants = quizParticipants.filter((row) => {
-                                    const p = people.find((p) => p.id === row.personId)
-                                    return p?.role !== "Nhân viên cửa hàng"
-                                })
-                                const storeParticipants = quizParticipants.filter((row) => {
-                                    const p = people.find((p) => p.id === row.personId)
-                                    return p?.role === "Nhân viên cửa hàng"
-                                })
-                                const officeNonParticipants = nonParticipants.filter((p) => p.role !== "Nhân viên cửa hàng")
-                                const storeNonParticipants = nonParticipants.filter((p) => p.role === "Nhân viên cửa hàng")
+                                const isStoreReportRow = (row: QuizReportRow) =>
+                                    row.teamId === "store" || row.teamName === "Cửa hàng"
+                                const officeParticipants = quizParticipants.filter((row) => !isStoreReportRow(row))
+                                const storeParticipants = quizParticipants.filter(isStoreReportRow)
+                                const officeNonParticipants = nonParticipants.filter((row) => !isStoreReportRow(row))
+                                const storeNonParticipants = nonParticipants.filter(isStoreReportRow)
 
                                 const renderParticipantRow = (row: QuizReportRow) => {
                                     const scoreColor = row.highestScore >= QUIZ_PASS_SCORE
@@ -977,16 +1284,15 @@ export default function DashboardPage() {
                                     )
                                 }
 
-                                const renderNonParticipantRow = (person: (typeof nonParticipants)[number]) => {
-                                    const team = getTeamById(person.team, teams)
+                                const renderNonParticipantRow = (row: QuizReportRow) => {
                                     return (
-                                        <div key={person.id} className="flex items-center gap-3 rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 py-2.5">
+                                        <div key={row.personId} className="flex items-center gap-3 rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 py-2.5">
                                             <div className="h-8 w-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-xs font-bold text-gray-500 dark:text-gray-400 flex-shrink-0">
-                                                {person.name.split(" ").slice(-1)[0]?.[0] ?? "?"}
+                                                {row.personName.split(" ").slice(-1)[0]?.[0] ?? "?"}
                                             </div>
                                             <div className="flex-1 min-w-0">
-                                                <p className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">{person.name}</p>
-                                                <p className="text-xs text-gray-400 dark:text-gray-500">{team?.name ?? person.team}</p>
+                                                <p className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">{row.personName}</p>
+                                                <p className="text-xs text-gray-400 dark:text-gray-500">{row.teamName || row.teamId}</p>
                                             </div>
                                             <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 flex-shrink-0">
                                                 Chưa làm bài
@@ -1002,10 +1308,10 @@ export default function DashboardPage() {
                                             <div className="flex items-center gap-2 mb-3">
                                                 <CheckCircle2 className="h-4 w-4 text-green-500" />
                                                 <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
-                                                    Đã tham gia ({quizReport.length})
+                                                    Đã tham gia ({quizParticipants.length})
                                                 </h3>
                                             </div>
-                                            {quizReport.length === 0 ? (
+                                            {quizParticipants.length === 0 ? (
                                                 <p className="text-xs text-gray-400 pl-6">Chưa có nhân viên nào làm bài.</p>
                                             ) : (
                                                 <div className="space-y-4">
@@ -1073,15 +1379,15 @@ export default function DashboardPage() {
                             <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                                 <GraduationCap className="h-3.5 w-3.5" />
                                 Tỷ lệ tham gia: <span className="font-semibold text-gray-900 dark:text-white ml-1">
-                                    {accessiblePeople.length === 0 ? 0 : Math.round((quizReport.length / accessiblePeople.length) * 100)}%
+                                    {quizReport.length === 0 ? 0 : Math.round((quizParticipants.length / quizReport.length) * 100)}%
                                 </span>
                                 <div className="flex-1 mx-2 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
                                     <div
                                         className="h-full rounded-full bg-violet-500 transition-all"
-                                        style={{ width: `${accessiblePeople.length === 0 ? 0 : Math.round((quizReport.length / accessiblePeople.length) * 100)}%` }}
+                                        style={{ width: `${quizReport.length === 0 ? 0 : Math.round((quizParticipants.length / quizReport.length) * 100)}%` }}
                                     />
                                 </div>
-                                <span>{quizReport.length}/{accessiblePeople.length}</span>
+                                <span>{quizParticipants.length}/{quizReport.length}</span>
                             </div>
                         </div>
                     </div>
