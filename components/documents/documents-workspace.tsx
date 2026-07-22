@@ -85,6 +85,7 @@ type TestRecord = {
     timePerQuestionSeconds?: number
     sourceFileName?: string
     targetRoles?: string[]
+    isLocked?: boolean
     createdByPersonId: string
     createdAt: string
     updatedAt: string
@@ -599,6 +600,9 @@ export default function DocumentsPage() {
         isAdminLikeRole(user?.role) ||
         (user?.role === "leader" && user?.department === "Vận hành") ||
         (user?.role === "store_trainer" && user?.department === "Cửa hàng")
+    const canToggleTestLock =
+        canManageTests ||
+        (user?.department === "Cửa hàng" && (user?.role === "store_manager" || user?.role === "store_lead"))
     const canUploadDocuments = isLeaderOrAdmin || user?.department === "Cửa hàng"
     const isStoreVideoOnlyUploader = !isLeaderOrAdmin && user?.department === "Cửa hàng"
 
@@ -673,6 +677,7 @@ export default function DocumentsPage() {
     const [selectedTestId, setSelectedTestId] = useState<string | null>(null)
     const [isCreatingTest, setIsCreatingTest] = useState(false)
     const [editingTestId, setEditingTestId] = useState<string | null>(null)
+    const [pendingTestLockIds, setPendingTestLockIds] = useState<Set<string>>(new Set())
     const [testProgressModal, setTestProgressModal] = useState<{
         open: boolean
         isLoading: boolean
@@ -1734,6 +1739,10 @@ export default function DocumentsPage() {
 
     const handleSubmitTestAnswer = async (testId: string) => {
         const test = tests.find((item) => item.id === testId)
+        if (test?.isLocked) {
+            toast({ title: "Bài thi đang bị khóa", variant: "destructive" })
+            return
+        }
         const quizQuestions = test?.quizQuestions ?? []
         let payload: { answers?: number[]; textAnswers?: string[] }
         let nextResult: TestResultDetail | null = null
@@ -1827,6 +1836,11 @@ export default function DocumentsPage() {
 
     const handleStartTest = async (testId: string) => {
         if (canManageTests || submittedTestIds.has(testId)) return false
+        const test = tests.find((item) => item.id === testId)
+        if (test?.isLocked) {
+            toast({ title: "Bài thi đang bị khóa", variant: "destructive" })
+            return false
+        }
         if (startedTestIds.has(testId)) return true
         setStartedTestIds((prev) => {
             const next = new Set(prev)
@@ -1889,6 +1903,10 @@ export default function DocumentsPage() {
 
     const handleRetakeTestNow = (testId: string) => {
         const test = tests.find((item) => item.id === testId)
+        if (test?.isLocked) {
+            toast({ title: "Bài thi đang bị khóa", variant: "destructive" })
+            return
+        }
         setTestResultDetail(null)
         setSubmittedTestIds((prev) => {
             const next = new Set(prev)
@@ -1942,6 +1960,37 @@ export default function DocumentsPage() {
         } catch (error) {
             setTestProgressModal({ open: true, isLoading: false, test, submissions: [], statuses: [] })
             toast({ title: error instanceof Error ? error.message : "Không thể tải tiến độ", variant: "destructive" })
+        }
+    }
+
+    const handleToggleTestLock = async (test: TestRecord) => {
+        if (!canToggleTestLock) return
+        const nextIsLocked = !test.isLocked
+        setPendingTestLockIds((prev) => {
+            const next = new Set(prev)
+            next.add(test.id)
+            return next
+        })
+        try {
+            const res = await fetch(`/api/tests/${test.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ isLocked: nextIsLocked }),
+            })
+            const data = (await res.json()) as { ok: boolean; test?: TestRecord; message?: string }
+            if (!res.ok || !data.ok || !data.test) throw new Error(data.message || "Không thể cập nhật trạng thái bài thi")
+            setTests((prev) => prev.map((item) => item.id === data.test!.id ? data.test! : item))
+            setTestProgressModal((prev) => prev.test?.id === data.test!.id ? { ...prev, test: data.test! } : prev)
+            toast({ title: nextIsLocked ? "Đã khóa bài thi" : "Đã mở khóa bài thi" })
+        } catch (error) {
+            toast({ title: error instanceof Error ? error.message : "Không thể cập nhật trạng thái bài thi", variant: "destructive" })
+        } finally {
+            setPendingTestLockIds((prev) => {
+                const next = new Set(prev)
+                next.delete(test.id)
+                return next
+            })
         }
     }
 
@@ -4548,7 +4597,7 @@ export default function DocumentsPage() {
     const visibleTests = canManageTests
         ? tests
         : tests.filter((test) => Boolean(user?.role && test.targetRoles?.includes(user.role)))
-    const activeTakingTest = visibleTests.find((test) => takingTestIds.has(test.id) && !submittedTestIds.has(test.id)) ?? null
+    const activeTakingTest = visibleTests.find((test) => takingTestIds.has(test.id) && !submittedTestIds.has(test.id) && !test.isLocked) ?? null
 
     if (!canAccessELearning) {
         return (
@@ -5659,66 +5708,98 @@ export default function DocumentsPage() {
                                         const latestSubmission = testSubmissionHistory[test.id]?.[0]
                                         const latestResult = getTestSubmissionResult(test, latestSubmission)
                                         const submitted = Boolean(latestSubmission)
+                                        const lockedForEmployee = !canToggleTestLock && test.isLocked
 
                                         return (
-                                            <button
+                                            <div
                                                 key={test.id}
-                                                onClick={() => {
-                                                    setIsCreatingTest(false)
-                                                    setSelectedTestId(test.id)
-                                                }}
-                                                className={`w-full flex items-start gap-3 py-3.5 text-left transition-colors border-b border-gray-100 dark:border-gray-800/60 ${
+                                                className={`flex items-start gap-2 border-b border-gray-100 py-3.5 transition-colors dark:border-gray-800/60 ${
                                                     selected
-                                                        ? "bg-violet-50 dark:bg-violet-900/20 border-l-[3px] border-l-violet-500 pl-[13px] pr-4"
+                                                        ? "bg-violet-50 dark:bg-violet-900/20 border-l-[3px] border-l-violet-500 pl-[13px] pr-3"
                                                         : "px-4 hover:bg-gray-50 dark:hover:bg-gray-800/60"
-                                                }`}
+                                                } ${lockedForEmployee ? "opacity-45 hover:bg-transparent dark:hover:bg-transparent" : ""}`}
                                             >
-                                                <div className="mt-0.5 flex-shrink-0">
-                                                    {latestResult?.didPass
-                                                        ? <CheckCircle2 className="w-5 h-5 text-green-500" />
-                                                        : submitted
-                                                            ? <XCircle className="w-5 h-5 text-red-500" />
-                                                        : <div className={`w-5 h-5 rounded-full border-2 ${selected ? "border-violet-400" : "border-gray-300 dark:border-gray-600"}`} />}
-                                                </div>
-                                                <div className="min-w-0 flex-1">
-                                                    <p className={`text-sm leading-snug ${selected ? "font-semibold text-violet-700 dark:text-violet-300" : "font-medium text-gray-800 dark:text-gray-200"}`}>
-                                                        {test.title}
-                                                    </p>
-                                                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                                                        <span className="text-xs text-violet-500 dark:text-violet-400">
-                                                            {test.questions.length} câu · {test.durationMinutes} phút
-                                                        </span>
-                                                        {test.timePerQuestionSeconds && (
-                                                            <span className="text-xs text-gray-400 dark:text-gray-500">
-                                                                · {formatQuestionDuration(test.timePerQuestionSeconds)}
+                                                <button
+                                                    type="button"
+                                                    disabled={lockedForEmployee}
+                                                    onClick={() => {
+                                                        if (lockedForEmployee) return
+                                                        setIsCreatingTest(false)
+                                                        setSelectedTestId(test.id)
+                                                    }}
+                                                    className={`flex min-w-0 flex-1 items-start gap-3 text-left ${lockedForEmployee ? "cursor-not-allowed" : ""}`}
+                                                >
+                                                    <div className="mt-0.5 flex-shrink-0">
+                                                        {test.isLocked && !canToggleTestLock
+                                                            ? <Lock className="w-5 h-5 text-gray-400" />
+                                                            : latestResult?.didPass
+                                                            ? <CheckCircle2 className="w-5 h-5 text-green-500" />
+                                                            : submitted
+                                                                ? <XCircle className="w-5 h-5 text-red-500" />
+                                                            : <div className={`w-5 h-5 rounded-full border-2 ${selected ? "border-violet-400" : "border-gray-300 dark:border-gray-600"}`} />}
+                                                    </div>
+                                                    <div className="min-w-0 flex-1">
+                                                        <p className={`text-sm leading-snug ${selected ? "font-semibold text-violet-700 dark:text-violet-300" : "font-medium text-gray-800 dark:text-gray-200"}`}>
+                                                            {test.title}
+                                                        </p>
+                                                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                                            <span className="text-xs text-violet-500 dark:text-violet-400">
+                                                                {test.questions.length} câu · {test.durationMinutes} phút
                                                             </span>
+                                                            {test.timePerQuestionSeconds && (
+                                                                <span className="text-xs text-gray-400 dark:text-gray-500">
+                                                                    · {formatQuestionDuration(test.timePerQuestionSeconds)}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        {latestResult && (
+                                                            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs">
+                                                                <span className={`font-semibold ${latestResult.didPass ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+                                                                    {latestResult.score}/100 điểm
+                                                                </span>
+                                                                <span className={latestResult.didPass ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                                                                    {latestResult.didPass ? "Đã hoàn thành" : "Làm bài lại"}
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                        {test.targetRoles && test.targetRoles.length > 0 && (
+                                                            <div className="mt-1 flex flex-wrap gap-1">
+                                                                {test.targetRoles.map((role) => (
+                                                                    <span
+                                                                        key={`${test.id}-target-${role}`}
+                                                                        className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                                                                    >
+                                                                        {getTestTargetRoleLabel(role)}
+                                                                    </span>
+                                                                ))}
+                                                            </div>
                                                         )}
                                                     </div>
-                                                    {latestResult && (
-                                                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs">
-                                                            <span className={`font-semibold ${latestResult.didPass ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
-                                                                {latestResult.score}/100 điểm
-                                                            </span>
-                                                            <span className={latestResult.didPass ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
-                                                                {latestResult.didPass ? "Đã hoàn thành" : "Làm bài lại"}
-                                                            </span>
-                                                        </div>
-                                                    )}
-                                                    {test.targetRoles && test.targetRoles.length > 0 && (
-                                                        <div className="mt-1 flex flex-wrap gap-1">
-                                                            {test.targetRoles.map((role) => (
-                                                                <span
-                                                                    key={`${test.id}-target-${role}`}
-                                                                    className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400"
-                                                                >
-                                                                    {getTestTargetRoleLabel(role)}
-                                                                </span>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                {selected && <ChevronRight className="w-4 h-4 text-violet-400 flex-shrink-0 mt-0.5" />}
-                                            </button>
+                                                </button>
+                                                {canToggleTestLock ? (
+                                                    <button
+                                                        type="button"
+                                                        disabled={pendingTestLockIds.has(test.id)}
+                                                        onClick={() => void handleToggleTestLock(test)}
+                                                        className={`mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full transition-colors ${
+                                                            test.isLocked
+                                                                ? "text-amber-500 hover:bg-amber-50 hover:text-amber-600 dark:hover:bg-amber-950/30"
+                                                                : "text-emerald-500 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-950/30"
+                                                        } disabled:cursor-wait disabled:opacity-50`}
+                                                        aria-label={test.isLocked ? "Mở khóa bài thi" : "Khóa bài thi"}
+                                                        title={test.isLocked ? "Mở khóa bài thi" : "Khóa bài thi"}
+                                                    >
+                                                        {pendingTestLockIds.has(test.id)
+                                                            ? <Loader2 className="h-4 w-4 animate-spin" />
+                                                            : test.isLocked
+                                                                ? <Lock className="h-4 w-4" />
+                                                                : <Unlock className="h-4 w-4" />
+                                                        }
+                                                    </button>
+                                                ) : selected ? (
+                                                    <ChevronRight className="mt-0.5 h-4 w-4 flex-shrink-0 text-violet-400" />
+                                                ) : null}
+                                            </div>
                                         )
                                     })}
                                 </div>
@@ -5989,6 +6070,16 @@ export default function DocumentsPage() {
                                                 </div>
                                                 <div className="px-5 py-8 sm:px-7">
                                                     <h2 className="text-xl font-bold text-white">{selectedTest.title}</h2>
+                                                    <div className="mt-3">
+                                                        <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+                                                            selectedTest.isLocked
+                                                                ? "bg-red-500/15 text-red-200"
+                                                                : "bg-green-500/15 text-green-200"
+                                                        }`}>
+                                                            {selectedTest.isLocked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+                                                            {selectedTest.isLocked ? "Đang khóa với nhân viên" : "Nhân viên có thể làm bài"}
+                                                        </span>
+                                                    </div>
                                                     {selectedTest.description && (
                                                         <p className="mt-2 max-w-2xl text-sm text-slate-400">{selectedTest.description}</p>
                                                     )}
@@ -6068,14 +6159,19 @@ export default function DocumentsPage() {
                                                 )
                                                 const currentQuestion = questions[currentQuestionIndex]
                                                 const selectedAnswer = testChoiceAnswers[selectedTest.id]?.[currentQuestionIndex]
-                                                const isTakingTest = takingTestIds.has(selectedTest.id)
+                                                const lockedForTaking = selectedTest.isLocked === true
+                                                const lockedForEmployee = lockedForTaking && !canToggleTestLock
+                                                const isTakingTest = takingTestIds.has(selectedTest.id) && !lockedForTaking
 
                                                 if (!isTakingTest) {
                                                     return (
-                                                        <div className="overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-900 shadow-sm">
+                                                        <div className={`overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-900 shadow-sm ${lockedForEmployee ? "opacity-55" : ""}`}>
                                                             <div className="border-b border-slate-700/70 bg-[#201a46] px-5 py-5 sm:px-7">
                                                                 <div className="flex items-center gap-3">
-                                                                    <ClipboardCheck className="h-7 w-7 text-violet-300" />
+                                                                    {lockedForTaking
+                                                                        ? <Lock className="h-7 w-7 text-slate-400" />
+                                                                        : <ClipboardCheck className="h-7 w-7 text-violet-300" />
+                                                                    }
                                                                     <h1 className="text-2xl font-bold text-white">Bài thi</h1>
                                                                 </div>
                                                             </div>
@@ -6094,6 +6190,12 @@ export default function DocumentsPage() {
                                                                         {selectedTest.durationMinutes} phút
                                                                     </span>
                                                                 </div>
+                                                                {lockedForTaking && (
+                                                                    <div className="mt-6 inline-flex items-center gap-2 rounded-xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-200">
+                                                                        <Lock className="h-4 w-4" />
+                                                                        Bài thi đang bị khóa
+                                                                    </div>
+                                                                )}
                                                                 <div className="mt-8">
                                                                     {selectedLatestResult ? (
                                                                         <div className="space-y-4">
@@ -6112,6 +6214,7 @@ export default function DocumentsPage() {
                                                                                 {!selectedLatestResult.didPass && (
                                                                                     <Button
                                                                                         onClick={() => handleRetakeTestNow(selectedTest.id)}
+                                                                                        disabled={lockedForTaking}
                                                                                         className="h-12 bg-blue-700 px-6 text-base font-semibold text-white hover:bg-blue-800"
                                                                                     >
                                                                                         <ClipboardCheck className="mr-3 h-5 w-5" />
@@ -6131,6 +6234,7 @@ export default function DocumentsPage() {
                                                                     ) : (
                                                                         <Button
                                                                             onClick={() => void handleBeginTest(selectedTest.id)}
+                                                                            disabled={lockedForTaking}
                                                                             className="h-12 bg-blue-700 px-8 text-base font-semibold text-white hover:bg-blue-800"
                                                                         >
                                                                             <ClipboardCheck className="mr-3 h-5 w-5" />
@@ -7602,6 +7706,7 @@ export default function DocumentsPage() {
                                 </Button>
                                 <Button
                                     className="bg-blue-600 px-8 text-white hover:bg-blue-700"
+                                    disabled={testResultDetail.test.isLocked}
                                     onClick={() => handleRetakeTestNow(testResultDetail.test.id)}
                                 >
                                     <ClipboardCheck className="mr-2 h-4 w-4" />

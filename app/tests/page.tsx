@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/use-toast";
+import { Lock, Unlock } from "lucide-react";
 
 type TestRecord = {
   id: string;
@@ -14,6 +15,7 @@ type TestRecord = {
   description: string;
   questions: string[];
   durationMinutes: number;
+  isLocked?: boolean;
   createdByPersonId: string;
   createdAt: string;
   updatedAt: string;
@@ -103,6 +105,32 @@ export default function TestsPage() {
     }
   };
 
+  const handleToggleTestLock = async (test: TestRecord) => {
+    const nextIsLocked = !test.isLocked;
+    setIsSubmitting(true);
+    try {
+      const res = await fetch(`/api/tests/${test.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ isLocked: nextIsLocked })
+      });
+      const payload = (await res.json()) as { ok: boolean; test?: TestRecord; message?: string };
+      if (!res.ok || !payload.ok || !payload.test) {
+        throw new Error(payload.message || "Không thể cập nhật trạng thái bài thi");
+      }
+      setTests((prev) => prev.map((item) => (item.id === payload.test!.id ? payload.test! : item)));
+      toast({ title: nextIsLocked ? "Đã khóa bài thi" : "Đã mở khóa bài thi" });
+    } catch (error) {
+      toast({
+        title: error instanceof Error ? error.message : "Không thể cập nhật trạng thái bài thi",
+        variant: "destructive"
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   if (!canManageTests) {
     return (
       <div className="p-3 sm:p-4 lg:p-6">
@@ -173,12 +201,34 @@ export default function TestsPage() {
                 <CardContent className="pt-5 space-y-2">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="font-semibold text-gray-900 dark:text-white">{test.title}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-semibold text-gray-900 dark:text-white">{test.title}</p>
+                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
+                          test.isLocked
+                            ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+                            : "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                        }`}>
+                          {test.isLocked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                          {test.isLocked ? "Đang khóa" : "Đang mở"}
+                        </span>
+                      </div>
                       {test.description && (
                         <p className="text-sm text-gray-600 dark:text-gray-300">{test.description}</p>
                       )}
                     </div>
-                    <span className="text-xs text-gray-500 dark:text-gray-400">{test.durationMinutes} phút</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">{test.durationMinutes} phút</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled={isSubmitting}
+                        onClick={() => void handleToggleTestLock(test)}
+                        aria-label={test.isLocked ? "Mở khóa bài thi" : "Khóa bài thi"}
+                        title={test.isLocked ? "Mở khóa bài thi" : "Khóa bài thi"}
+                      >
+                        {test.isLocked ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
+                      </Button>
+                    </div>
                   </div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">
                     {test.questions.length} câu hỏi • {new Date(test.createdAt).toLocaleString("vi-VN")}
