@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: fwf-pptx-converter
+    runtime: docker
+    plan: starter
+    dockerContext: ./workers/pptx-converter
+    dockerfilePath: ./workers/pptx-converter/Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: PPTX_CONVERTER_TOKEN
+        sync: false

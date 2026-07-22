@@ -5,6 +5,10 @@ import { buildSupabaseStorageObjectPath, getSupabaseStorageConfig } from "@/lib/
 
 function inferMimeType(fileName: string) {
   const lower = fileName.toLowerCase();
+  if (lower.endsWith(".mp4")) return "video/mp4";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".m4v")) return "video/x-m4v";
   if (lower.endsWith(".pdf")) return "application/pdf";
   if (lower.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
   return "application/octet-stream";
