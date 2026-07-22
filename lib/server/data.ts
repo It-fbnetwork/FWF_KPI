@@ -193,6 +193,7 @@ type DbTest = {
   timePerQuestionSeconds?: number;
   sourceFileName?: string;
   targetRoles?: UserRole[];
+  isLocked?: boolean;
   createdByPersonId: string;
   createdAt: string;
   updatedAt: string;
@@ -519,6 +520,7 @@ export type TestRecord = {
   timePerQuestionSeconds?: number;
   sourceFileName?: string;
   targetRoles?: UserRole[];
+  isLocked?: boolean;
   createdByPersonId: string;
   createdAt: string;
   updatedAt: string;
@@ -1541,6 +1543,7 @@ function mapDbTest(record: DbTest): TestRecord {
     timePerQuestionSeconds: record.timePerQuestionSeconds,
     sourceFileName: record.sourceFileName,
     targetRoles: record.targetRoles,
+    isLocked: record.isLocked === true,
     createdByPersonId: record.createdByPersonId,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
@@ -2008,6 +2011,7 @@ function mapPgTestRow(row: Record<string, unknown>): DbTest {
     timePerQuestionSeconds: typeof rawJson.timePerQuestionSeconds === "number" ? rawJson.timePerQuestionSeconds : undefined,
     sourceFileName: typeof rawJson.sourceFileName === "string" ? rawJson.sourceFileName : undefined,
     targetRoles: normalizeTestTargetRoles(rawJson.targetRoles),
+    isLocked: rawJson.isLocked === true,
     createdByPersonId: String(row.created_by_person_id ?? ""),
     createdAt: toIsoStringOrUndefined(row.created_at) ?? new Date().toISOString(),
     updatedAt: toIsoStringOrUndefined(row.updated_at) ?? new Date().toISOString(),
@@ -2554,6 +2558,16 @@ function canManageTests(actor: SessionActor) {
   if (actor.isAdmin) return true;
   if (actor.user.role === "leader" && actor.user.department === "Vận hành") return true;
   return actor.user.role === "store_trainer" && actor.user.department === "Cửa hàng";
+}
+
+function canToggleTestLock(actor: SessionActor) {
+  if (canManageTests(actor)) return true;
+  return actor.user.department === "Cửa hàng" && (actor.user.role === "store_manager" || actor.user.role === "store_lead");
+}
+
+function isTestLockOnlyUpdate(input: Record<string, unknown>) {
+  const keys = Object.keys(input);
+  return keys.length === 1 && keys[0] === "isLocked";
 }
 
 function canViewTests(actor: SessionActor) {
@@ -5748,11 +5762,13 @@ export async function updateTestRecord(
     timePerQuestionSeconds?: number;
     sourceFileName?: string;
     targetRoles?: UserRole[];
+    isLocked?: boolean;
   }
 ) {
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
-  if (!canManageTests(actor)) throw new Error("Forbidden");
+  const isLockOnlyUpdate = isTestLockOnlyUpdate(input as Record<string, unknown>);
+  if (!canManageTests(actor) && !(isLockOnlyUpdate && canToggleTestLock(actor))) throw new Error("Forbidden");
 
   let existing: DbTest | null;
   if (shouldUseSupabasePhaseA()) {
@@ -5762,6 +5778,7 @@ export async function updateTestRecord(
     existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
   }
   if (!existing) throw new Error("Không tìm thấy bài thi.");
+  if (!canManageTests(actor) && !canActorViewTest(actor, existing)) throw new Error("Forbidden");
 
   const normalizedQuestions = (input.questions ?? existing.questions ?? [])
     .map((question) => question.trim())
@@ -5802,6 +5819,7 @@ export async function updateTestRecord(
     timePerQuestionSeconds,
     sourceFileName: input.sourceFileName?.trim() || existing.sourceFileName,
     targetRoles,
+    isLocked: input.isLocked !== undefined ? input.isLocked === true : existing.isLocked === true,
     updatedAt: new Date().toISOString(),
   };
 
@@ -5868,6 +5886,7 @@ export async function submitTestRecord(
     existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
   }
   if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
+  if (existing.isLocked) throw new Error("Bài thi đang bị khóa.");
 
   const now = new Date().toISOString();
   const submission: DbTestSubmission = {
@@ -5960,6 +5979,7 @@ export async function startTestRecord(sessionUserId: string | null | undefined, 
     existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
   }
   if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
+  if (existing.isLocked) throw new Error("Bài thi đang bị khóa.");
 
   const now = new Date().toISOString();
   const session: DbTestSession = {
