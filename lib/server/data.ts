@@ -212,10 +212,15 @@ type DbTestSession = {
   _id: string;
   testId: string;
   personId: string;
-  status: "in_progress" | "submitted";
+  status: "in_progress" | "submitted" | "blocked_violation" | "ended_by_user";
   startedAt: string;
   updatedAt: string;
   submittedAt?: string;
+  blockedAt?: string;
+  endedAt?: string;
+  endReason?: string;
+  violationCount?: number;
+  violationReason?: string;
 };
 
 type DbQuizQuestion = {
@@ -537,13 +542,33 @@ export type TestSubmissionRecord = {
   submittedAt: string;
 };
 
+export type TestSessionRecord = {
+  id: string;
+  testId: string;
+  personId: string;
+  status: "in_progress" | "submitted" | "blocked_violation" | "ended_by_user";
+  startedAt: string;
+  updatedAt: string;
+  submittedAt?: string;
+  blockedAt?: string;
+  endedAt?: string;
+  endReason?: string;
+  violationCount?: number;
+  violationReason?: string;
+};
+
 export type TestProgressRow = {
   personId: string;
   personName: string;
   personRole?: string;
-  status: "submitted" | "in_progress" | "not_submitted";
+  status: "submitted" | "in_progress" | "blocked_violation" | "ended_by_user" | "not_submitted";
   startedAt?: string;
   submittedAt?: string;
+  blockedAt?: string;
+  endedAt?: string;
+  endReason?: string;
+  violationCount?: number;
+  violationReason?: string;
 };
 
 export type QuizQuestion = {
@@ -1563,6 +1588,23 @@ function mapDbTestSubmission(record: DbTestSubmission, person?: { id?: string; _
   };
 }
 
+function mapDbTestSession(record: DbTestSession): TestSessionRecord {
+  return {
+    id: record._id,
+    testId: record.testId,
+    personId: record.personId,
+    status: record.status,
+    startedAt: record.startedAt,
+    updatedAt: record.updatedAt,
+    submittedAt: record.submittedAt,
+    blockedAt: record.blockedAt,
+    endedAt: record.endedAt,
+    endReason: record.endReason,
+    violationCount: record.violationCount,
+    violationReason: record.violationReason,
+  };
+}
+
 function toIsoStringOrUndefined(value: unknown): string | undefined {
   if (!value) return undefined;
   if (value instanceof Date) return value.toISOString();
@@ -2031,14 +2073,30 @@ function mapPgTestSubmissionRow(row: Record<string, unknown>): DbTestSubmission 
 
 function mapPgTestSessionRow(row: Record<string, unknown>): DbTestSession {
   const rawStatus = String(row.status ?? "in_progress");
+  const rawJson = row.raw_json && typeof row.raw_json === "object"
+    ? row.raw_json as Partial<DbTestSession>
+    : {};
+  const status: DbTestSession["status"] =
+    rawStatus === "submitted"
+      ? "submitted"
+      : rawStatus === "blocked_violation"
+        ? "blocked_violation"
+        : rawStatus === "ended_by_user"
+          ? "ended_by_user"
+          : "in_progress";
   return {
     _id: String(row.id),
     testId: String(row.test_id ?? ""),
     personId: String(row.person_id ?? ""),
-    status: rawStatus === "submitted" ? "submitted" : "in_progress",
+    status,
     startedAt: toIsoStringOrUndefined(row.started_at) ?? new Date().toISOString(),
     updatedAt: toIsoStringOrUndefined(row.updated_at) ?? new Date().toISOString(),
     submittedAt: toIsoStringOrUndefined(row.submitted_at),
+    blockedAt: typeof rawJson.blockedAt === "string" ? rawJson.blockedAt : undefined,
+    endedAt: typeof rawJson.endedAt === "string" ? rawJson.endedAt : undefined,
+    endReason: typeof rawJson.endReason === "string" ? rawJson.endReason : undefined,
+    violationCount: typeof rawJson.violationCount === "number" ? rawJson.violationCount : undefined,
+    violationReason: typeof rawJson.violationReason === "string" ? rawJson.violationReason : undefined,
   };
 }
 
@@ -5651,6 +5709,28 @@ export async function getMyTestSubmissionsData(sessionUserId: string | null | un
   return submissions.map((submission) => mapDbTestSubmission(submission, actor.person));
 }
 
+export async function getMyTestSessionsData(sessionUserId: string | null | undefined) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canViewTests(actor)) throw new Error("Forbidden");
+  if (canManageTests(actor)) return [];
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    const sessionRes = await pgQuery(
+      "select * from test_sessions where person_id = $1",
+      [actor.person.id]
+    );
+    return sessionRes.rows.map((row) => mapDbTestSession(mapPgTestSessionRow(row)));
+  }
+
+  const db = await getMongoDb();
+  const sessions = await db.collection<DbTestSession>("test_sessions")
+    .find({ personId: actor.person.id })
+    .toArray();
+  return sessions.map(mapDbTestSession);
+}
+
 export async function createTestRecord(
   sessionUserId: string | null | undefined,
   input: {
@@ -5888,6 +5968,29 @@ export async function submitTestRecord(
   if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
   if (existing.isLocked) throw new Error("Bài thi đang bị khóa.");
 
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    const existingSubmissionRes = await pgQuery(
+      "select id from test_submissions where test_id = $1 and person_id = $2 limit 1",
+      [testId, actor.person.id]
+    );
+    if (existingSubmissionRes.rows[0]) throw new Error("Bài thi chỉ được làm 1 lần.");
+    const currentSessionRes = await pgQuery(
+      "select * from test_sessions where test_id = $1 and person_id = $2 limit 1",
+      [testId, actor.person.id]
+    );
+    const currentSession = currentSessionRes.rows[0] ? mapPgTestSessionRow(currentSessionRes.rows[0]) : null;
+    if (currentSession?.status === "blocked_violation") throw new Error("Bài thi đã bị khóa do vi phạm.");
+    if (currentSession?.status === "ended_by_user") throw new Error("Bài thi đã kết thúc và không thể nộp bài.");
+  } else {
+    const db = await getMongoDb();
+    const existingSubmission = await db.collection<DbTestSubmission>("test_submissions").findOne({ testId, personId: actor.person.id });
+    if (existingSubmission) throw new Error("Bài thi chỉ được làm 1 lần.");
+    const currentSession = await db.collection<DbTestSession>("test_sessions").findOne({ testId, personId: actor.person.id });
+    if (currentSession?.status === "blocked_violation") throw new Error("Bài thi đã bị khóa do vi phạm.");
+    if (currentSession?.status === "ended_by_user") throw new Error("Bài thi đã kết thúc và không thể nộp bài.");
+  }
+
   const now = new Date().toISOString();
   const submission: DbTestSubmission = {
     _id: `tsub_${Date.now()}`,
@@ -5899,7 +6002,6 @@ export async function submitTestRecord(
   };
 
   if (shouldUseSupabasePhaseA()) {
-    await ensureTestSubmissionSchemaReady();
     await pgQuery(
       `insert into test_submissions (id,test_id,person_id,answers,text_answers,submitted_at,raw_json)
        values ($1,$2,$3,$4::jsonb,$5::jsonb,$6::timestamptz,$7::jsonb)`,
@@ -5981,6 +6083,23 @@ export async function startTestRecord(sessionUserId: string | null | undefined, 
   if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
   if (existing.isLocked) throw new Error("Bài thi đang bị khóa.");
 
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    const existingSubmissionRes = await pgQuery(
+      "select id from test_submissions where test_id = $1 and person_id = $2 limit 1",
+      [testId, actor.person.id]
+    );
+    if (existingSubmissionRes.rows[0]) throw new Error("Bài thi chỉ được làm 1 lần.");
+    const currentSessionRes = await pgQuery(
+      "select * from test_sessions where test_id = $1 and person_id = $2 limit 1",
+      [testId, actor.person.id]
+    );
+    const currentSession = currentSessionRes.rows[0] ? mapPgTestSessionRow(currentSessionRes.rows[0]) : null;
+    if (currentSession?.status === "blocked_violation") throw new Error("Bài thi đã bị khóa do vi phạm.");
+    if (currentSession?.status === "ended_by_user") throw new Error("Bài thi đã kết thúc và không thể làm lại.");
+    if (currentSession?.status === "submitted") return { ok: true };
+  }
+
   const now = new Date().toISOString();
   const session: DbTestSession = {
     _id: `tsess_${testId}_${actor.person.id}`,
@@ -5992,18 +6111,17 @@ export async function startTestRecord(sessionUserId: string | null | undefined, 
   };
 
   if (shouldUseSupabasePhaseA()) {
-    await ensureTestSubmissionSchemaReady();
     await pgQuery(
       `insert into test_sessions (id,test_id,person_id,status,started_at,updated_at,raw_json)
        values ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb)
        on conflict (test_id, person_id) do update set
          updated_at = excluded.updated_at,
          raw_json = case
-           when test_sessions.status = 'submitted' then test_sessions.raw_json
+           when test_sessions.status in ('submitted', 'blocked_violation', 'ended_by_user') then test_sessions.raw_json
            else excluded.raw_json
          end,
          status = case
-           when test_sessions.status = 'submitted' then test_sessions.status
+           when test_sessions.status in ('submitted', 'blocked_violation', 'ended_by_user') then test_sessions.status
            else excluded.status
          end`,
       [
@@ -6020,8 +6138,12 @@ export async function startTestRecord(sessionUserId: string | null | undefined, 
   }
 
   const db = await getMongoDb();
+  const existingSubmission = await db.collection<DbTestSubmission>("test_submissions").findOne({ testId, personId: actor.person.id });
+  if (existingSubmission) throw new Error("Bài thi chỉ được làm 1 lần.");
   const current = await db.collection<DbTestSession>("test_sessions").findOne({ testId, personId: actor.person.id });
   if (current?.status === "submitted") return { ok: true };
+  if (current?.status === "blocked_violation") throw new Error("Bài thi đã bị khóa do vi phạm.");
+  if (current?.status === "ended_by_user") throw new Error("Bài thi đã kết thúc và không thể làm lại.");
   await db.collection<DbTestSession>("test_sessions").updateOne(
     { testId, personId: actor.person.id },
     {
@@ -6039,6 +6161,176 @@ export async function startTestRecord(sessionUserId: string | null | undefined, 
     { upsert: true }
   );
   return { ok: true };
+}
+
+export async function blockTestRecordForViolation(
+  sessionUserId: string | null | undefined,
+  testId: string,
+  input: unknown
+) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (canManageTests(actor)) throw new Error("Forbidden");
+
+  let existing: DbTest | null;
+  if (shouldUseSupabasePhaseA()) {
+    const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
+    existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
+  } else {
+    existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
+  }
+  if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
+
+  const inputRecord = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  const reason = String(inputRecord.reason ?? "Vi phạm quy định bảo vệ bài thi.").trim().slice(0, 240);
+  const now = new Date().toISOString();
+  const session: DbTestSession = {
+    _id: `tsess_${testId}_${actor.person.id}`,
+    testId,
+    personId: actor.person.id,
+    status: "blocked_violation",
+    startedAt: now,
+    updatedAt: now,
+    blockedAt: now,
+    violationCount: 2,
+    violationReason: reason || "Vi phạm quy định bảo vệ bài thi.",
+  };
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    await pgQuery(
+      `insert into test_sessions (id,test_id,person_id,status,started_at,updated_at,raw_json)
+       values ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb)
+       on conflict (test_id, person_id) do update set
+         status = case
+           when test_sessions.status = 'submitted' then test_sessions.status
+           else excluded.status
+         end,
+         updated_at = case
+           when test_sessions.status = 'submitted' then test_sessions.updated_at
+           else excluded.updated_at
+         end,
+         raw_json = case
+           when test_sessions.status = 'submitted' then test_sessions.raw_json
+           else excluded.raw_json
+         end`,
+      [
+        session._id,
+        session.testId,
+        session.personId,
+        session.status,
+        session.startedAt,
+        session.updatedAt,
+        JSON.stringify(session),
+      ]
+    );
+    return session;
+  }
+
+  const db = await getMongoDb();
+  const current = await db.collection<DbTestSession>("test_sessions").findOne({ testId, personId: actor.person.id });
+  if (current?.status === "submitted") return current;
+  await db.collection<DbTestSession>("test_sessions").updateOne(
+    { testId, personId: actor.person.id },
+    {
+      $set: {
+        status: "blocked_violation",
+        updatedAt: now,
+        blockedAt: now,
+        violationCount: 2,
+        violationReason: session.violationReason,
+      },
+      $setOnInsert: {
+        _id: session._id,
+        testId,
+        personId: actor.person.id,
+        startedAt: now,
+      },
+    },
+    { upsert: true }
+  );
+  return session;
+}
+
+export async function endTestRecordByUser(sessionUserId: string | null | undefined, testId: string) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (canManageTests(actor)) throw new Error("Forbidden");
+
+  let existing: DbTest | null;
+  if (shouldUseSupabasePhaseA()) {
+    const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
+    existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
+  } else {
+    existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
+  }
+  if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
+
+  const now = new Date().toISOString();
+  const session: DbTestSession = {
+    _id: `tsess_${testId}_${actor.person.id}`,
+    testId,
+    personId: actor.person.id,
+    status: "ended_by_user",
+    startedAt: now,
+    updatedAt: now,
+    endedAt: now,
+    endReason: "Nhân viên xác nhận kết thúc bài làm trước khi nộp.",
+  };
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    await pgQuery(
+      `insert into test_sessions (id,test_id,person_id,status,started_at,updated_at,raw_json)
+       values ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb)
+       on conflict (test_id, person_id) do update set
+         status = case
+           when test_sessions.status = 'submitted' then test_sessions.status
+           else excluded.status
+         end,
+         updated_at = case
+           when test_sessions.status = 'submitted' then test_sessions.updated_at
+           else excluded.updated_at
+         end,
+         raw_json = case
+           when test_sessions.status = 'submitted' then test_sessions.raw_json
+           else excluded.raw_json
+         end`,
+      [
+        session._id,
+        session.testId,
+        session.personId,
+        session.status,
+        session.startedAt,
+        session.updatedAt,
+        JSON.stringify(session),
+      ]
+    );
+    return session;
+  }
+
+  const db = await getMongoDb();
+  const current = await db.collection<DbTestSession>("test_sessions").findOne({ testId, personId: actor.person.id });
+  if (current?.status === "submitted") return current;
+  await db.collection<DbTestSession>("test_sessions").updateOne(
+    { testId, personId: actor.person.id },
+    {
+      $set: {
+        status: "ended_by_user",
+        updatedAt: now,
+        endedAt: now,
+        endReason: session.endReason,
+      },
+      $setOnInsert: {
+        _id: session._id,
+        testId,
+        personId: actor.person.id,
+        startedAt: now,
+      },
+    },
+    { upsert: true }
+  );
+  return session;
 }
 
 export async function getTestProgressData(sessionUserId: string | null | undefined, testId: string) {
@@ -6093,9 +6385,14 @@ export async function getTestProgressData(sessionUserId: string | null | undefin
         personId: person.id,
         personName: person.name,
         personRole: person.role,
-        status: submission ? "submitted" : session?.status === "in_progress" ? "in_progress" : "not_submitted",
+        status: submission ? "submitted" : session?.status === "blocked_violation" ? "blocked_violation" : session?.status === "ended_by_user" ? "ended_by_user" : session?.status === "in_progress" ? "in_progress" : "not_submitted",
         startedAt: session?.startedAt,
         submittedAt: submission?.submittedAt,
+        blockedAt: session?.blockedAt,
+        endedAt: session?.endedAt,
+        endReason: session?.endReason,
+        violationCount: session?.violationCount,
+        violationReason: session?.violationReason,
       };
     });
     return { submissions, statuses };
@@ -6121,9 +6418,14 @@ export async function getTestProgressData(sessionUserId: string | null | undefin
       personId: person.id,
       personName: person.name,
       personRole: person.role,
-      status: submission ? "submitted" : session?.status === "in_progress" ? "in_progress" : "not_submitted",
+      status: submission ? "submitted" : session?.status === "blocked_violation" ? "blocked_violation" : session?.status === "ended_by_user" ? "ended_by_user" : session?.status === "in_progress" ? "in_progress" : "not_submitted",
       startedAt: session?.startedAt,
       submittedAt: submission?.submittedAt,
+      blockedAt: session?.blockedAt,
+      endedAt: session?.endedAt,
+      endReason: session?.endReason,
+      violationCount: session?.violationCount,
+      violationReason: session?.violationReason,
     };
   });
   return { submissions: mappedSubmissions, statuses };
@@ -8494,6 +8796,20 @@ export type TestReportAttempt = {
   submittedAt: string;
 };
 
+export type TestReportViolation = {
+  testId: string;
+  testTitle: string;
+  reason?: string;
+  blockedAt?: string;
+};
+
+export type TestReportEndedSession = {
+  testId: string;
+  testTitle: string;
+  reason?: string;
+  endedAt?: string;
+};
+
 export type TestReportRow = {
   personId: string;
   personName: string;
@@ -8502,6 +8818,8 @@ export type TestReportRow = {
   testTotal: number;
   testSubmitted: number;
   testInProgress: number;
+  testBlockedViolation: number;
+  testEndedByUser: number;
   testNotStarted: number;
   testProgressPercent: number;
   totalAttempts: number;
@@ -8511,6 +8829,8 @@ export type TestReportRow = {
   passCount: number;
   lastAttemptAt?: string;
   attempts: TestReportAttempt[];
+  violations: TestReportViolation[];
+  endedSessions: TestReportEndedSession[];
 };
 
 export async function getQuizReport(
@@ -8863,16 +9183,38 @@ function buildTestReportRows(
 
       let testSubmitted = 0;
       let testInProgress = 0;
+      let testBlockedViolation = 0;
+      let testEndedByUser = 0;
+      const violations: TestReportViolation[] = [];
+      const endedSessions: TestReportEndedSession[] = [];
       for (const test of assignedTests) {
         if (latestSubmissionByTestId.has(test._id)) {
           testSubmitted++;
           continue;
         }
         const session = sessionByPersonAndTest.get(`${person.id}:${test._id}`);
-        if (session?.status === "in_progress") testInProgress++;
+        if (session?.status === "blocked_violation") {
+          testBlockedViolation++;
+          violations.push({
+            testId: test._id,
+            testTitle: test.title,
+            reason: session.violationReason,
+            blockedAt: session.blockedAt,
+          });
+        } else if (session?.status === "ended_by_user") {
+          testEndedByUser++;
+          endedSessions.push({
+            testId: test._id,
+            testTitle: test.title,
+            reason: session.endReason,
+            endedAt: session.endedAt,
+          });
+        } else if (session?.status === "in_progress") {
+          testInProgress++;
+        }
       }
       const testTotal = assignedTests.length;
-      const testNotStarted = Math.max(testTotal - testSubmitted - testInProgress, 0);
+      const testNotStarted = Math.max(testTotal - testSubmitted - testInProgress - testBlockedViolation - testEndedByUser, 0);
       const latestScores = Array.from(latestSubmissionByTestId.values()).map((submission) => {
         const test = testById.get(submission.testId);
         return test ? getTestSubmissionScore(test, submission).score : 0;
@@ -8902,6 +9244,8 @@ function buildTestReportRows(
         testTotal,
         testSubmitted,
         testInProgress,
+        testBlockedViolation,
+        testEndedByUser,
         testNotStarted,
         testProgressPercent: testTotal > 0 ? Math.round((testSubmitted / testTotal) * 100) : 0,
         totalAttempts: personAssignedSubmissions.length,
@@ -8911,6 +9255,8 @@ function buildTestReportRows(
         passCount,
         lastAttemptAt: personAssignedSubmissions[0]?.submittedAt,
         attempts,
+        violations,
+        endedSessions,
       };
     });
 

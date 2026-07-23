@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-import { submitTestRecord } from "@/lib/server/data";
+import { blockTestRecordForViolation } from "@/lib/server/data";
 import { getSessionUserId } from "@/lib/server/session";
 
 function getErrorStatus(error: unknown) {
   if (!(error instanceof Error)) return 500;
   if (error.message === "Unauthorized") return 401;
   if (error.message === "Forbidden") return 403;
-  if (error.message.includes("bị khóa") || error.message.includes("kết thúc") || error.message.includes("chỉ được làm 1 lần")) return 409;
   return 500;
 }
 
@@ -14,12 +13,12 @@ export async function POST(request: Request, context: { params: Promise<{ testId
   try {
     const sessionUserId = await getSessionUserId();
     const { testId } = await context.params;
-    const body = await request.json();
-    const submission = await submitTestRecord(sessionUserId, testId, body);
-    return NextResponse.json({ ok: true, submission });
+    const body = await request.json().catch(() => ({}));
+    const session = await blockTestRecordForViolation(sessionUserId, testId, body);
+    return NextResponse.json({ ok: true, session });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, message: error instanceof Error ? error.message : "Failed to submit test." },
+      { ok: false, message: error instanceof Error ? error.message : "Failed to record test violation." },
       { status: getErrorStatus(error) }
     );
   }

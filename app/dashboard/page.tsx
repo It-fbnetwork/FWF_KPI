@@ -62,6 +62,20 @@ type TestReportAttempt = {
     submittedAt: string
 }
 
+type TestReportViolation = {
+    testId: string
+    testTitle: string
+    reason?: string
+    blockedAt?: string
+}
+
+type TestReportEndedSession = {
+    testId: string
+    testTitle: string
+    reason?: string
+    endedAt?: string
+}
+
 type TestReportRow = {
     personId: string
     personName: string
@@ -70,6 +84,8 @@ type TestReportRow = {
     testTotal: number
     testSubmitted: number
     testInProgress: number
+    testBlockedViolation: number
+    testEndedByUser: number
     testNotStarted: number
     testProgressPercent: number
     totalAttempts: number
@@ -79,6 +95,8 @@ type TestReportRow = {
     passCount: number
     lastAttemptAt?: string
     attempts: TestReportAttempt[]
+    violations: TestReportViolation[]
+    endedSessions: TestReportEndedSession[]
 }
 
 type ViewMode = "employee" | "project"
@@ -1030,6 +1048,8 @@ export default function DashboardPage() {
                             const assignedPeople = filtered.filter((row) => row.testTotal > 0)
                             const completedPeople = filtered.filter((row) => row.testTotal > 0 && row.testSubmitted >= row.testTotal)
                             const inProgressPeople = filtered.filter((row) => row.testInProgress > 0)
+                            const blockedViolationPeople = filtered.filter((row) => row.testBlockedViolation > 0)
+                            const endedByUserPeople = filtered.filter((row) => row.testEndedByUser > 0)
                             const totalAttempts = filtered.reduce((sum, row) => sum + row.totalAttempts, 0)
                             const rowsWithAttempts = filtered.filter((row) => row.totalAttempts > 0)
                             const avgScore = rowsWithAttempts.length === 0
@@ -1051,6 +1071,14 @@ export default function DashboardPage() {
                                         <div className="rounded-xl bg-blue-50 px-4 py-3 dark:bg-blue-900/20">
                                             <p className="text-xs text-blue-600 dark:text-blue-400">Đang thi</p>
                                             <p className="mt-1 text-2xl font-bold text-blue-700 dark:text-blue-300">{inProgressPeople.length}</p>
+                                        </div>
+                                        <div className="rounded-xl bg-red-50 px-4 py-3 dark:bg-red-900/20">
+                                            <p className="text-xs text-red-600 dark:text-red-400">Bị khóa vi phạm</p>
+                                            <p className="mt-1 text-2xl font-bold text-red-700 dark:text-red-300">{blockedViolationPeople.length}</p>
+                                        </div>
+                                        <div className="rounded-xl bg-amber-50 px-4 py-3 dark:bg-amber-900/20">
+                                            <p className="text-xs text-amber-600 dark:text-amber-400">Tự kết thúc</p>
+                                            <p className="mt-1 text-2xl font-bold text-amber-700 dark:text-amber-300">{endedByUserPeople.length}</p>
                                         </div>
                                         <div className="rounded-xl bg-amber-50 px-4 py-3 dark:bg-amber-900/20">
                                             <p className="text-xs text-amber-600 dark:text-amber-400">Điểm TB toàn bộ</p>
@@ -1077,6 +1105,8 @@ export default function DashboardPage() {
                                                         <th className="px-5 py-3 font-semibold text-center">Bài cần thi</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Đã thi</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Đang thi</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Bị khóa</th>
+                                                        <th className="px-5 py-3 font-semibold text-center">Tự kết thúc</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Chưa thi</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Làm lại</th>
                                                         <th className="px-5 py-3 font-semibold text-center">Điểm TB</th>
@@ -1088,7 +1118,7 @@ export default function DashboardPage() {
                                                 <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
                                                     {filtered.length === 0 ? (
                                                         <tr>
-                                                            <td colSpan={12} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                                                            <td colSpan={14} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                                                                 Không tìm thấy nhân viên phù hợp.
                                                             </td>
                                                         </tr>
@@ -1101,6 +1131,10 @@ export default function DashboardPage() {
                                                                 : "text-red-500 dark:text-red-400"
                                                         const rank = row.testTotal === 0
                                                             ? "Không có bài thi"
+                                                            : row.testBlockedViolation > 0
+                                                                ? "Bị khóa do vi phạm"
+                                                            : row.testEndedByUser > 0
+                                                                ? "Tự kết thúc bài"
                                                             : row.highestScore >= QUIZ_PASS_SCORE && row.testSubmitted >= row.testTotal
                                                                 ? "Đã hoàn thành"
                                                                 : row.totalAttempts > 0
@@ -1110,6 +1144,10 @@ export default function DashboardPage() {
                                                                         : "Chưa thi"
                                                         const rankColor = row.testTotal === 0
                                                             ? "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+                                                            : row.testBlockedViolation > 0
+                                                                ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
+                                                            : row.testEndedByUser > 0
+                                                                ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
                                                             : row.highestScore >= QUIZ_PASS_SCORE && row.testSubmitted >= row.testTotal
                                                                 ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
                                                                 : row.totalAttempts > 0
@@ -1134,7 +1172,7 @@ export default function DashboardPage() {
                                                                     </td>
                                                                     <td className="px-5 py-4 font-medium text-gray-900 dark:text-white">
                                                                         <div className="flex items-center gap-2.5">
-                                                                            <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold text-white ${row.highestScore >= QUIZ_PASS_SCORE ? "bg-green-500" : row.testInProgress > 0 ? "bg-blue-500" : row.totalAttempts > 0 ? "bg-red-500" : "bg-gray-500"}`}>
+                                                                            <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold text-white ${row.testBlockedViolation > 0 ? "bg-red-600" : row.testEndedByUser > 0 ? "bg-amber-500" : row.highestScore >= QUIZ_PASS_SCORE ? "bg-green-500" : row.testInProgress > 0 ? "bg-blue-500" : row.totalAttempts > 0 ? "bg-red-500" : "bg-gray-500"}`}>
                                                                                 {row.personName.split(" ").slice(-1)[0]?.[0] ?? "?"}
                                                                             </div>
                                                                             {row.personName}
@@ -1144,6 +1182,8 @@ export default function DashboardPage() {
                                                                     <td className="px-5 py-4 text-center font-semibold text-gray-900 dark:text-white">{row.testTotal}</td>
                                                                     <td className="px-5 py-4 text-center font-semibold text-green-600 dark:text-green-400">{row.testSubmitted}</td>
                                                                     <td className="px-5 py-4 text-center font-semibold text-blue-600 dark:text-blue-400">{row.testInProgress}</td>
+                                                                    <td className="px-5 py-4 text-center font-semibold text-red-600 dark:text-red-400">{row.testBlockedViolation}</td>
+                                                                    <td className="px-5 py-4 text-center font-semibold text-amber-600 dark:text-amber-400">{row.testEndedByUser}</td>
                                                                     <td className="px-5 py-4 text-center font-semibold text-gray-500 dark:text-gray-400">{row.testNotStarted}</td>
                                                                     <td className={`px-5 py-4 text-center font-semibold ${row.retakeCount > 0 ? "text-red-600 dark:text-red-400" : "text-gray-500 dark:text-gray-400"}`}>{row.retakeCount}</td>
                                                                     <td className={`px-5 py-4 text-center text-lg font-bold ${scoreColor}`}>{row.totalAttempts > 0 ? row.averageScore : "-"}</td>
@@ -1162,14 +1202,48 @@ export default function DashboardPage() {
                                                                     <>
                                                                         <tr className="bg-violet-50/70 dark:bg-violet-950/20">
                                                                             <td className="px-3 py-3" />
-                                                                            <td colSpan={11} className="px-5 py-3 text-xs text-violet-800 dark:text-violet-200">
-                                                                                Bài thi: {row.testSubmitted} đã thi · {row.testInProgress} đang thi · {row.testNotStarted} chưa thi
+                                                                            <td colSpan={13} className="px-5 py-3 text-xs text-violet-800 dark:text-violet-200">
+                                                                                Bài thi: {row.testSubmitted} đã thi · {row.testInProgress} đang thi · {row.testBlockedViolation} bị khóa vi phạm · {row.testEndedByUser} tự kết thúc · {row.testNotStarted} chưa thi
                                                                             </td>
                                                                         </tr>
+                                                                        {row.violations.length > 0 && row.violations.map((violation, index) => (
+                                                                            <tr key={`${row.personId}-${violation.testId}-violation-${index}`} className="bg-red-50/80 dark:bg-red-950/20">
+                                                                                <td className="px-3 py-3" />
+                                                                                <td colSpan={4} className="px-5 py-3">
+                                                                                    <div className="flex items-center gap-2 text-sm text-red-700 dark:text-red-300">
+                                                                                        <XCircle className="h-4 w-4 flex-shrink-0" />
+                                                                                        <span className="max-w-[260px] truncate font-semibold" title={violation.testTitle}>{violation.testTitle}</span>
+                                                                                    </div>
+                                                                                </td>
+                                                                                <td colSpan={7} className="px-5 py-3 text-xs font-semibold text-red-700 dark:text-red-300">
+                                                                                    Bị khóa do vi phạm: {violation.reason ?? "Vi phạm quy định bảo vệ bài thi 2 lần"}
+                                                                                </td>
+                                                                                <td colSpan={2} className="px-5 py-3 text-xs text-red-500 dark:text-red-300">
+                                                                                    {violation.blockedAt ? new Date(violation.blockedAt).toLocaleDateString("vi-VN") : "-"}
+                                                                                </td>
+                                                                            </tr>
+                                                                        ))}
+                                                                        {row.endedSessions.length > 0 && row.endedSessions.map((ended, index) => (
+                                                                            <tr key={`${row.personId}-${ended.testId}-ended-${index}`} className="bg-amber-50/80 dark:bg-amber-950/20">
+                                                                                <td className="px-3 py-3" />
+                                                                                <td colSpan={4} className="px-5 py-3">
+                                                                                    <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+                                                                                        <XCircle className="h-4 w-4 flex-shrink-0" />
+                                                                                        <span className="max-w-[260px] truncate font-semibold" title={ended.testTitle}>{ended.testTitle}</span>
+                                                                                    </div>
+                                                                                </td>
+                                                                                <td colSpan={7} className="px-5 py-3 text-xs font-semibold text-amber-700 dark:text-amber-300">
+                                                                                    Tự kết thúc: {ended.reason ?? "Nhân viên xác nhận kết thúc bài làm trước khi nộp"}
+                                                                                </td>
+                                                                                <td colSpan={2} className="px-5 py-3 text-xs text-amber-600 dark:text-amber-300">
+                                                                                    {ended.endedAt ? new Date(ended.endedAt).toLocaleDateString("vi-VN") : "-"}
+                                                                                </td>
+                                                                            </tr>
+                                                                        ))}
                                                                         {row.attempts.length === 0 ? (
                                                                             <tr className="bg-gray-50/80 dark:bg-gray-800/40">
                                                                                 <td className="px-3 py-3" />
-                                                                                <td colSpan={11} className="px-5 py-3 text-xs text-gray-500 dark:text-gray-400">
+                                                                                <td colSpan={13} className="px-5 py-3 text-xs text-gray-500 dark:text-gray-400">
                                                                                     Chưa có lịch sử nộp bài.
                                                                                 </td>
                                                                             </tr>

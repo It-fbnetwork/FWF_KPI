@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createTestRecord, getMyTestSubmissionsData, getTestsData } from "@/lib/server/data";
+import { createTestRecord, getMyTestSessionsData, getMyTestSubmissionsData, getTestsData } from "@/lib/server/data";
 import { getSessionUserId } from "@/lib/server/session";
 
 function getErrorStatus(error: unknown) {
@@ -12,11 +12,12 @@ function getErrorStatus(error: unknown) {
 export async function GET() {
   try {
     const sessionUserId = await getSessionUserId();
-    const [tests, submissions] = await Promise.all([
+    const [tests, submissions, sessions] = await Promise.all([
       getTestsData(sessionUserId),
       getMyTestSubmissionsData(sessionUserId),
+      getMyTestSessionsData(sessionUserId),
     ]);
-    return NextResponse.json({ tests, submissions });
+    return NextResponse.json({ tests, submissions, sessions });
   } catch (error) {
     return NextResponse.json(
       { ok: false, message: error instanceof Error ? error.message : "Failed to fetch tests." },
