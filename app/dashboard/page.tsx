@@ -2,13 +2,15 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react"
 import { Pie, PieChart, Cell } from "recharts"
-import { CalendarDays, ChevronDown, Search, GraduationCap, ChevronRight, CheckCircle2, XCircle, ClipboardCheck } from "lucide-react"
+import { CalendarDays, ChevronDown, Search, GraduationCap, ChevronRight, CheckCircle2, XCircle, ClipboardCheck, RotateCcw, Loader2 } from "lucide-react"
 
 import { useAuth } from "@/components/auth-provider"
 import { useDirectory } from "@/components/directory-provider"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
+import { toast } from "@/components/ui/use-toast"
 import {
     ChartContainer,
     ChartTooltip,
@@ -198,6 +200,7 @@ export default function DashboardPage() {
     const [expandedTestRows, setExpandedTestRows] = useState<Set<string>>(new Set())
     const [quizSearchQuery, setQuizSearchQuery] = useState("")
     const [testSearchQuery, setTestSearchQuery] = useState("")
+    const [resettingReportTestKey, setResettingReportTestKey] = useState<string | null>(null)
     const [activeReport, setActiveReport] = useState<"quiz" | "test">("quiz")
     const [showParticipantModal, setShowParticipantModal] = useState(false)
     const isAdminUser = isAdminLikeRole(user?.role)
@@ -292,6 +295,45 @@ export default function DashboardPage() {
         }
         void load()
     }, [])
+
+    const refreshTestReport = async () => {
+        const res = await fetch("/api/tests/report", { credentials: "include", cache: "no-store" })
+        if (!res.ok) throw new Error("Không thể tải lại báo cáo bài thi")
+        const data = (await res.json()) as { rows: TestReportRow[] }
+        setTestReport(data.rows ?? [])
+    }
+
+    const handleResetReportTest = async (input: {
+        personId: string
+        personName: string
+        testId: string
+        testTitle: string
+    }) => {
+        const confirmed = window.confirm(`Reset bài thi "${input.testTitle}" cho ${input.personName}? Nhân viên sẽ có thể làm lại từ đầu.`)
+        if (!confirmed) return
+
+        const resetKey = `${input.personId}:${input.testId}`
+        setResettingReportTestKey(resetKey)
+        try {
+            const res = await fetch(`/api/tests/${input.testId}/reset`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ personId: input.personId }),
+            })
+            const data = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string }
+            if (!res.ok || data.ok === false) throw new Error(data.message || "Không thể reset bài thi")
+            await refreshTestReport()
+            toast({
+                title: "Đã reset bài thi",
+                description: `${input.personName} có thể làm lại bài thi từ đầu.`,
+            })
+        } catch (error) {
+            toast({ title: error instanceof Error ? error.message : "Không thể reset bài thi", variant: "destructive" })
+        } finally {
+            setResettingReportTestKey(null)
+        }
+    }
 
     const filteredTasks = useMemo(() => {
         return scopedTasks.filter((task) => {
@@ -1208,6 +1250,11 @@ export default function DashboardPage() {
                                                                         </tr>
                                                                         {row.violations.length > 0 && row.violations.map((violation, index) => (
                                                                             <tr key={`${row.personId}-${violation.testId}-violation-${index}`} className="bg-red-50/80 dark:bg-red-950/20">
+                                                                                {(() => {
+                                                                                    const resetKey = `${row.personId}:${violation.testId}`
+                                                                                    const isResetting = resettingReportTestKey === resetKey
+                                                                                    return (
+                                                                                        <>
                                                                                 <td className="px-3 py-3" />
                                                                                 <td colSpan={4} className="px-5 py-3">
                                                                                     <div className="flex items-center gap-2 text-sm text-red-700 dark:text-red-300">
@@ -1218,13 +1265,44 @@ export default function DashboardPage() {
                                                                                 <td colSpan={7} className="px-5 py-3 text-xs font-semibold text-red-700 dark:text-red-300">
                                                                                     Bị khóa do vi phạm: {violation.reason ?? "Vi phạm quy định bảo vệ bài thi 2 lần"}
                                                                                 </td>
-                                                                                <td colSpan={2} className="px-5 py-3 text-xs text-red-500 dark:text-red-300">
-                                                                                    {violation.blockedAt ? new Date(violation.blockedAt).toLocaleDateString("vi-VN") : "-"}
+                                                                                <td colSpan={2} className="px-5 py-3">
+                                                                                    <div className="flex items-center justify-end gap-3">
+                                                                                        <span className="text-xs text-red-500 dark:text-red-300">
+                                                                                            {violation.blockedAt ? new Date(violation.blockedAt).toLocaleDateString("vi-VN") : "-"}
+                                                                                        </span>
+                                                                                        <Button
+                                                                                            type="button"
+                                                                                            size="sm"
+                                                                                            variant="outline"
+                                                                                            className="h-8 bg-white/70 text-xs dark:bg-gray-900/70"
+                                                                                            disabled={isResetting}
+                                                                                            onClick={(event) => {
+                                                                                                event.stopPropagation()
+                                                                                                void handleResetReportTest({
+                                                                                                    personId: row.personId,
+                                                                                                    personName: row.personName,
+                                                                                                    testId: violation.testId,
+                                                                                                    testTitle: violation.testTitle,
+                                                                                                })
+                                                                                            }}
+                                                                                        >
+                                                                                            {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
+                                                                                            Reset
+                                                                                        </Button>
+                                                                                    </div>
                                                                                 </td>
+                                                                                        </>
+                                                                                    )
+                                                                                })()}
                                                                             </tr>
                                                                         ))}
                                                                         {row.endedSessions.length > 0 && row.endedSessions.map((ended, index) => (
                                                                             <tr key={`${row.personId}-${ended.testId}-ended-${index}`} className="bg-amber-50/80 dark:bg-amber-950/20">
+                                                                                {(() => {
+                                                                                    const resetKey = `${row.personId}:${ended.testId}`
+                                                                                    const isResetting = resettingReportTestKey === resetKey
+                                                                                    return (
+                                                                                        <>
                                                                                 <td className="px-3 py-3" />
                                                                                 <td colSpan={4} className="px-5 py-3">
                                                                                     <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
@@ -1235,9 +1313,35 @@ export default function DashboardPage() {
                                                                                 <td colSpan={7} className="px-5 py-3 text-xs font-semibold text-amber-700 dark:text-amber-300">
                                                                                     Tự kết thúc: {ended.reason ?? "Nhân viên xác nhận kết thúc bài làm trước khi nộp"}
                                                                                 </td>
-                                                                                <td colSpan={2} className="px-5 py-3 text-xs text-amber-600 dark:text-amber-300">
-                                                                                    {ended.endedAt ? new Date(ended.endedAt).toLocaleDateString("vi-VN") : "-"}
+                                                                                <td colSpan={2} className="px-5 py-3">
+                                                                                    <div className="flex items-center justify-end gap-3">
+                                                                                        <span className="text-xs text-amber-600 dark:text-amber-300">
+                                                                                            {ended.endedAt ? new Date(ended.endedAt).toLocaleDateString("vi-VN") : "-"}
+                                                                                        </span>
+                                                                                        <Button
+                                                                                            type="button"
+                                                                                            size="sm"
+                                                                                            variant="outline"
+                                                                                            className="h-8 bg-white/70 text-xs dark:bg-gray-900/70"
+                                                                                            disabled={isResetting}
+                                                                                            onClick={(event) => {
+                                                                                                event.stopPropagation()
+                                                                                                void handleResetReportTest({
+                                                                                                    personId: row.personId,
+                                                                                                    personName: row.personName,
+                                                                                                    testId: ended.testId,
+                                                                                                    testTitle: ended.testTitle,
+                                                                                                })
+                                                                                            }}
+                                                                                        >
+                                                                                            {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
+                                                                                            Reset
+                                                                                        </Button>
+                                                                                    </div>
                                                                                 </td>
+                                                                                        </>
+                                                                                    )
+                                                                                })()}
                                                                             </tr>
                                                                         ))}
                                                                         {row.attempts.length === 0 ? (
@@ -1249,6 +1353,11 @@ export default function DashboardPage() {
                                                                             </tr>
                                                                         ) : row.attempts.map((attempt, index) => (
                                                                             <tr key={`${row.personId}-${attempt.testId}-${index}`} className="bg-gray-50/80 dark:bg-gray-800/40">
+                                                                                {(() => {
+                                                                                    const resetKey = `${row.personId}:${attempt.testId}`
+                                                                                    const isResetting = resettingReportTestKey === resetKey
+                                                                                    return (
+                                                                                        <>
                                                                                 <td className="px-3 py-3" />
                                                                                 <td colSpan={4} className="px-5 py-3">
                                                                                     <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -1277,10 +1386,33 @@ export default function DashboardPage() {
                                                                                         </div>
                                                                                     </div>
                                                                                 </td>
-                                                                                <td className="px-5 py-3" />
+                                                                                <td className="px-5 py-3 text-right">
+                                                                                    <Button
+                                                                                        type="button"
+                                                                                        size="sm"
+                                                                                        variant="outline"
+                                                                                        className="h-8 bg-white/70 text-xs dark:bg-gray-900/70"
+                                                                                        disabled={isResetting}
+                                                                                        onClick={(event) => {
+                                                                                            event.stopPropagation()
+                                                                                            void handleResetReportTest({
+                                                                                                personId: row.personId,
+                                                                                                personName: row.personName,
+                                                                                                testId: attempt.testId,
+                                                                                                testTitle: attempt.testTitle,
+                                                                                            })
+                                                                                        }}
+                                                                                    >
+                                                                                        {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
+                                                                                        Reset
+                                                                                    </Button>
+                                                                                </td>
                                                                                 <td className="px-5 py-3 text-xs text-gray-400">
                                                                                     {new Date(attempt.submittedAt).toLocaleDateString("vi-VN")}
                                                                                 </td>
+                                                                                        </>
+                                                                                    )
+                                                                                })()}
                                                                             </tr>
                                                                         ))}
                                                                     </>

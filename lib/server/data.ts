@@ -5949,6 +5949,64 @@ export async function deleteTestRecord(sessionUserId: string | null | undefined,
   return true;
 }
 
+export async function resetTestForPerson(
+  sessionUserId: string | null | undefined,
+  testId: string,
+  personId: string
+) {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canManageTests(actor)) throw new Error("Forbidden");
+
+  let existing: DbTest | null;
+  if (shouldUseSupabasePhaseA()) {
+    const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
+    existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
+  } else {
+    existing = await (await getMongoDb()).collection<DbTest>("tests").findOne({ _id: testId });
+  }
+  if (!existing) throw new Error("Không tìm thấy bài thi.");
+
+  let targetPerson = actor.teamMembers.find((person) => person.id === personId);
+  if (!targetPerson && actor.isAdmin) {
+    if (shouldUseSupabasePhaseA()) {
+      const personRes = await pgQuery("select * from people where id = $1 limit 1", [personId]);
+      targetPerson = personRes.rows[0] ? mapDbPerson(mapPgPersonRow(personRes.rows[0])) : undefined;
+    } else {
+      const personRecord = await (await getMongoDb()).collection<DbPerson>("people").findOne({ _id: personId });
+      targetPerson = personRecord ? mapDbPerson(personRecord) : undefined;
+    }
+  }
+  if (!targetPerson || targetPerson.id === actor.person.id || !isEmployeePerson(targetPerson)) {
+    throw new Error("Không tìm thấy nhân viên trong phạm vi quản lý.");
+  }
+  if (!personMatchesTestTargetRoles(targetPerson, existing.targetRoles)) {
+    throw new Error("Nhân viên này không thuộc nhóm được giao bài thi.");
+  }
+
+  if (shouldUseSupabasePhaseA()) {
+    await ensureTestSubmissionSchemaReady();
+    const [submissionResult, sessionResult] = await Promise.all([
+      pgQuery("delete from test_submissions where test_id = $1 and person_id = $2", [testId, personId]),
+      pgQuery("delete from test_sessions where test_id = $1 and person_id = $2", [testId, personId]),
+    ]);
+    return {
+      deletedSubmissions: submissionResult.rowCount ?? 0,
+      deletedSessions: sessionResult.rowCount ?? 0,
+    };
+  }
+
+  const db = await getMongoDb();
+  const [submissionResult, sessionResult] = await Promise.all([
+    db.collection<DbTestSubmission>("test_submissions").deleteMany({ testId, personId }),
+    db.collection<DbTestSession>("test_sessions").deleteMany({ testId, personId }),
+  ]);
+  return {
+    deletedSubmissions: submissionResult.deletedCount ?? 0,
+    deletedSessions: sessionResult.deletedCount ?? 0,
+  };
+}
+
 export async function submitTestRecord(
   sessionUserId: string | null | undefined,
   testId: string,

@@ -712,6 +712,7 @@ export default function DocumentsPage() {
     const [testResultDetail, setTestResultDetail] = useState<TestResultDetail | null>(null)
     const [testSubmissionHistory, setTestSubmissionHistory] = useState<Record<string, TestSubmissionRecord[]>>({})
     const [testHistoryDialog, setTestHistoryDialog] = useState<TestHistoryDialogState>({ open: false, test: null })
+    const [resettingTestPersonId, setResettingTestPersonId] = useState<string | null>(null)
     const [blockedTestIdsByViolation, setBlockedTestIdsByViolation] = useState<Set<string>>(new Set())
     const [endedTestIdsByUser, setEndedTestIdsByUser] = useState<Set<string>>(new Set())
     const [pendingEndTestId, setPendingEndTestId] = useState<string | null>(null)
@@ -2093,6 +2094,54 @@ export default function DocumentsPage() {
         setTestProgressModal({ open: false, isLoading: false, test: null, submissions: [], statuses: [] })
         setSelectedTestStatusListDetail(null)
         setTestStatusListSearch("")
+    }
+
+    const handleResetTestForPerson = async (row: TestProgressRow) => {
+        const test = testProgressModal.test
+        if (!test) return
+        const confirmed = window.confirm(`Reset bài thi "${test.title}" cho ${row.personName}? Nhân viên sẽ có thể làm lại từ đầu.`)
+        if (!confirmed) return
+
+        setResettingTestPersonId(row.personId)
+        try {
+            const res = await fetch(`/api/tests/${test.id}/reset`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ personId: row.personId }),
+            })
+            const data = (await res.json().catch(() => ({}))) as {
+                ok?: boolean
+                message?: string
+                deletedSubmissions?: number
+                deletedSessions?: number
+            }
+            if (!res.ok || data.ok === false) throw new Error(data.message || "Không thể reset bài thi")
+
+            const resetRow: TestProgressRow = {
+                personId: row.personId,
+                personName: row.personName,
+                personRole: row.personRole,
+                status: "not_submitted",
+            }
+            setTestProgressModal((prev) => ({
+                ...prev,
+                submissions: prev.submissions.filter((submission) => !(submission.testId === test.id && submission.personId === row.personId)),
+                statuses: prev.statuses.map((item) => item.personId === row.personId ? resetRow : item),
+            }))
+            setSelectedTestStatusListDetail((prev) => prev
+                ? { ...prev, rows: prev.rows.filter((item) => item.personId !== row.personId) }
+                : prev
+            )
+            toast({
+                title: "Đã reset bài thi",
+                description: `${row.personName} có thể làm lại bài thi từ đầu.`,
+            })
+        } catch (error) {
+            toast({ title: error instanceof Error ? error.message : "Không thể reset bài thi", variant: "destructive" })
+        } finally {
+            setResettingTestPersonId(null)
+        }
     }
 
     const getTestStatusPersonDetail = (row: TestProgressRow) => {
@@ -8345,6 +8394,8 @@ export default function DocumentsPage() {
                                             const detail = getTestStatusPersonDetail(row)
                                             const rowSubmission = testProgressModal.submissions.find((submission) => submission.personId === row.personId)
                                             const rowResult = testProgressModal.test ? getTestSubmissionResult(testProgressModal.test, rowSubmission) : null
+                                            const canResetThisTest = row.status !== "not_submitted"
+                                            const isResettingThisTest = resettingTestPersonId === row.personId
                                             return (
                                                 <div
                                                     key={`test-status-detail-${row.personId}`}
@@ -8402,6 +8453,24 @@ export default function DocumentsPage() {
                                                     <p className="mt-1 text-sm text-slate-400">
                                                         Cửa hàng: {detail.storeText}
                                                     </p>
+                                                    <div className="mt-4 flex justify-end">
+                                                        <Button
+                                                            type="button"
+                                                            size="sm"
+                                                            variant="outline"
+                                                            className="border-violet-500/70 bg-violet-950/30 text-violet-100 hover:bg-violet-900/50 hover:text-white disabled:border-slate-700 disabled:bg-slate-800/40 disabled:text-slate-500"
+                                                            disabled={!canResetThisTest || isResettingThisTest}
+                                                            onClick={() => void handleResetTestForPerson(row)}
+                                                            title={canResetThisTest ? "Reset để nhân viên làm lại bài thi" : "Nhân viên chưa thi nên không cần reset"}
+                                                        >
+                                                            {isResettingThisTest ? (
+                                                                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                                                            ) : (
+                                                                <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                                                            )}
+                                                            Reset làm lại
+                                                        </Button>
+                                                    </div>
                                                 </div>
                                             )
                                         })}
