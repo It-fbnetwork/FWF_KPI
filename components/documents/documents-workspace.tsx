@@ -21,6 +21,8 @@ import { documentTypes, formatFileSize, formatDate, type Document, type Folder }
 import { isAdminLikeRole, type UserAccount } from "@/lib/auth"
 import { STORE_BRANCHES } from "@/lib/store-branches"
 import { useIsMobile } from "@/components/hooks/use-mobile"
+import { useExamSecureMode } from "@/components/hooks/use-exam-secure-mode"
+import { ExamSecureShield } from "@/components/exam-secure-shield"
 import {
     Search,
     Filter,
@@ -102,13 +104,33 @@ type TestSubmissionRecord = {
     submittedAt: string
 }
 
+type TestSessionRecord = {
+    id: string
+    testId: string
+    personId: string
+    status: "in_progress" | "submitted" | "blocked_violation" | "ended_by_user"
+    startedAt: string
+    updatedAt: string
+    submittedAt?: string
+    blockedAt?: string
+    endedAt?: string
+    endReason?: string
+    violationCount?: number
+    violationReason?: string
+}
+
 type TestProgressRow = {
     personId: string
     personName: string
     personRole?: string
-    status: "submitted" | "in_progress" | "not_submitted"
+    status: "submitted" | "in_progress" | "blocked_violation" | "ended_by_user" | "not_submitted"
     startedAt?: string
     submittedAt?: string
+    blockedAt?: string
+    endedAt?: string
+    endReason?: string
+    violationCount?: number
+    violationReason?: string
 }
 
 type TestStatusListDetail = {
@@ -690,6 +712,10 @@ export default function DocumentsPage() {
     const [testResultDetail, setTestResultDetail] = useState<TestResultDetail | null>(null)
     const [testSubmissionHistory, setTestSubmissionHistory] = useState<Record<string, TestSubmissionRecord[]>>({})
     const [testHistoryDialog, setTestHistoryDialog] = useState<TestHistoryDialogState>({ open: false, test: null })
+    const [blockedTestIdsByViolation, setBlockedTestIdsByViolation] = useState<Set<string>>(new Set())
+    const [endedTestIdsByUser, setEndedTestIdsByUser] = useState<Set<string>>(new Set())
+    const [pendingEndTestId, setPendingEndTestId] = useState<string | null>(null)
+    const [blockedQuizDocIdsByViolation, setBlockedQuizDocIdsByViolation] = useState<Set<string>>(new Set())
 
     const defaultQuizCreate = (): QuizCreateState => ({
         open: false, documentId: "", documentName: "", existingQuizId: null,
@@ -747,6 +773,8 @@ export default function DocumentsPage() {
     const quizTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const learningTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const quizTakeModalRef = useRef<QuizTakeState>(defaultQuizTake())
+    const takingTestIdsRef = useRef<Set<string>>(new Set())
+    const examViolationCountsRef = useRef<Record<string, number>>({})
     const learningViewerRef = useRef<HTMLDivElement>(null)
     const learningTouchStartRef = useRef<{ x: number; y: number } | null>(null)
     const documentsLoadSeqRef = useRef(0)
@@ -1435,7 +1463,7 @@ export default function DocumentsPage() {
         try {
             const res = await fetch("/api/tests", { credentials: "include", cache: "no-store" })
             if (!res.ok) return
-            const payload = (await res.json()) as { tests: TestRecord[]; submissions?: TestSubmissionRecord[] }
+            const payload = (await res.json()) as { tests: TestRecord[]; submissions?: TestSubmissionRecord[]; sessions?: TestSessionRecord[] }
             setTests(payload.tests)
             const submissionsByTestId: Record<string, TestSubmissionRecord[]> = {}
             ;(payload.submissions ?? []).forEach((submission) => {
@@ -1443,6 +1471,14 @@ export default function DocumentsPage() {
             })
             setTestSubmissionHistory(submissionsByTestId)
             setSubmittedTestIds(new Set((payload.submissions ?? []).map((submission) => submission.testId)))
+            setBlockedTestIdsByViolation(new Set((payload.sessions ?? [])
+                .filter((session) => session.status === "blocked_violation")
+                .map((session) => session.testId)
+            ))
+            setEndedTestIdsByUser(new Set((payload.sessions ?? [])
+                .filter((session) => session.status === "ended_by_user")
+                .map((session) => session.testId)
+            ))
             const nextVisibleTests = canManageTests
                 ? payload.tests
                 : payload.tests.filter((test) => Boolean(user?.role && test.targetRoles?.includes(user.role)))
@@ -1825,8 +1861,9 @@ export default function DocumentsPage() {
         }
     }
 
-    const handleSelectTestChoice = (testId: string, questionIndex: number, optionIndex: number) => {
-        void handleStartTest(testId)
+    const handleSelectTestChoice = async (testId: string, questionIndex: number, optionIndex: number) => {
+        const ok = await handleStartTest(testId)
+        if (!ok && !takingTestIdsRef.current.has(testId)) return
         setTestChoiceAnswers((prev) => {
             const current = [...(prev[testId] ?? [])]
             current[questionIndex] = optionIndex
@@ -1836,6 +1873,22 @@ export default function DocumentsPage() {
 
     const handleStartTest = async (testId: string) => {
         if (canManageTests || submittedTestIds.has(testId)) return false
+        if (blockedTestIdsByViolation.has(testId)) {
+            toast({
+                title: "Bài thi đã bị kết thúc",
+                description: "Bạn đã vi phạm quy định bảo vệ 2 lần nên không thể làm tiếp.",
+                variant: "destructive",
+            })
+            return false
+        }
+        if (endedTestIdsByUser.has(testId)) {
+            toast({
+                title: "Bài thi đã kết thúc",
+                description: "Bạn đã xác nhận kết thúc bài làm nên không thể làm lại.",
+                variant: "destructive",
+            })
+            return false
+        }
         const test = tests.find((item) => item.id === testId)
         if (test?.isLocked) {
             toast({ title: "Bài thi đang bị khóa", variant: "destructive" })
@@ -1889,8 +1942,43 @@ export default function DocumentsPage() {
     }
 
     const handleEndTakingTest = (testId: string) => {
-        const confirmed = window.confirm("Kết thúc làm bài mà chưa nộp? Bài thi vẫn được ghi nhận là đang thi cho đến khi bạn nộp bài.")
-        if (!confirmed) return
+        setPendingEndTestId(testId)
+    }
+
+    const confirmEndTakingTest = async () => {
+        const testId = pendingEndTestId
+        if (!testId) return
+        setIsSubmitting(true)
+        try {
+            const res = await fetch(`/api/tests/${testId}/end`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+            })
+            const data = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string }
+            if (!res.ok || data.ok === false) {
+                throw new Error(data.message || "Không thể kết thúc bài thi")
+            }
+            setEndedTestIdsByUser((prev) => {
+                const next = new Set(prev)
+                next.add(testId)
+                return next
+            })
+            setPendingEndTestId(null)
+            toast({
+                title: "Đã kết thúc bài thi",
+                description: "Bạn không thể làm lại bài thi này.",
+                variant: "destructive",
+            })
+        } catch (error) {
+            toast({
+                title: error instanceof Error ? error.message : "Không thể kết thúc bài thi",
+                variant: "destructive",
+            })
+            return
+        } finally {
+            setIsSubmitting(false)
+        }
         setTakingTestIds((prev) => {
             const next = new Set(prev)
             next.delete(testId)
@@ -1898,48 +1986,6 @@ export default function DocumentsPage() {
         })
         if (document.fullscreenElement) {
             void document.exitFullscreen().catch(() => undefined)
-        }
-    }
-
-    const handleRetakeTestNow = (testId: string) => {
-        const test = tests.find((item) => item.id === testId)
-        if (test?.isLocked) {
-            toast({ title: "Bài thi đang bị khóa", variant: "destructive" })
-            return
-        }
-        setTestResultDetail(null)
-        setSubmittedTestIds((prev) => {
-            const next = new Set(prev)
-            next.delete(testId)
-            return next
-        })
-        setStartedTestIds((prev) => {
-            const next = new Set(prev)
-            next.add(testId)
-            return next
-        })
-        setTakingTestIds((prev) => {
-            const next = new Set(prev)
-            next.add(testId)
-            return next
-        })
-        setTestCurrentQuestionById((prev) => ({ ...prev, [testId]: 0 }))
-        setTestChoiceAnswers((prev) => ({ ...prev, [testId]: [] }))
-        setTestAnswers((prev) => {
-            const next = { ...prev }
-            Object.keys(next).forEach((key) => {
-                if (key.startsWith(`${testId}:`)) delete next[key]
-            })
-            return next
-        })
-        if (test) {
-            setTestRemainingSecondsById((prev) => ({
-                ...prev,
-                [testId]: Math.max(60, test.durationMinutes * 60),
-            }))
-        }
-        if (!document.fullscreenElement) {
-            void document.documentElement.requestFullscreen?.().catch(() => undefined)
         }
     }
 
@@ -2074,10 +2120,14 @@ export default function DocumentsPage() {
         const statusLabel: Record<TestProgressRow["status"], string> = {
             submitted: "Đã thi",
             in_progress: "Đang thi",
+            blocked_violation: "Bị khóa do vi phạm",
+            ended_by_user: "Đã tự kết thúc",
             not_submitted: "Chưa thi",
         }
         const completedTests = testProgressModal.statuses.filter((item) => item.status === "submitted")
         const inProgressTests = testProgressModal.statuses.filter((item) => item.status === "in_progress")
+        const blockedViolationTests = testProgressModal.statuses.filter((item) => item.status === "blocked_violation")
+        const endedByUserTests = testProgressModal.statuses.filter((item) => item.status === "ended_by_user")
         const notTakenTests = testProgressModal.statuses.filter((item) => item.status === "not_submitted")
         const latestSubmissionByPersonId = new Map<string, TestSubmissionRecord>()
         testProgressModal.submissions.forEach((submission) => {
@@ -2113,6 +2163,10 @@ export default function DocumentsPage() {
                 getRetakeCount(row.personId),
                 formatDateTime(row.startedAt),
                 formatDateTime(row.submittedAt),
+                formatDateTime(row.blockedAt),
+                row.violationReason ?? "",
+                formatDateTime(row.endedAt),
+                row.endReason ?? "",
             ]
         })
         const resultRows = testProgressModal.submissions.map((submission) => {
@@ -2145,14 +2199,15 @@ export default function DocumentsPage() {
             ]
         })
         const filename = `${sanitizeFilenamePart(test.title)}-tien-do-bai-thi-${new Date().toISOString().slice(0, 10)}.xls`
+        const progressHeader = ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc", "Bị khóa lúc", "Lý do vi phạm", "Kết thúc lúc", "Lý do kết thúc"]
 
         downloadExcelWorkbook(filename, [
             {
                 name: "Bao cao",
                 filter: true,
-                widths: [210, 70, 190, 130, 240, 170, 110, 100, 110, 110, 150, 150],
+                widths: [210, 70, 190, 130, 240, 170, 140, 100, 110, 110, 150, 150, 150, 260, 150, 260],
                 rows: [
-                    ["Địa chỉ email", "Điểm số", "Nhập họ và tên của bạn", "Vị trí?", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    ["Địa chỉ email", "Điểm số", "Nhập họ và tên của bạn", "Vị trí?", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc", "Bị khóa lúc", "Lý do vi phạm", "Kết thúc lúc", "Lý do kết thúc"],
                     ...statusRows(testProgressModal.statuses),
                 ],
             },
@@ -2170,6 +2225,8 @@ export default function DocumentsPage() {
                     ["Tổng nhân viên", testProgressModal.statuses.length],
                     ["Đã thi", completedTests.length],
                     ["Đang thi", inProgressTests.length],
+                    ["Bị khóa do vi phạm", blockedViolationTests.length],
+                    ["Tự kết thúc", endedByUserTests.length],
                     ["Chưa thi", notTakenTests.length],
                     ["Điểm trung bình", averageScore],
                     [`Đạt >=${QUIZ_PASS_SCORE}`, passedRows.length],
@@ -2181,7 +2238,7 @@ export default function DocumentsPage() {
                 name: "Tien do bai thi",
                 filter: true,
                 rows: [
-                    ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    progressHeader,
                     ...statusRows(testProgressModal.statuses),
                 ],
             },
@@ -2189,7 +2246,7 @@ export default function DocumentsPage() {
                 name: "Da thi",
                 filter: true,
                 rows: [
-                    ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    progressHeader,
                     ...statusRows(completedTests),
                 ],
             },
@@ -2197,15 +2254,31 @@ export default function DocumentsPage() {
                 name: "Dang thi",
                 filter: true,
                 rows: [
-                    ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    progressHeader,
                     ...statusRows(inProgressTests),
+                ],
+            },
+            {
+                name: "Bi khoa vi pham",
+                filter: true,
+                rows: [
+                    progressHeader,
+                    ...statusRows(blockedViolationTests),
+                ],
+            },
+            {
+                name: "Tu ket thuc",
+                filter: true,
+                rows: [
+                    progressHeader,
+                    ...statusRows(endedByUserTests),
                 ],
             },
             {
                 name: "Chua thi",
                 filter: true,
                 rows: [
-                    ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc"],
+                    progressHeader,
                     ...statusRows(notTakenTests),
                 ],
             },
@@ -3173,22 +3246,142 @@ export default function DocumentsPage() {
             event.preventDefault()
             event.returnValue = ""
         }
-        const handleVisibilityChange = () => {
-            if (document.hidden) {
+        window.addEventListener("beforeunload", handleBeforeUnload)
+        return () => {
+            window.removeEventListener("beforeunload", handleBeforeUnload)
+        }
+    }, [takingTestIds])
+
+    useEffect(() => {
+        takingTestIdsRef.current = takingTestIds
+    }, [takingTestIds])
+
+    const reportTestViolationLock = useCallback(async (testId: string, reason: string) => {
+        try {
+            await fetch(`/api/tests/${testId}/violation`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ reason }),
+            })
+        } catch {
+            // Local lock still applies even if reporting fails temporarily.
+        }
+    }, [])
+
+    const handleExamSecureViolation = useCallback((reason: string) => {
+        const quizState = quizTakeModalRef.current
+        let handled = false
+
+        if (quizState.open && !quizState.isSubmitted && quizState.documentId) {
+            handled = true
+            const violationKey = `quiz:${quizState.documentId}`
+            const nextCount = (examViolationCountsRef.current[violationKey] ?? 0) + 1
+            examViolationCountsRef.current[violationKey] = nextCount
+
+            if (nextCount >= 2) {
+                if (quizTimerRef.current) clearInterval(quizTimerRef.current)
+                setBlockedQuizDocIdsByViolation((prev) => {
+                    const next = new Set(prev)
+                    next.add(quizState.documentId)
+                    return next
+                })
+                setQuizTakeModal(defaultQuizTake())
+                if (document.fullscreenElement) {
+                    void document.exitFullscreen().catch(() => undefined)
+                }
                 toast({
-                    title: "Bạn đang trong bài thi.",
-                    description: "Không chuyển tab hoặc rời khỏi màn hình làm bài cho đến khi kết thúc.",
+                    title: "Đã kết thúc bài kiểm tra",
+                    description: `Vi phạm 2/2: ${reason} Bạn không thể làm tiếp bài này.`,
+                    variant: "destructive",
+                })
+            } else {
+                toast({
+                    title: "Cảnh báo vi phạm 1/2",
+                    description: `${reason} Nếu vi phạm thêm lần nữa, bài kiểm tra sẽ kết thúc.`,
                     variant: "destructive",
                 })
             }
         }
-        window.addEventListener("beforeunload", handleBeforeUnload)
-        document.addEventListener("visibilitychange", handleVisibilityChange)
-        return () => {
-            window.removeEventListener("beforeunload", handleBeforeUnload)
-            document.removeEventListener("visibilitychange", handleVisibilityChange)
+
+        const activeTestIds = Array.from(takingTestIdsRef.current)
+        if (activeTestIds.length > 0) {
+            handled = true
+            const endedTestIds: string[] = []
+            const warnedTestIds: string[] = []
+
+            for (const testId of activeTestIds) {
+                const violationKey = `test:${testId}`
+                const nextCount = (examViolationCountsRef.current[violationKey] ?? 0) + 1
+                examViolationCountsRef.current[violationKey] = nextCount
+                if (nextCount >= 2) {
+                    endedTestIds.push(testId)
+                } else {
+                    warnedTestIds.push(testId)
+                }
+            }
+
+            if (endedTestIds.length > 0) {
+                setBlockedTestIdsByViolation((prev) => {
+                    const next = new Set(prev)
+                    endedTestIds.forEach((testId) => next.add(testId))
+                    return next
+                })
+                setTakingTestIds((prev) => {
+                    const next = new Set(prev)
+                    endedTestIds.forEach((testId) => next.delete(testId))
+                    return next
+                })
+                endedTestIds.forEach((testId) => {
+                    void reportTestViolationLock(testId, reason)
+                })
+                if (document.fullscreenElement) {
+                    void document.exitFullscreen().catch(() => undefined)
+                }
+                toast({
+                    title: "Đã kết thúc bài thi",
+                    description: `Vi phạm 2/2: ${reason} Bạn không thể làm tiếp bài này.`,
+                    variant: "destructive",
+                })
+            } else if (warnedTestIds.length > 0) {
+                toast({
+                    title: "Cảnh báo vi phạm 1/2",
+                    description: `${reason} Nếu vi phạm thêm lần nữa, bài thi sẽ kết thúc.`,
+                    variant: "destructive",
+                })
+            }
         }
-    }, [takingTestIds])
+
+        if (!handled) {
+            toast({
+                title: "Cảnh báo bảo vệ bài thi",
+                description: reason,
+                variant: "destructive",
+            })
+        }
+    }, [reportTestViolationLock])
+
+    const hasOpenTakingTest = tests.some((test) =>
+        takingTestIds.has(test.id) &&
+        !submittedTestIds.has(test.id) &&
+        !test.isLocked &&
+        !blockedTestIdsByViolation.has(test.id) &&
+        !endedTestIdsByUser.has(test.id) &&
+        Boolean(user?.role && test.targetRoles?.includes(user.role))
+    )
+    const isExamSecureActive =
+        hasOpenTakingTest || (quizTakeModal.open && !quizTakeModal.isSubmitted)
+    const examSecureWatermark =
+        [user?.name, user?.email].filter(Boolean).join(" · ") || "FWF Exam"
+    const {
+        isContentHidden: isExamContentHidden,
+        isWatermarkVisible: isExamWatermarkVisible,
+        watermark: examSecureWatermarkLabel,
+    } = useExamSecureMode({
+        enabled: isExamSecureActive,
+        watermark: examSecureWatermark,
+        onViolation: handleExamSecureViolation,
+    })
 
     const refreshLearningRealtimeData = useCallback(async () => {
         await loadFolders()
@@ -3649,6 +3842,14 @@ export default function DocumentsPage() {
     }
 
     const handleOpenQuizTake = (doc: Document) => {
+        if (blockedQuizDocIdsByViolation.has(doc.id)) {
+            toast({
+                title: "Bài kiểm tra đã bị kết thúc",
+                description: "Bạn đã vi phạm quy định bảo vệ 2 lần nên không thể làm tiếp.",
+                variant: "destructive",
+            })
+            return
+        }
         const learningPlanSteps = doc.learningPlan?.steps ?? []
         const docPlanProgress = learningPlanProgress[doc.id] ?? buildDefaultPlanProgress()
         const hasCompletedAllPlanSteps = learningPlanSteps.length > 0 && learningPlanSteps.every((step) =>
@@ -4555,7 +4756,10 @@ export default function DocumentsPage() {
 
                         {/* Employee: take quiz */}
                         {!isLeaderOrAdmin && quiz && !attempt && (
-                            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-xs h-8"
+                            <Button
+                                size="sm"
+                                className="bg-blue-600 hover:bg-blue-700 text-xs h-8"
+                                disabled={blockedQuizDocIdsByViolation.has(doc.id)}
                                 onClick={() => handleOpenQuizTake(doc)}>
                                 <ClipboardCheck className="w-3 h-3 mr-1" />Làm bài
                             </Button>
@@ -4597,7 +4801,13 @@ export default function DocumentsPage() {
     const visibleTests = canManageTests
         ? tests
         : tests.filter((test) => Boolean(user?.role && test.targetRoles?.includes(user.role)))
-    const activeTakingTest = visibleTests.find((test) => takingTestIds.has(test.id) && !submittedTestIds.has(test.id) && !test.isLocked) ?? null
+    const activeTakingTest = visibleTests.find((test) =>
+        takingTestIds.has(test.id) &&
+        !submittedTestIds.has(test.id) &&
+        !test.isLocked &&
+        !blockedTestIdsByViolation.has(test.id) &&
+        !endedTestIdsByUser.has(test.id)
+    ) ?? null
 
     if (!canAccessELearning) {
         return (
@@ -5004,11 +5214,17 @@ export default function DocumentsPage() {
                                                             </div>
                                                             <Button
                                                                 className="mt-6 bg-blue-600 text-white hover:bg-blue-700"
+                                                                disabled={blockedQuizDocIdsByViolation.has(doc.id)}
                                                                 onClick={() => handleOpenQuizTake(doc)}
                                                             >
                                                                 <ClipboardCheck className="mr-2 h-4 w-4" />
                                                                 Bắt đầu kiểm tra
                                                             </Button>
+                                                            {blockedQuizDocIdsByViolation.has(doc.id) && (
+                                                                <p className="mt-3 text-sm font-semibold text-red-600 dark:text-red-400">
+                                                                    Bài kiểm tra đã bị kết thúc do vi phạm 2 lần.
+                                                                </p>
+                                                            )}
                                                         </div>
                                                     </div>
                                                 </div>
@@ -5528,11 +5744,16 @@ export default function DocumentsPage() {
                                                             <div className="space-y-3">
                                                                 <Button
                                                                     className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60"
-                                                                    disabled={!isCurrentLessonCompleted}
+                                                                    disabled={!isCurrentLessonCompleted || blockedQuizDocIdsByViolation.has(doc.id)}
                                                                     onClick={() => handleOpenQuizTake(doc)}
                                                                 >
                                                                     <ClipboardCheck className="w-4 h-4 mr-2" />Bắt đầu kiểm tra
                                                                 </Button>
+                                                                {blockedQuizDocIdsByViolation.has(doc.id) && (
+                                                                    <p className="text-xs font-semibold text-red-600 dark:text-red-400">
+                                                                        Bài kiểm tra đã bị kết thúc do vi phạm 2 lần.
+                                                                    </p>
+                                                                )}
                                                                 {!isCurrentLessonCompleted && (
                                                                     <p className="text-xs text-amber-600 dark:text-amber-400">
                                                                         Cần học xong tất cả slide trước khi làm bài kiểm tra.
@@ -5756,9 +5977,6 @@ export default function DocumentsPage() {
                                                             <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs">
                                                                 <span className={`font-semibold ${latestResult.didPass ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
                                                                     {latestResult.score}/100 điểm
-                                                                </span>
-                                                                <span className={latestResult.didPass ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
-                                                                    {latestResult.didPass ? "Đã hoàn thành" : "Làm bài lại"}
                                                                 </span>
                                                             </div>
                                                         )}
@@ -6159,7 +6377,9 @@ export default function DocumentsPage() {
                                                 )
                                                 const currentQuestion = questions[currentQuestionIndex]
                                                 const selectedAnswer = testChoiceAnswers[selectedTest.id]?.[currentQuestionIndex]
-                                                const lockedForTaking = selectedTest.isLocked === true
+                                                const blockedByViolation = blockedTestIdsByViolation.has(selectedTest.id)
+                                                const endedByUser = endedTestIdsByUser.has(selectedTest.id)
+                                                const lockedForTaking = selectedTest.isLocked === true || blockedByViolation || endedByUser
                                                 const lockedForEmployee = lockedForTaking && !canToggleTestLock
                                                 const isTakingTest = takingTestIds.has(selectedTest.id) && !lockedForTaking
 
@@ -6190,12 +6410,16 @@ export default function DocumentsPage() {
                                                                         {selectedTest.durationMinutes} phút
                                                                     </span>
                                                                 </div>
-                                                                {lockedForTaking && (
-                                                                    <div className="mt-6 inline-flex items-center gap-2 rounded-xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-200">
-                                                                        <Lock className="h-4 w-4" />
-                                                                        Bài thi đang bị khóa
-                                                                    </div>
-                                                                )}
+                                                {lockedForTaking && (
+                                                    <div className="mt-6 inline-flex items-center gap-2 rounded-xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-200">
+                                                        <Lock className="h-4 w-4" />
+                                                        {blockedByViolation
+                                                            ? "Bài thi bị khóa do vi phạm: phát hiện rời màn hình/chụp màn hình 2 lần"
+                                                            : endedByUser
+                                                                ? "Bài thi đã kết thúc theo xác nhận của bạn. Bạn không thể làm lại bài này."
+                                                                : "Bài thi đang bị khóa"}
+                                                    </div>
+                                                )}
                                                                 <div className="mt-8">
                                                                     {selectedLatestResult ? (
                                                                         <div className="space-y-4">
@@ -6205,22 +6429,12 @@ export default function DocumentsPage() {
                                                                                 <Trophy className={`h-8 w-8 ${selectedLatestResult.didPass ? "text-green-400" : "text-red-400"}`} />
                                                                                 <div>
                                                                                     <p className="text-2xl font-bold text-white">{selectedLatestResult.score}/100 điểm</p>
-                                                                                    <p className={`text-sm font-semibold ${selectedLatestResult.didPass ? "text-green-300" : "text-amber-300"}`}>
-                                                                                        {selectedLatestResult.didPass ? "Đã hoàn thành" : "Làm bài lại"}
+                                                                                    <p className="text-sm font-semibold text-slate-300">
+                                                                                        Đã làm 1 lần
                                                                                     </p>
                                                                                 </div>
                                                                             </div>
                                                                             <div className="flex flex-wrap gap-2">
-                                                                                {!selectedLatestResult.didPass && (
-                                                                                    <Button
-                                                                                        onClick={() => handleRetakeTestNow(selectedTest.id)}
-                                                                                        disabled={lockedForTaking}
-                                                                                        className="h-12 bg-blue-700 px-6 text-base font-semibold text-white hover:bg-blue-800"
-                                                                                    >
-                                                                                        <ClipboardCheck className="mr-3 h-5 w-5" />
-                                                                                        Làm bài lại
-                                                                                    </Button>
-                                                                                )}
                                                                                 <Button
                                                                                     variant="outline"
                                                                                     className="h-12 border-slate-700 bg-transparent px-6 text-base font-semibold text-white hover:bg-slate-800 hover:text-white"
@@ -6243,7 +6457,7 @@ export default function DocumentsPage() {
                                                                     )}
                                                                 </div>
                                                                 <p className="mt-5 text-sm text-slate-300">
-                                                                    Bấm bắt đầu thi để mở đề. Thời gian và trạng thái đang thi sẽ được ghi nhận từ lúc bắt đầu.
+                                                                    Bấm bắt đầu thi để mở đề. Thời gian và trạng thái đang thi sẽ được ghi nhận từ lúc bắt đầu. Trong lúc thi, chế độ bảo vệ bài thi sẽ tự bật.
                                                                 </p>
                                                             </div>
                                                         </div>
@@ -6315,6 +6529,7 @@ export default function DocumentsPage() {
                                                                             disabled={isSubmitted}
                                                                             value={testAnswers[`${selectedTest.id}:${currentQuestionIndex}`] ?? ""}
                                                                             onChange={(event) => {
+                                                                                if (blockedTestIdsByViolation.has(selectedTest.id)) return
                                                                                 void handleStartTest(selectedTest.id)
                                                                                 setTestAnswers((prev) => ({
                                                                                     ...prev,
@@ -7478,6 +7693,13 @@ export default function DocumentsPage() {
 
             </> /* end activeTab === "all" */}
 
+            <ExamSecureShield
+                active={isExamSecureActive}
+                hidden={isExamContentHidden}
+                watermark={examSecureWatermarkLabel}
+                watermarkVisible={isExamWatermarkVisible}
+            />
+
             {activeTakingTest && (() => {
                 const questions = activeTakingTest.quizQuestions && activeTakingTest.quizQuestions.length > 0
                     ? activeTakingTest.quizQuestions
@@ -7500,12 +7722,13 @@ export default function DocumentsPage() {
                 const isCurrentQuestionAnswered = isQuestionAnswered(currentQuestionIndex)
 
                 return (
-                    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-3 sm:p-4">
+                    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950 p-3 sm:p-4">
                         <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-800 shadow-2xl">
                             <div className="flex items-start justify-between gap-4 border-b border-slate-700 px-5 py-5 sm:px-6">
                                 <div className="min-w-0">
                                     <h2 className="truncate text-xl font-bold text-white">{activeTakingTest.title}</h2>
                                     <p className="mt-2 text-sm text-slate-400">Câu {currentQuestionIndex + 1}/{questions.length}</p>
+                                    <p className="mt-1 text-xs font-medium text-amber-300">Chế độ bảo vệ bài thi đang bật</p>
                                 </div>
                                 <div className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-bold ${
                                     remainingSeconds <= 60
@@ -7520,7 +7743,10 @@ export default function DocumentsPage() {
                             <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-6">
                                 {currentQuestion && (
                                     <div className="space-y-5">
-                                        <p className="text-base font-semibold leading-relaxed text-white">
+                                        <p
+                                            className="exam-reveal-text text-base font-semibold leading-relaxed text-white"
+                                            tabIndex={0}
+                                        >
                                             {currentQuestion.text}
                                         </p>
 
@@ -7531,7 +7757,7 @@ export default function DocumentsPage() {
                                                         key={`${activeTakingTest.id}-locked-option-${currentQuestionIndex}-${optionIndex}`}
                                                         type="button"
                                                         onClick={() => handleSelectTestChoice(activeTakingTest.id, currentQuestionIndex, optionIndex)}
-                                                        className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition ${
+                                                        className={`exam-reveal-zone flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition ${
                                                             selectedAnswer === optionIndex
                                                                 ? "border-blue-500 bg-blue-950/30 text-white"
                                                                 : "border-slate-600 bg-slate-800 text-slate-200 hover:border-blue-400"
@@ -7540,7 +7766,7 @@ export default function DocumentsPage() {
                                                         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-slate-400 text-sm font-bold">
                                                             {["A", "B", "C", "D"][optionIndex]}
                                                         </span>
-                                                        <span className="text-sm sm:text-base">{option}</span>
+                                                        <span className="exam-reveal-text text-sm sm:text-base">{option}</span>
                                                     </button>
                                                 ))}
                                             </div>
@@ -7550,6 +7776,7 @@ export default function DocumentsPage() {
                                                 placeholder="Nhập câu trả lời..."
                                                 value={testAnswers[`${activeTakingTest.id}:${currentQuestionIndex}`] ?? ""}
                                                 onChange={(event) => {
+                                                    if (blockedTestIdsByViolation.has(activeTakingTest.id)) return
                                                     void handleStartTest(activeTakingTest.id)
                                                     setTestAnswers((prev) => ({
                                                         ...prev,
@@ -7638,6 +7865,50 @@ export default function DocumentsPage() {
                 )
             })()}
 
+            {pendingEndTestId && (() => {
+                const pendingTest = tests.find((test) => test.id === pendingEndTestId)
+                return (
+                    <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/70 p-3 sm:p-4">
+                        <div className="w-full max-w-md rounded-2xl border border-red-500/50 bg-slate-900 p-5 shadow-2xl sm:p-6">
+                            <div className="flex items-start gap-3">
+                                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-500/15">
+                                    <XCircle className="h-5 w-5 text-red-300" />
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-bold text-white">Xác nhận kết thúc bài làm</h3>
+                                    <p className="mt-1 text-sm text-slate-400">{pendingTest?.title ?? "Bài thi"}</p>
+                                </div>
+                            </div>
+                            <p className="mt-4 text-sm leading-6 text-slate-200">
+                                Sau khi xác nhận kết thúc, bài thi sẽ đóng lại và bạn không được phép làm lại hoặc tiếp tục bài này.
+                            </p>
+                            <p className="mt-3 rounded-xl border border-red-500/40 bg-red-950/30 px-3 py-2 text-sm font-semibold text-red-200">
+                                Hành động này sẽ được ghi nhận vào tiến độ bài thi.
+                            </p>
+                            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="border-slate-600 bg-transparent text-slate-200 hover:bg-slate-800 hover:text-white"
+                                    disabled={isSubmitting}
+                                    onClick={() => setPendingEndTestId(null)}
+                                >
+                                    Tiếp tục làm bài
+                                </Button>
+                                <Button
+                                    type="button"
+                                    className="bg-red-600 text-white hover:bg-red-700"
+                                    disabled={isSubmitting}
+                                    onClick={() => void confirmEndTakingTest()}
+                                >
+                                    {isSubmitting ? "Đang kết thúc..." : "Xác nhận kết thúc"}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            })()}
+
             {testResultDetail && (() => {
                 const didPass = testResultDetail.score >= QUIZ_PASS_SCORE
                 return (
@@ -7657,7 +7928,7 @@ export default function DocumentsPage() {
                                 </p>
                                 {!didPass && (
                                     <p className="mx-auto mt-4 max-w-md text-sm font-semibold text-red-300">
-                                        Chưa đạt yêu cầu {QUIZ_PASS_SCORE}%. Bạn có thể làm lại bài thi sau.
+                                        Chưa đạt yêu cầu {QUIZ_PASS_SCORE}%. Bài thi chỉ được làm 1 lần.
                                     </p>
                                 )}
 
@@ -7702,15 +7973,7 @@ export default function DocumentsPage() {
                                     className="border-slate-600 bg-transparent px-8 text-slate-200 hover:bg-slate-700 hover:text-white"
                                     onClick={() => setTestResultDetail(null)}
                                 >
-                                    Làm lại sau
-                                </Button>
-                                <Button
-                                    className="bg-blue-600 px-8 text-white hover:bg-blue-700"
-                                    disabled={testResultDetail.test.isLocked}
-                                    onClick={() => handleRetakeTestNow(testResultDetail.test.id)}
-                                >
-                                    <ClipboardCheck className="mr-2 h-4 w-4" />
-                                    Làm lại ngay
+                                    Đóng
                                 </Button>
                             </div>
                         </div>
@@ -7827,10 +8090,12 @@ export default function DocumentsPage() {
                                     const completedTests = statuses.filter((item) => item.status === "submitted")
                                     const notTakenTests = statuses.filter((item) => item.status === "not_submitted")
                                     const inProgressTests = statuses.filter((item) => item.status === "in_progress")
+                                    const blockedViolationTests = statuses.filter((item) => item.status === "blocked_violation")
+                                    const endedByUserTests = statuses.filter((item) => item.status === "ended_by_user")
                                     const renderStatusList = (
                                         rows: TestProgressRow[],
                                         emptyText: string,
-                                        tone: "blue" | "white" | "gray",
+                                        tone: "blue" | "white" | "gray" | "red" | "amber",
                                         title: string,
                                     ) => (
                                         <div className="max-h-[320px] space-y-3 overflow-y-auto pr-2">
@@ -7850,6 +8115,10 @@ export default function DocumentsPage() {
                                                     className={`cursor-pointer rounded-xl border px-4 py-3 text-left transition hover:border-violet-400/70 ${
                                                         tone === "blue"
                                                             ? "border-blue-500 bg-blue-950/30"
+                                                            : tone === "red"
+                                                                ? "border-red-500 bg-red-950/25"
+                                                                : tone === "amber"
+                                                                    ? "border-amber-500 bg-amber-950/20"
                                                             : tone === "white"
                                                                 ? "border-transparent bg-transparent hover:bg-slate-800/50"
                                                                 : "border-slate-700 bg-slate-800/30"
@@ -7857,16 +8126,26 @@ export default function DocumentsPage() {
                                                 >
                                                     <div className="flex items-center justify-between gap-3">
                                                         <p className={`truncate text-base font-semibold ${
-                                                            tone === "blue" ? "text-blue-100" : tone === "gray" ? "text-slate-200" : "text-white"
+                                                            tone === "blue" ? "text-blue-100" : tone === "red" ? "text-red-100" : tone === "amber" ? "text-amber-100" : tone === "gray" ? "text-slate-200" : "text-white"
                                                         }`}>
                                                             {row.personName}
                                                         </p>
-                                                        {statusTime && (
+                                                        {(row.blockedAt ?? row.endedAt ?? statusTime) && (
                                                             <span className="shrink-0 text-xs text-slate-500">
-                                                                {new Date(statusTime).toLocaleDateString("vi-VN")}
+                                                                {new Date(row.blockedAt ?? row.endedAt ?? statusTime!).toLocaleDateString("vi-VN")}
                                                             </span>
                                                         )}
                                                     </div>
+                                                    {row.status === "blocked_violation" && (
+                                                        <p className="mt-2 text-xs font-semibold text-red-300">
+                                                            Lý do: {row.violationReason ?? "Vi phạm quy định bảo vệ bài thi 2 lần"}
+                                                        </p>
+                                                    )}
+                                                    {row.status === "ended_by_user" && (
+                                                        <p className="mt-2 text-xs font-semibold text-amber-300">
+                                                            Lý do: {row.endReason ?? "Nhân viên xác nhận kết thúc bài làm trước khi nộp"}
+                                                        </p>
+                                                    )}
                                                     {rowResult && (
                                                         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                                                             <span className={`font-bold ${rowResult.didPass ? "text-green-300" : "text-red-300"}`}>
@@ -7886,7 +8165,7 @@ export default function DocumentsPage() {
 
                                     return (
                                         <div className="space-y-6">
-                                            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
                                                 <button
                                                     type="button"
                                                     onClick={() => openTestStatusListDetail("Đã thi", completedTests)}
@@ -7911,9 +8190,25 @@ export default function DocumentsPage() {
                                                     <p className="text-3xl font-bold text-white">{inProgressTests.length}</p>
                                                     <p className="mt-1 text-sm font-medium text-slate-400">Đang thi</p>
                                                 </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openTestStatusListDetail("Bị khóa do vi phạm", blockedViolationTests)}
+                                                    className="rounded-xl bg-red-950/40 px-5 py-5 text-center transition hover:ring-2 hover:ring-red-500 focus:outline-none focus:ring-2 focus:ring-red-400"
+                                                >
+                                                    <p className="text-3xl font-bold text-red-300">{blockedViolationTests.length}</p>
+                                                    <p className="mt-1 text-sm font-medium text-red-300">Bị khóa do vi phạm</p>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openTestStatusListDetail("Tự kết thúc", endedByUserTests)}
+                                                    className="rounded-xl bg-amber-950/40 px-5 py-5 text-center transition hover:ring-2 hover:ring-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                                                >
+                                                    <p className="text-3xl font-bold text-amber-300">{endedByUserTests.length}</p>
+                                                    <p className="mt-1 text-sm font-medium text-amber-300">Tự kết thúc</p>
+                                                </button>
                                             </div>
 
-                                            <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+                                            <div className="grid grid-cols-1 gap-5 xl:grid-cols-5">
                                                 <div
                                                     role="button"
                                                     tabIndex={0}
@@ -7949,6 +8244,30 @@ export default function DocumentsPage() {
                                                 >
                                                     <h3 className="mb-4 text-base font-bold text-slate-200">Đang thi</h3>
                                                     {renderStatusList(inProgressTests, "Chưa có nhân viên đang thi.", "gray", "Đang thi")}
+                                                </div>
+                                                <div
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => openTestStatusListDetail("Bị khóa do vi phạm", blockedViolationTests)}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter" || event.key === " ") openTestStatusListDetail("Bị khóa do vi phạm", blockedViolationTests)
+                                                    }}
+                                                    className="rounded-xl border border-red-600 bg-red-950/20 p-5 outline-none transition hover:border-red-400 focus:ring-2 focus:ring-red-400"
+                                                >
+                                                    <h3 className="mb-4 text-base font-bold text-red-200">Bị khóa do vi phạm</h3>
+                                                    {renderStatusList(blockedViolationTests, "Chưa có nhân viên bị khóa do vi phạm.", "red", "Bị khóa do vi phạm")}
+                                                </div>
+                                                <div
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => openTestStatusListDetail("Tự kết thúc", endedByUserTests)}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter" || event.key === " ") openTestStatusListDetail("Tự kết thúc", endedByUserTests)
+                                                    }}
+                                                    className="rounded-xl border border-amber-600 bg-amber-950/20 p-5 outline-none transition hover:border-amber-400 focus:ring-2 focus:ring-amber-400"
+                                                >
+                                                    <h3 className="mb-4 text-base font-bold text-amber-200">Tự kết thúc</h3>
+                                                    {renderStatusList(endedByUserTests, "Chưa có nhân viên tự kết thúc bài.", "amber", "Tự kết thúc")}
                                                 </div>
                                             </div>
                                         </div>
@@ -8007,6 +8326,8 @@ export default function DocumentsPage() {
                                 const toneClassByStatus: Record<TestProgressRow["status"], string> = {
                                     submitted: "border-green-500/80 bg-emerald-950/20",
                                     in_progress: "border-amber-500/80 bg-amber-950/10",
+                                    blocked_violation: "border-red-500/80 bg-red-950/20",
+                                    ended_by_user: "border-amber-500/80 bg-amber-950/20",
                                     not_submitted: "border-red-500/80 bg-red-950/10",
                                 }
 
@@ -8048,6 +8369,32 @@ export default function DocumentsPage() {
                                                         <p className="mt-1 text-sm text-slate-400">
                                                             {rowResult.correctAnswers}/{rowResult.totalQuestions} câu đúng
                                                         </p>
+                                                    )}
+                                                    {row.status === "blocked_violation" && (
+                                                        <div className="mt-3 rounded-lg border border-red-500/50 bg-red-950/30 px-3 py-2 text-sm text-red-100">
+                                                            <p className="font-semibold">Bị khóa do vi phạm</p>
+                                                            <p className="mt-1 text-red-200">
+                                                                Lý do: {row.violationReason ?? "Vi phạm quy định bảo vệ bài thi 2 lần"}
+                                                            </p>
+                                                            {row.blockedAt && (
+                                                                <p className="mt-1 text-xs text-red-300">
+                                                                    Thời điểm khóa: {new Date(row.blockedAt).toLocaleString("vi-VN")}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                    {row.status === "ended_by_user" && (
+                                                        <div className="mt-3 rounded-lg border border-amber-500/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-100">
+                                                            <p className="font-semibold">Tự kết thúc bài</p>
+                                                            <p className="mt-1 text-amber-200">
+                                                                Lý do: {row.endReason ?? "Nhân viên xác nhận kết thúc bài làm trước khi nộp"}
+                                                            </p>
+                                                            {row.endedAt && (
+                                                                <p className="mt-1 text-xs text-amber-300">
+                                                                    Thời điểm kết thúc: {new Date(row.endedAt).toLocaleString("vi-VN")}
+                                                                </p>
+                                                            )}
+                                                        </div>
                                                     )}
                                                     <p className="mt-2 text-sm text-slate-200">
                                                         Phụ trách: <span className="font-semibold">{detail.supervisorName}</span>
@@ -8258,7 +8605,9 @@ export default function DocumentsPage() {
 
             {/* ── Quiz Take Modal ──────────────────────────────────────── */}
             {quizTakeModal.open && quizTakeModal.quiz && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-3 sm:p-4">
+                <div className={`fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 ${
+                    quizTakeModal.isSubmitted ? "bg-black/80" : "bg-slate-950"
+                }`}>
                     <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl dark:bg-gray-800 sm:max-h-[90vh]">
                         {!quizTakeModal.isSubmitted ? (
                             <>
@@ -8268,6 +8617,9 @@ export default function DocumentsPage() {
                                         <h2 className="text-lg font-bold text-gray-900 dark:text-white">{quizTakeModal.quiz.title}</h2>
                                         <p className="text-xs text-gray-500 mt-0.5">
                                             Câu {quizTakeModal.currentQuestion + 1}/{quizTakeModal.quiz.questions.length}
+                                        </p>
+                                        <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-300">
+                                            Chế độ bảo vệ bài thi đang bật
                                         </p>
                                     </div>
                                     <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-mono font-bold ${quizTakeModal.timeLeftSeconds < 60 ? "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400" : "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"}`}>
@@ -8285,7 +8637,12 @@ export default function DocumentsPage() {
                                         const optionOrder = quizTakeModal.optionOrderByQuestion[originalQuestionIndex] ?? [0, 1, 2, 3]
                                         return (
                                             <div className="space-y-4">
-                                                <p className="text-base font-medium text-gray-900 dark:text-white">{q.text}</p>
+                                                <p
+                                                    className="exam-reveal-text text-base font-medium text-gray-900 dark:text-white"
+                                                    tabIndex={0}
+                                                >
+                                                    {q.text}
+                                                </p>
                                                 <div className="space-y-3">
                                                     {optionOrder.map((originalOptionIndex, displayedOptionIndex) => {
                                                         const opt = q.options[originalOptionIndex] ?? ""
@@ -8296,11 +8653,11 @@ export default function DocumentsPage() {
                                                                 answers[originalQuestionIndex] = originalOptionIndex
                                                                 return { ...prev, answers }
                                                             })}
-                                                                className={`w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${selected ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20" : "border-gray-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-600"}`}>
+                                                                className={`exam-reveal-zone w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${selected ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20" : "border-gray-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-600"}`}>
                                                                 <span className={`w-6 h-6 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs font-bold ${selected ? "border-blue-500 bg-blue-500 text-white" : "border-gray-300 text-gray-400"}`}>
                                                                     {["A","B","C","D"][displayedOptionIndex]}
                                                                 </span>
-                                                                <span className="text-sm text-gray-800 dark:text-gray-200">{opt}</span>
+                                                                <span className="exam-reveal-text text-sm text-gray-800 dark:text-gray-200">{opt}</span>
                                                             </button>
                                                         )
                                                     })}
@@ -8421,6 +8778,7 @@ export default function DocumentsPage() {
                                         </Button>
                                         <Button
                                             className="bg-blue-600 text-white hover:bg-blue-700"
+                                            disabled={blockedQuizDocIdsByViolation.has(quizTakeModal.documentId)}
                                             onClick={() => currentDoc && handleOpenQuizTake(currentDoc)}
                                         >
                                             <ClipboardCheck className="mr-2 h-4 w-4" />
