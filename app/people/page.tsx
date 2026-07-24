@@ -16,26 +16,34 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { toast } from "@/components/ui/use-toast"
 import { isAdminLikeRole } from "@/lib/auth"
 import { findPersonForAuthUser, getTeamById, isPersonWorking, personDisplayRoles, type Person } from "@/lib/people"
-import { STORE_BRANCHES_BY_REGION, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches"
+import { STORE_BRANCHES, STORE_BRANCHES_BY_REGION, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches"
 import {
     ChevronDown,
-    Clock,
     CheckCircle2,
     History,
     Filter,
     Grid3X3,
     List,
     Mail,
+    MapPin,
     Moon,
     Pencil,
     Search,
+    Store,
     Trash2,
     UserPlus,
     Users,
@@ -98,7 +106,9 @@ export default function PeoplePage() {
     const { people, teams, refresh } = useDirectory()
     const [searchQuery, setSearchQuery] = useState("")
     const [viewMode, setViewMode] = useState<ViewMode>("list")
-    const [selectedTeam, setSelectedTeam] = useState<string>("all")
+    const [selectedBranchId, setSelectedBranchId] = useState<number | "all">("all")
+    const [selectedRegion, setSelectedRegion] = useState<"all" | StoreRegion>("all")
+    const [selectedRole, setSelectedRole] = useState<string>("all")
     const [isDialogOpen, setIsDialogOpen] = useState(false)
     const [editingPerson, setEditingPerson] = useState<Person | null>(null)
     const [personForm, setPersonForm] = useState<PersonFormState>(DEFAULT_FORM)
@@ -225,13 +235,55 @@ export default function PeoplePage() {
         return personDisplayRoles
     }, [isStoreManager, isStoreTrainer, managerManagedRoleSet, trainerManagedRoleSet])
 
+    const filterBranchOptions = useMemo(() => {
+        const branchIds = new Set<number>()
+        accessiblePeople.forEach((person) => {
+            ;(person.storeBranchIds ?? []).forEach((branchId) => branchIds.add(branchId))
+        })
+
+        return STORE_BRANCHES
+            .filter((branch) => branchIds.has(branch.id))
+            .sort((a, b) => a.name.localeCompare(b.name, "vi"))
+    }, [accessiblePeople])
+
+    const filterRegionOptions = useMemo(() => {
+        const regions = new Set<StoreRegion>()
+        accessiblePeople.forEach((person) => {
+            if (person.storeRegion && STORE_REGIONS.includes(person.storeRegion as StoreRegion)) {
+                regions.add(person.storeRegion as StoreRegion)
+            }
+        })
+
+        return STORE_REGIONS.filter((region) => regions.has(region))
+    }, [accessiblePeople])
+
+    const filterRoleOptions = useMemo(() => {
+        const roles = new Set(accessiblePeople.map((person) => person.role).filter(Boolean))
+        return personDisplayRoles.filter((role) => roles.has(role))
+    }, [accessiblePeople])
+
     const filteredPeople = accessiblePeople.filter((person) => {
         const matchesSearch =
             person.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
             person.email.toLowerCase().includes(searchQuery.toLowerCase())
-        const matchesTeam = selectedTeam === "all" || person.team === selectedTeam
-        return matchesSearch && matchesTeam
+        const matchesBranch =
+            selectedBranchId === "all" || (person.storeBranchIds ?? []).includes(selectedBranchId)
+        const matchesRegion = selectedRegion === "all" || person.storeRegion === selectedRegion
+        const matchesRole = selectedRole === "all" || person.role === selectedRole
+        return matchesSearch && matchesBranch && matchesRegion && matchesRole
     })
+
+    const selectedBranchLabel =
+        selectedBranchId === "all"
+            ? "Tất cả cửa hàng"
+            : STORE_BRANCHES.find((branch) => branch.id === selectedBranchId)?.name ?? "Cửa hàng"
+    const selectedRegionLabel = selectedRegion === "all" ? "Tất cả khu vực" : selectedRegion
+    const selectedRoleLabel = selectedRole === "all" ? "Tất cả role" : selectedRole
+    const activeFilterLabels = [
+        selectedBranchId !== "all" ? selectedBranchLabel : null,
+        selectedRegion !== "all" ? selectedRegionLabel : null,
+        selectedRole !== "all" ? selectedRoleLabel : null,
+    ].filter((label): label is string => Boolean(label))
 
     const peopleByTeams = teams.reduce(
         (acc, team) => {
@@ -558,6 +610,11 @@ export default function PeoplePage() {
     const PersonCard = ({ person, compact = false }: { person: Person; compact?: boolean }) => {
         const team = getTeamById(person.team, teams)
         const isWorking = isPersonWorking(person)
+        const storeBranchNames = (person.storeBranchIds ?? [])
+            .map((branchId) => STORE_BRANCHES.find((branch) => branch.id === branchId)?.name)
+            .filter((name): name is string => Boolean(name))
+        const storeLocationLabel = storeBranchNames.length > 0 ? storeBranchNames.join(", ") : "Chưa gán cửa hàng"
+        const storeRegionLabel = person.storeRegion ?? "Chưa gán khu vực"
 
         return (
             <Card className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow">
@@ -621,15 +678,12 @@ export default function PeoplePage() {
                                     <span className="truncate">{person.email}</span>
                                 </div>
                                 <div className="flex items-center text-xs text-gray-500 dark:text-gray-400">
-                                    <Clock className="w-3 h-3 mr-1" />
-                                    <span>
-                                        {person.workingHours.start} - {person.workingHours.end} {person.workingHours.timezone}
-                                    </span>
-                                    {isWorking ? (
-                                        <span className="ml-2 text-green-600 dark:text-green-400">• Đang làm việc</span>
-                                    ) : (
-                                        <span className="ml-2 text-gray-400 dark:text-gray-500">• Ngoài giờ</span>
-                                    )}
+                                    <Store className="w-3 h-3 mr-1 shrink-0" />
+                                    <span className="truncate">{storeLocationLabel}</span>
+                                </div>
+                                <div className="flex items-center text-xs text-gray-500 dark:text-gray-400">
+                                    <MapPin className="w-3 h-3 mr-1 shrink-0" />
+                                    <span className="truncate">{storeRegionLabel}</span>
                                 </div>
                             </div>
                         </div>
@@ -729,29 +783,91 @@ export default function PeoplePage() {
                                 variant="outline"
                                 className="w-full border-gray-300 bg-transparent text-gray-700 dark:border-gray-600 dark:text-gray-300 sm:w-auto"
                             >
-                                <Filter className="w-4 h-4 mr-2" />
-                                {selectedTeam === "all"
-                                    ? isAdmin
-                                        ? "Tất cả nhóm"
-                                        : getTeamById(currentTeamId, teams)?.name ?? "Nhóm của tôi"
-                                    : getTeamById(selectedTeam, teams)?.name}
+                                <Store className="w-4 h-4 mr-2" />
+                                <span className="max-w-[160px] truncate">{selectedBranchLabel}</span>
+                                <ChevronDown className="w-4 h-4 ml-2" />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="max-h-72 overflow-y-auto bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
+                            <DropdownMenuLabel>Cửa hàng</DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                onClick={() => setSelectedBranchId("all")}
+                                className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
+                            >
+                                Tất cả cửa hàng
+                            </DropdownMenuItem>
+                            {filterBranchOptions.map((branch) => (
+                                <DropdownMenuItem
+                                    key={branch.id}
+                                    onClick={() => setSelectedBranchId(branch.id)}
+                                    className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
+                                >
+                                    {branch.name}
+                                </DropdownMenuItem>
+                            ))}
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button
+                                variant="outline"
+                                className="w-full border-gray-300 bg-transparent text-gray-700 dark:border-gray-600 dark:text-gray-300 sm:w-auto"
+                            >
+                                <MapPin className="w-4 h-4 mr-2" />
+                                <span className="max-w-[140px] truncate">{selectedRegionLabel}</span>
                                 <ChevronDown className="w-4 h-4 ml-2" />
                             </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
+                            <DropdownMenuLabel>Khu vực</DropdownMenuLabel>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem
-                                onClick={() => setSelectedTeam("all")}
+                                onClick={() => setSelectedRegion("all")}
                                 className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
                             >
-                                {isAdmin ? "Tất cả nhóm" : getTeamById(currentTeamId, teams)?.name ?? "Nhóm của tôi"}
+                                Tất cả khu vực
                             </DropdownMenuItem>
-                            {visibleTeams.map((team) => (
+                            {filterRegionOptions.map((region) => (
                                 <DropdownMenuItem
-                                    key={team.id}
-                                    onClick={() => setSelectedTeam(team.id)}
+                                    key={region}
+                                    onClick={() => setSelectedRegion(region)}
                                     className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
                                 >
-                                    {team.name}
+                                    {region}
+                                </DropdownMenuItem>
+                            ))}
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button
+                                variant="outline"
+                                className="w-full border-gray-300 bg-transparent text-gray-700 dark:border-gray-600 dark:text-gray-300 sm:w-auto"
+                            >
+                                <Filter className="w-4 h-4 mr-2" />
+                                <span className="max-w-[140px] truncate">{selectedRoleLabel}</span>
+                                <ChevronDown className="w-4 h-4 ml-2" />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
+                            <DropdownMenuLabel>Role</DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                onClick={() => setSelectedRole("all")}
+                                className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
+                            >
+                                Tất cả role
+                            </DropdownMenuItem>
+                            {filterRoleOptions.map((role) => (
+                                <DropdownMenuItem
+                                    key={role}
+                                    onClick={() => setSelectedRole(role)}
+                                    className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
+                                >
+                                    {role}
                                 </DropdownMenuItem>
                             ))}
                         </DropdownMenuContent>
@@ -774,7 +890,7 @@ export default function PeoplePage() {
             <div className="mb-4">
                 <p className="text-sm text-gray-600 dark:text-gray-400">
                     Đang hiển thị {filteredPeople.length}/{accessiblePeople.length} nhân sự
-                    {selectedTeam !== "all" && ` trong ${getTeamById(selectedTeam, teams)?.name}`}
+                    {activeFilterLabels.length > 0 ? ` · ${activeFilterLabels.join(" · ")}` : ""}
                 </p>
             </div>
 
