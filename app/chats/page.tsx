@@ -94,8 +94,8 @@ export default function ChatsPage() {
         findPersonForAuthUser(user, people) ??
         people[0] ?? {
             id: user?.personId ?? "guest-user",
-            name: user?.name ?? "Guest User",
-            role: "Member",
+            name: user?.name ?? "Khách",
+            role: "Thành viên",
             imageURL: "/placeholder.svg",
             email: user?.email ?? "",
             workingHours: { start: "09:00", end: "17:00", timezone: "UTC" },
@@ -118,7 +118,7 @@ export default function ChatsPage() {
         })
 
         if (!response.ok) {
-            throw new Error("Failed to load chats.")
+            throw new Error("Không thể tải cuộc trò chuyện.")
         }
 
         const payload = (await response.json()) as {
@@ -140,7 +140,7 @@ export default function ChatsPage() {
             return {
                 id: thread.id,
                 type: "individual" as const,
-                name: teammate?.name ?? "Unknown",
+                name: teammate?.name ?? "Không xác định",
                 participants: thread.participantIds,
                 lastMessage: thread.lastMessage,
                 lastMessageTime: thread.lastMessageAt,
@@ -469,16 +469,16 @@ export default function ChatsPage() {
         <div className="flex h-[calc(100vh-120px)]">
             <div className="flex w-80 flex-col border-r border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
                 <div className="border-b border-gray-200 p-4 dark:border-gray-700">
-                        <h1 className="mb-2 text-xl font-bold text-gray-900 dark:text-white">Chats</h1>
+                        <h1 className="mb-2 text-xl font-bold text-gray-900 dark:text-white">Tin nhắn</h1>
                         <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
                             {isAdmin
-                                ? "Admin có thể chat với tất cả nhân sự trong database."
-                                : `Hiển thị thành viên cùng team ${teams.find((team) => team.id === currentUser.team)?.name ?? "Marketing"} và các tài khoản admin/CEO.`}
+                                ? "Quản trị viên có thể nhắn tin với tất cả nhân sự trong hệ thống."
+                                : `Hiển thị thành viên cùng nhóm ${teams.find((team) => team.id === currentUser.team)?.name ?? "Marketing"} và các tài khoản quản trị viên/CEO.`}
                         </p>
                     <div className="relative">
                         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 transform text-gray-400 dark:text-gray-500" />
                         <Input
-                            placeholder="Search conversations..."
+                            placeholder="Tìm cuộc trò chuyện..."
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                             className="bg-white pl-10 text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
@@ -544,7 +544,7 @@ export default function ChatsPage() {
                                         <Avatar className="h-10 w-10">
                                             <AvatarImage src={selectedChatMeta?.avatar || "/placeholder.svg"} />
                                             <AvatarFallback className="bg-gray-200 text-gray-900 dark:bg-gray-600 dark:text-white">
-                                                {(selectedChatMeta?.name ?? "Unknown")
+                                                {(selectedChatMeta?.name ?? "Không xác định")
                                                     .split(" ")
                                                     .map((n) => n[0])
                                                     .join("")}
@@ -555,9 +555,9 @@ export default function ChatsPage() {
                                         )}
                                     </div>
                                     <div>
-                                        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{selectedChatMeta?.name ?? "Unknown"}</h2>
+                                        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{selectedChatMeta?.name ?? "Không xác định"}</h2>
                                         <p className="text-sm text-gray-500 dark:text-gray-400">
-                                            {selectedChatMeta?.isOnline ? "Online" : "Last seen recently"}
+                                            {selectedChatMeta?.isOnline ? "Đang hoạt động" : "Hoạt động gần đây"}
                                         </p>
                                     </div>
                                 </div>
@@ -582,7 +582,7 @@ export default function ChatsPage() {
                             {selectedThread.messages.map((message) => {
                                 const sender = people.find((p) => p.id === message.senderId)
                                 const isCurrentUser = message.senderId === currentUser.id
-                                const senderName = sender?.name || "Unknown"
+                                const senderName = sender?.name || "Không xác định"
 
                                 return (
                                     <div key={message.id} className={`flex ${isCurrentUser ? "justify-end" : "justify-start"}`}>
@@ -612,7 +612,7 @@ export default function ChatsPage() {
                                                             <div className="overflow-hidden rounded-lg">
                                                                 <img
                                                                     src={message.content || "/placeholder.svg"}
-                                                                    alt="Shared image"
+                                                                    alt="Ảnh đã chia sẻ"
                                                                     className="h-auto max-w-full rounded-lg"
                                                                 />
                                                             </div>
@@ -625,7 +625,7 @@ export default function ChatsPage() {
                                                                     : "border-gray-200 bg-gray-50 text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
                                                                     }`}
                                                             >
-                                                                <div className="font-medium">{message.fileName || "Attachment"}</div>
+                                                                <div className="font-medium">{message.fileName || "Tệp đính kèm"}</div>
                                                                 <div className={`text-xs ${isCurrentUser ? "text-white/80" : "text-gray-500 dark:text-gray-400"}`}>
                                                                     {formatFileSize(message.fileSize) || "Tải xuống"}
                                                                 </div>
@@ -678,7 +678,7 @@ export default function ChatsPage() {
                                 </label>
                                 <div className="relative flex-1">
                                     <Input
-                                        placeholder={`Nhắn cho ${selectedChatMeta?.name ?? "teammate"}...`}
+                                        placeholder={`Nhắn cho ${selectedChatMeta?.name ?? "đồng đội"}...`}
                                         value={newMessage}
                                         onChange={(e) => setNewMessage(e.target.value)}
                                         onKeyDown={(e) => e.key === "Enter" && void handleSendMessage()}
@@ -727,8 +727,8 @@ export default function ChatsPage() {
                                 {filteredChats.length > 0
                                     ? "Chọn một người ở danh sách bên trái để bắt đầu nhắn tin."
                                     : isAdmin
-                                        ? "Admin có thể chat với tất cả nhân sự khi có dữ liệu người dùng trong hệ thống."
-                                        : "Tài khoản này chưa có teammate nào trong cùng team để bắt đầu chat."}
+                                        ? "Quản trị viên có thể nhắn tin với tất cả nhân sự khi có dữ liệu người dùng trong hệ thống."
+                                        : "Tài khoản này chưa có đồng đội nào trong cùng nhóm để bắt đầu nhắn tin."}
                             </p>
                         </div>
                     </div>

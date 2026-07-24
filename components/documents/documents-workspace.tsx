@@ -466,6 +466,23 @@ type SortBy = "name" | "date" | "size" | "type" | "owner"
 type GroupBy = "none" | "type" | "date" | "owner" | "folder"
 type ViewMode = "grid" | "list"
 type DocVisibility = "team" | "office" | "store"
+
+const sortByLabels: Record<SortBy, string> = {
+    name: "Tên",
+    date: "Ngày",
+    size: "Dung lượng",
+    type: "Loại",
+    owner: "Người sở hữu",
+}
+
+const groupByLabels: Record<GroupBy, string> = {
+    none: "Không nhóm",
+    type: "Loại",
+    date: "Ngày",
+    owner: "Người sở hữu",
+    folder: "Thư mục",
+}
+
 type DocumentPatch = Omit<Partial<Document>, "folder" | "folderId"> & {
     folder?: string | null
     folderId?: string | null
@@ -821,7 +838,7 @@ export default function DocumentsPage() {
             visited.add(cursor.id)
             cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined
         }
-        return path.length > 0 ? path.join(" / ") : "Folder không tồn tại"
+    return path.length > 0 ? path.join(" / ") : "Thư mục không tồn tại"
     }, [folders])
     const currentPerson = people.find((person) => person.id === user?.personId) ?? null
     const normalizeRoleValue = useCallback((value: string) => value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim(), [])
@@ -1163,6 +1180,7 @@ export default function DocumentsPage() {
         }
 
         roles.delete("Trainer")
+        roles.delete("Đào tạo viên")
         roles.delete("trainer")
 
         const preferredOrder = ["Quản lí khu vực", "Cửa hàng trưởng", "Kỹ thuật viên"]
@@ -2157,6 +2175,7 @@ export default function DocumentsPage() {
         return {
             email: person?.email ?? "",
             role: person?.role ?? row.personRole ?? "Chưa rõ vai trò",
+            storeRegion: person?.storeRegion ?? "",
             supervisorName: supervisor?.name ?? "Không có",
             storeText,
         }
@@ -2204,6 +2223,7 @@ export default function DocumentsPage() {
                 result?.score ?? "",
                 row.personName,
                 detail.role,
+                detail.storeRegion,
                 detail.storeText,
                 detail.supervisorName,
                 statusLabel[row.status],
@@ -2223,6 +2243,7 @@ export default function DocumentsPage() {
             const detail = row ? getTestStatusPersonDetail(row) : {
                 email: "",
                 role: submission.personRole ?? "",
+                storeRegion: "",
                 storeText: "",
                 supervisorName: "",
             }
@@ -2234,8 +2255,9 @@ export default function DocumentsPage() {
                 .findIndex((item) => item.id === submission.id) + 1
             return [
                 detail.email,
-                submission.personName ?? row?.personName ?? "Unknown",
+                submission.personName ?? row?.personName ?? "Không xác định",
                 detail.role,
+                detail.storeRegion,
                 detail.storeText,
                 detail.supervisorName,
                 result?.score ?? "",
@@ -2248,15 +2270,15 @@ export default function DocumentsPage() {
             ]
         })
         const filename = `${sanitizeFilenamePart(test.title)}-tien-do-bai-thi-${new Date().toISOString().slice(0, 10)}.xls`
-        const progressHeader = ["Email", "Điểm", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc", "Bị khóa lúc", "Lý do vi phạm", "Kết thúc lúc", "Lý do kết thúc"]
+        const progressHeader = ["Email", "Điểm", "Nhân viên", "Vai trò", "Khu vực", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc", "Bị khóa lúc", "Lý do vi phạm", "Kết thúc lúc", "Lý do kết thúc"]
 
         downloadExcelWorkbook(filename, [
             {
                 name: "Bao cao",
                 filter: true,
-                widths: [210, 70, 190, 130, 240, 170, 140, 100, 110, 110, 150, 150, 150, 260, 150, 260],
+                widths: [210, 70, 190, 130, 130, 240, 170, 140, 100, 110, 110, 150, 150, 150, 260, 150, 260],
                 rows: [
-                    ["Địa chỉ email", "Điểm số", "Nhập họ và tên của bạn", "Vị trí?", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc", "Bị khóa lúc", "Lý do vi phạm", "Kết thúc lúc", "Lý do kết thúc"],
+                    ["Địa chỉ email", "Điểm số", "Nhập họ và tên của bạn", "Vị trí?", "Khu vực", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc", "Bị khóa lúc", "Lý do vi phạm", "Kết thúc lúc", "Lý do kết thúc"],
                     ...statusRows(testProgressModal.statuses),
                 ],
             },
@@ -2335,7 +2357,7 @@ export default function DocumentsPage() {
                 name: "Ket qua bai thi",
                 filter: true,
                 rows: [
-                    ["Email", "Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Điểm", "Câu đúng", "Tổng câu", "Lần làm", "Số lần làm lại", "Kết quả", "Nộp lúc"],
+                    ["Email", "Nhân viên", "Vai trò", "Khu vực", "Cửa hàng", "Người phụ trách", "Điểm", "Câu đúng", "Tổng câu", "Lần làm", "Số lần làm lại", "Kết quả", "Nộp lúc"],
                     ...resultRows,
                 ],
             },
@@ -2639,7 +2661,7 @@ export default function DocumentsPage() {
         if (doc.isLocked && !isLeaderOrAdmin) {
             toast({
                 title: "Tài liệu đang bị khóa",
-                description: "Trainer đã khóa tài liệu này. Vui lòng chờ mở khóa để xem.",
+                description: "Đào tạo viên đã khóa tài liệu này. Vui lòng chờ mở khóa để xem.",
                 variant: "destructive",
             })
             return
@@ -3024,7 +3046,7 @@ export default function DocumentsPage() {
                     break
                 }
                 case "owner": key = people.find((p) => p.id === doc.ownerId)?.name || "Không rõ"; break
-                case "folder": key = doc.folder || "Chưa có folder"; break
+                case "folder": key = doc.folder || "Chưa có thư mục"; break
             }
             if (!groups[key]) groups[key] = []
             groups[key].push(doc)
@@ -3633,7 +3655,7 @@ export default function DocumentsPage() {
         if (doc.isLocked && !isLeaderOrAdmin) {
             toast({
                 title: "Tài liệu đang bị khóa",
-                description: "Trainer đã khóa tài liệu này. Vui lòng chờ mở khóa để xem.",
+                description: "Đào tạo viên đã khóa tài liệu này. Vui lòng chờ mở khóa để xem.",
                 variant: "destructive",
             })
             return
@@ -4229,7 +4251,7 @@ export default function DocumentsPage() {
             store_manager: "Quản lí khu vực",
             store_lead: "Cửa hàng trưởng",
             store_technician: "Kỹ thuật viên",
-            trainer: "Trainer",
+            trainer: "Đào tạo viên",
             other: "Khác",
         }
         const statusLabel: Record<LearningStatusType, string> = {
@@ -4253,6 +4275,7 @@ export default function DocumentsPage() {
             item.personRole ?? "",
             roleLabelByGroup[getRoleGroupByPersonId(item.personId)],
             item.team,
+            item.storeRegion ?? "",
             getExportStoreName(item),
             item.supervisorName ?? "",
             statusLabel[item.status],
@@ -4324,7 +4347,7 @@ export default function DocumentsPage() {
                 name: "Trang thai hoc",
                 filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Nhóm", "Khu vực", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(scopedLearningStatuses),
                 ],
             },
@@ -4332,7 +4355,7 @@ export default function DocumentsPage() {
                 name: "Da hoc",
                 filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Nhóm", "Khu vực", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(completed),
                 ],
             },
@@ -4340,7 +4363,7 @@ export default function DocumentsPage() {
                 name: "Dang hoc",
                 filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Nhóm", "Khu vực", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(inProgress),
                 ],
             },
@@ -4348,7 +4371,7 @@ export default function DocumentsPage() {
                 name: "Chua hoc",
                 filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Team", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
+                    ["Nhân viên", "Vai trò", "Nhóm vai trò", "Nhóm", "Khu vực", "Cửa hàng", "Người phụ trách", "Trạng thái học"],
                     ...statusRows(notStarted),
                 ],
             },
@@ -4356,7 +4379,7 @@ export default function DocumentsPage() {
                 name: "Tien do quiz",
                 filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Trạng thái học", "Trạng thái quiz", "Điểm hiện tại", "Số lần làm lại"],
+                    ["Nhân viên", "Vai trò", "Khu vực", "Cửa hàng", "Người phụ trách", "Trạng thái học", "Trạng thái quiz", "Điểm hiện tại", "Số lần làm lại"],
                     ...scopedLearningStatuses.map((item) => {
                         const activeAttempt = activeAttemptByPersonId.get(item.personId)
                         const quizStatus = activeAttempt
@@ -4369,6 +4392,7 @@ export default function DocumentsPage() {
                         return [
                             item.personName,
                             item.personRole ?? "",
+                            item.storeRegion ?? "",
                             getExportStoreName(item),
                             item.supervisorName ?? "",
                             statusLabel[item.status],
@@ -4383,12 +4407,13 @@ export default function DocumentsPage() {
                 name: "Ket qua quiz",
                 filter: true,
                 rows: [
-                    ["Nhân viên", "Vai trò", "Cửa hàng", "Người phụ trách", "Điểm", "Câu đúng", "Tổng câu", "Lần làm", "Số lần làm lại", "Kết quả", "Trạng thái", "Bắt đầu", "Nộp lúc"],
+                    ["Nhân viên", "Vai trò", "Khu vực", "Cửa hàng", "Người phụ trách", "Điểm", "Câu đúng", "Tổng câu", "Lần làm", "Số lần làm lại", "Kết quả", "Trạng thái", "Bắt đầu", "Nộp lúc"],
                     ...scopedAttempts.map((attempt) => {
                         const status = statusByPersonId.get(attempt.personId)
                         return [
-                            attempt.personName ?? "Unknown",
+                            attempt.personName ?? "Không xác định",
                             attempt.personRole ?? "",
+                            status?.storeRegion ?? "",
                             getExportStoreName(status),
                             attemptSupervisor(attempt.personId),
                             attempt.score,
@@ -4408,14 +4433,19 @@ export default function DocumentsPage() {
                 name: "Lich su reset",
                 filter: true,
                 rows: [
-                    ["Nhân viên", "Người reset", "Thời điểm reset"],
+                    ["Nhân viên", "Khu vực", "Cửa hàng", "Người reset", "Thời điểm reset"],
                     ...quizResultsModal.resets
                         .filter((reset) => effectiveRoleFilter === "all" || getRoleGroupByPersonId(reset.personId) === effectiveRoleFilter)
-                        .map((reset) => [
-                            reset.personName ?? "Unknown",
-                            reset.resetByPersonName ?? "Unknown",
-                            formatDateTime(reset.resetAt),
-                        ]),
+                        .map((reset) => {
+                            const status = statusByPersonId.get(reset.personId)
+                            return [
+                                reset.personName ?? "Không xác định",
+                                status?.storeRegion ?? "",
+                                getExportStoreName(status),
+                                reset.resetByPersonName ?? "Không xác định",
+                                formatDateTime(reset.resetAt),
+                            ]
+                        }),
                 ],
             },
         ])
@@ -4535,7 +4565,7 @@ export default function DocumentsPage() {
                                     {owner?.name.split(" ").map((n) => n[0]).join("") || "U"}
                                 </AvatarFallback>
                             </Avatar>
-                            <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{owner?.name || "Unknown"}</span>
+                            <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{owner?.name || "Không xác định"}</span>
                         </div>
                         {!isLeaderOrAdmin && (
                             <div className="pt-1">
@@ -4633,7 +4663,7 @@ export default function DocumentsPage() {
                             {owner?.name.split(" ").map((n) => n[0]).join("") || "U"}
                         </AvatarFallback>
                     </Avatar>
-                    <span className="text-sm text-gray-600 dark:text-gray-300 hidden sm:block">{owner?.name || "Unknown"}</span>
+                    <span className="text-sm text-gray-600 dark:text-gray-300 hidden sm:block">{owner?.name || "Không xác định"}</span>
                     <Button variant="ghost" size="icon" className="h-6 w-6 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
                         onClick={(e) => {
                             e.preventDefault()
@@ -4671,7 +4701,7 @@ export default function DocumentsPage() {
                         )}
                     </div>
                     <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
-                        <span>Folder</span>
+                        <span>Thư mục</span>
                         <span>{formatDate(folder.updatedAt)}</span>
                         <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
                             <Globe className="h-3 w-3" />
@@ -4687,7 +4717,7 @@ export default function DocumentsPage() {
                             {owner?.name.split(" ").map((n) => n[0]).join("") || "U"}
                         </AvatarFallback>
                     </Avatar>
-                    <span className="hidden text-sm text-gray-600 dark:text-gray-300 sm:block">{owner?.name || "Unknown"}</span>
+                    <span className="hidden text-sm text-gray-600 dark:text-gray-300 sm:block">{owner?.name || "Không xác định"}</span>
                     {isLeaderOrAdmin && (
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -4750,7 +4780,7 @@ export default function DocumentsPage() {
                                     <AvatarImage src={owner?.imageURL || "/placeholder.svg"} />
                                     <AvatarFallback className="bg-gray-200 dark:bg-gray-600 text-xs">{owner?.name?.[0] ?? "U"}</AvatarFallback>
                                 </Avatar>
-                                <span className="text-xs text-gray-500 dark:text-gray-400">{owner?.name ?? "Unknown"}</span>
+                                <span className="text-xs text-gray-500 dark:text-gray-400">{owner?.name ?? "Không xác định"}</span>
                             </div>
                         </div>
                     </div>
@@ -6370,7 +6400,7 @@ export default function DocumentsPage() {
                                                     )}
                                                     {selectedTest.targetRoles && selectedTest.targetRoles.length > 0 && (
                                                         <div className="mt-4 flex flex-wrap items-center gap-2">
-                                                            <span className="text-sm font-semibold text-slate-300">Role làm bài:</span>
+                                                            <span className="text-sm font-semibold text-slate-300">Vai trò làm bài:</span>
                                                             {selectedTest.targetRoles.map((role) => (
                                                                 <span
                                                                     key={`${selectedTest.id}-summary-role-${role}`}
@@ -6692,14 +6722,14 @@ export default function DocumentsPage() {
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                     <Button variant="outline" className="bg-transparent">
-                                        {isMobile ? "Sort" : `Sort: ${sortBy.charAt(0).toUpperCase() + sortBy.slice(1)}`}
+                                        {isMobile ? "Sắp xếp" : `Sắp xếp: ${sortByLabels[sortBy]}`}
                                         <ChevronDown className="w-4 h-4 ml-2" />
                                     </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent>
                                     {(["name", "date", "size", "type", "owner"] as SortBy[]).map((s) => (
                                         <DropdownMenuItem key={s} onClick={() => setSortBy(s)}>
-                                            {s.charAt(0).toUpperCase() + s.slice(1)}
+                                            {sortByLabels[s]}
                                         </DropdownMenuItem>
                                     ))}
                                 </DropdownMenuContent>
@@ -6709,14 +6739,14 @@ export default function DocumentsPage() {
                                 <DropdownMenuTrigger asChild>
                                     <Button variant="outline" className="bg-transparent">
                                         <Filter className="w-4 h-4 mr-2" />
-                                        {isMobile ? "Group" : `Group: ${groupBy === "none" ? "None" : groupBy.charAt(0).toUpperCase() + groupBy.slice(1)}`}
+                                        {isMobile ? "Nhóm" : `Nhóm: ${groupByLabels[groupBy]}`}
                                         <ChevronDown className="w-4 h-4 ml-2" />
                                     </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent>
                                     {(["none", "type", "date", "owner", "folder"] as GroupBy[]).map((g) => (
                                         <DropdownMenuItem key={g} onClick={() => setGroupBy(g)}>
-                                            {g === "none" ? "None" : g.charAt(0).toUpperCase() + g.slice(1)}
+                                            {groupByLabels[g]}
                                         </DropdownMenuItem>
                                     ))}
                                 </DropdownMenuContent>
@@ -6808,7 +6838,7 @@ export default function DocumentsPage() {
             {/* Folders section */}
             <div className="mb-6">
                 <div className="flex items-center justify-between mb-3">
-                    <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Folders</h2>
+                    <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Thư mục</h2>
                     {normalizedSearchQuery && (
                         <span className="text-xs text-gray-500 dark:text-gray-400">
                             {filteredVisibleFolders.length} / {visibleFolders.length} folder
@@ -6819,10 +6849,10 @@ export default function DocumentsPage() {
                 {filteredVisibleFolders.length === 0 ? (
                     <p className="text-sm text-gray-400 dark:text-gray-500 italic">
                         {normalizedSearchQuery
-                            ? "Không tìm thấy folder phù hợp."
+                            ? "Không tìm thấy thư mục phù hợp."
                             : activeFolder
-                                ? (isLeaderOrAdmin ? "Folder này chưa có folder con. Tạo folder con đầu tiên." : "Folder này chưa có folder con.")
-                                : (isLeaderOrAdmin ? "Chưa có folder nào. Tạo folder đầu tiên." : "Chưa có folder nào.")}
+                                ? (isLeaderOrAdmin ? "Thư mục này chưa có thư mục con. Tạo thư mục con đầu tiên." : "Thư mục này chưa có thư mục con.")
+                                : (isLeaderOrAdmin ? "Chưa có thư mục nào. Tạo thư mục đầu tiên." : "Chưa có thư mục nào.")}
                     </p>
                 ) : (
                     <div className="space-y-1">
@@ -7054,7 +7084,7 @@ export default function DocumentsPage() {
                                         </div>
                                         {selectedDocument.folder && (
                                             <div className="flex justify-between">
-                                                <span className="text-gray-500">Folder</span>
+                                                <span className="text-gray-500">Thư mục</span>
                                                 <span className="text-gray-900 dark:text-white">{selectedDocument.folder}</span>
                                             </div>
                                         )}
@@ -7069,7 +7099,7 @@ export default function DocumentsPage() {
                                             <AvatarFallback>{owner?.name.split(" ").map((n) => n[0]).join("") || "U"}</AvatarFallback>
                                         </Avatar>
                                         <div>
-                                            <p className="text-sm font-medium text-gray-900 dark:text-white">{owner?.name || "Unknown"}</p>
+                                            <p className="text-sm font-medium text-gray-900 dark:text-white">{owner?.name || "Không xác định"}</p>
                                             <p className="text-xs text-gray-500">{owner?.email || ""}</p>
                                         </div>
                                     </div>
@@ -7141,7 +7171,7 @@ export default function DocumentsPage() {
                         {newFolderDialog.parentId && (
                             <p className="mb-4 mt-1 text-sm text-gray-500 dark:text-gray-400">
                                 Trong folder: <span className="font-medium text-gray-700 dark:text-gray-200">
-                                    {folders.find((folder) => folder.id === newFolderDialog.parentId)?.name ?? "Folder hiện tại"}
+                                    {folders.find((folder) => folder.id === newFolderDialog.parentId)?.name ?? "Thư mục hiện tại"}
                                 </span>
                             </p>
                         )}
@@ -7189,7 +7219,7 @@ export default function DocumentsPage() {
                                 onClick={() => setMoveDocumentDialog((state) => ({ ...state, selectedFolderId: null }))}
                             >
                                 <FolderOpen className="h-4 w-4 shrink-0" />
-                                <span className="font-medium">Ngoài folder</span>
+                                <span className="font-medium">Ngoài thư mục</span>
                             </button>
 
                             {(folderChildrenByParentId.get("__root__") ?? []).length === 0 ? (
@@ -7202,7 +7232,7 @@ export default function DocumentsPage() {
                         </div>
 
                         <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
-                            Folder đích: <span className="font-medium">{getFolderPathLabel(moveDocumentDialog.selectedFolderId)}</span>
+                            Thư mục đích: <span className="font-medium">{getFolderPathLabel(moveDocumentDialog.selectedFolderId)}</span>
                         </div>
 
                         <div className="mt-4 flex gap-2 justify-end">
@@ -7231,7 +7261,7 @@ export default function DocumentsPage() {
                 return (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3">
                         <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-xl dark:bg-gray-800 sm:p-6">
-                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Di chuyển folder</h2>
+                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Di chuyển thư mục</h2>
                             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
                                 Chọn vị trí mới cho <span className="font-medium text-gray-700 dark:text-gray-200">{moveFolderDialog.folder.name}</span>
                             </p>
@@ -7250,7 +7280,7 @@ export default function DocumentsPage() {
                                     onClick={() => setMoveFolderDialog((state) => ({ ...state, selectedParentId: null }))}
                                 >
                                     <FolderOpen className="h-4 w-4 shrink-0" />
-                                    <span className="font-medium">Ngoài folder (gốc Documents)</span>
+                                    <span className="font-medium">Ngoài thư mục (gốc Tài liệu)</span>
                                 </button>
 
                                 {rootFolders.length === 0 ? (
@@ -7263,7 +7293,7 @@ export default function DocumentsPage() {
                             </div>
 
                             <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
-                                Folder đích: <span className="font-medium">{getFolderPathLabel(moveFolderDialog.selectedParentId)}</span>
+                                Thư mục đích: <span className="font-medium">{getFolderPathLabel(moveFolderDialog.selectedParentId)}</span>
                             </div>
 
                             <div className="mt-4 flex justify-end gap-2">
@@ -7540,8 +7570,8 @@ export default function DocumentsPage() {
                             <p className="font-medium">Cách xử lý nhanh (khuyến nghị)</p>
                             <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-xs sm:text-sm">
                                 <li>Mở file PPTX gốc trên PowerPoint.</li>
-                                <li>Chọn Save As / Export → PDF (Quality: High, Embed fonts).</li>
-                                <li>Upload lại file PDF để hiển thị ổn định như bản gốc.</li>
+                                <li>Chọn Lưu thành / Xuất ra PDF, bật chất lượng cao và nhúng font nếu có.</li>
+                                <li>Tải lại file PDF để hiển thị ổn định như bản gốc.</li>
                             </ol>
                         </div>
                         <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -7563,7 +7593,7 @@ export default function DocumentsPage() {
                                     }))
                                 }}
                             >
-                                Upload lại bằng PDF
+                                Tải lại bằng PDF
                             </Button>
                         </div>
                     </div>
@@ -8461,14 +8491,14 @@ export default function DocumentsPage() {
                                                             className="border-violet-500/70 bg-violet-950/30 text-violet-100 hover:bg-violet-900/50 hover:text-white disabled:border-slate-700 disabled:bg-slate-800/40 disabled:text-slate-500"
                                                             disabled={!canResetThisTest || isResettingThisTest}
                                                             onClick={() => void handleResetTestForPerson(row)}
-                                                            title={canResetThisTest ? "Reset để nhân viên làm lại bài thi" : "Nhân viên chưa thi nên không cần reset"}
+                                                            title={canResetThisTest ? "Đặt lại để nhân viên làm lại bài thi" : "Nhân viên chưa thi nên không cần đặt lại"}
                                                         >
                                                             {isResettingThisTest ? (
                                                                 <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                                                             ) : (
                                                                 <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
                                                             )}
-                                                            Reset làm lại
+                                                            Đặt lại
                                                         </Button>
                                                     </div>
                                                 </div>
@@ -8913,7 +8943,7 @@ export default function DocumentsPage() {
                                             : "text-gray-600 dark:text-gray-300"
                                     }`}
                                 >
-                                    Lịch sử reset
+                                    Lịch sử đặt lại
                                 </button>
                             </div>
                             {quizResultsModal.isLoading ? (
@@ -8942,13 +8972,13 @@ export default function DocumentsPage() {
                                         })
                                         const personOptions = Array.from(
                                             new Map(
-                                                quizResultsModal.resets.map((reset) => [reset.personId, reset.personName ?? "Unknown"])
+                                                quizResultsModal.resets.map((reset) => [reset.personId, reset.personName ?? "Không xác định"])
                                             ).entries()
                                         )
                                         return (
                                             <>
                                                 <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-3 dark:border-gray-700 dark:bg-gray-900/30">
-                                                    <p className="mb-2 text-xs font-semibold text-gray-600 dark:text-gray-300">Bộ lọc lịch sử reset</p>
+                                                    <p className="mb-2 text-xs font-semibold text-gray-600 dark:text-gray-300">Bộ lọc lịch sử đặt lại</p>
                                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                                         <select
                                                             value={quizResetPersonFilter}
@@ -8976,7 +9006,7 @@ export default function DocumentsPage() {
                                                 {filteredResets.length === 0 ? (
                                                     <div className="text-center py-8 rounded-xl border border-dashed border-gray-200 dark:border-gray-700">
                                                         <RotateCcw className="w-8 h-8 mx-auto mb-2 text-gray-300" />
-                                                        <p className="text-sm text-gray-500 dark:text-gray-400">Không có dữ liệu reset theo bộ lọc.</p>
+                                                        <p className="text-sm text-gray-500 dark:text-gray-400">Không có dữ liệu đặt lại theo bộ lọc.</p>
                                                     </div>
                                                 ) : (
                                                     filteredResets.map((reset) => (
@@ -8985,10 +9015,10 @@ export default function DocumentsPage() {
                                                             className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/30"
                                                         >
                                                             <p className="text-sm font-semibold text-gray-900 dark:text-white">
-                                                                {reset.personName ?? "Unknown"}
+                                                                {reset.personName ?? "Không xác định"}
                                                             </p>
                                                             <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                                                                Được reset bởi <span className="font-medium">{reset.resetByPersonName ?? "Unknown"}</span>
+                                                                Được đặt lại bởi <span className="font-medium">{reset.resetByPersonName ?? "Không xác định"}</span>
                                                             </p>
                                                             <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
                                                                 {new Date(reset.resetAt).toLocaleString("vi-VN")}
@@ -9008,7 +9038,7 @@ export default function DocumentsPage() {
                                             store_manager: "Quản lí khu vực",
                                             store_lead: "Cửa hàng trưởng",
                                             store_technician: "Kỹ thuật viên",
-                                            trainer: "Trainer",
+                                            trainer: "Đào tạo viên",
                                             other: "Khác",
                                         }
                                         const getRoleGroupByPersonId = (personId: string): Exclude<QuizResultsRoleFilter, "all"> => {
@@ -9235,7 +9265,7 @@ export default function DocumentsPage() {
                                                                     const status = statusByPersonId.get(item.personId)
                                                                     return status
                                                                         ? renderStatusName(status, "text-blue-900 dark:text-blue-200")
-                                                                        : <p key={item.id} className="px-1 py-0.5 text-xs font-medium text-blue-900 dark:text-blue-200">{item.personName ?? "Unknown"}</p>
+                                                                        : <p key={item.id} className="px-1 py-0.5 text-xs font-medium text-blue-900 dark:text-blue-200">{item.personName ?? "Không xác định"}</p>
                                                                 })}
                                                             </div>
                                                         </button>
@@ -9315,7 +9345,7 @@ export default function DocumentsPage() {
                                                                                 </div>
                                                                                 <div>
                                                                                     <p className="text-sm font-medium text-gray-900 dark:text-white">
-                                                                                        {att.personName ?? "Unknown"}
+                                                                                        {att.personName ?? "Không xác định"}
                                                                                     </p>
                                                                                     <p className="text-xs text-gray-500 dark:text-gray-400">
                                                                                         Lần {att.attemptRound ?? 1} · Làm lại {getQuizRetakeCount(att)} lần · {att.correctAnswers}/{att.totalQuestions} câu · {new Date(att.submittedAt).toLocaleDateString("vi-VN")}
@@ -9330,7 +9360,7 @@ export default function DocumentsPage() {
                                                                                 )}
                                                                                 {att.isActiveAttempt === false && (
                                                                                     <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-600 dark:text-amber-300">
-                                                                                        Đã reset
+                                                                                        Đã đặt lại
                                                                                     </span>
                                                                                 )}
                                                                                 <span className={`text-base font-bold ${att.score >= QUIZ_PASS_SCORE ? "text-green-600" : att.score >= 50 ? "text-yellow-500" : "text-red-500"}`}>
@@ -9355,7 +9385,7 @@ export default function DocumentsPage() {
                                                                                         onClick={() => void handleResetQuizAttemptForPerson(att.personId)}
                                                                                     >
                                                                                         <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                                                                                        {resettingAttemptPersonId === att.personId ? "Đang reset..." : "Reset"}
+                                                                                        {resettingAttemptPersonId === att.personId ? "Đang đặt lại..." : "Đặt lại"}
                                                                                     </Button>
                                                                                 )}
                                                                             </div>
@@ -9503,7 +9533,7 @@ export default function DocumentsPage() {
                                                                 onClick={() => void handleResetLearningProgressForPerson(item.personId, item.personName)}
                                                             >
                                                                 <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                                                                {resettingLearningPersonId === item.personId ? "Đang reset" : "Cho học lại"}
+                                                                {resettingLearningPersonId === item.personId ? "Đang đặt lại" : "Cho học lại"}
                                                             </Button>
                                                         )}
                                                     </div>

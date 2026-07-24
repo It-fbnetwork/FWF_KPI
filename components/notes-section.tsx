@@ -61,7 +61,7 @@ export default function NotesSection({ notes, onAddNote, onUpdateNote, onDeleteN
                 <div className="flex items-center justify-between">
                     <CardTitle className="flex items-center text-gray-900 dark:text-white">
                         <FileText className="w-5 h-5 mr-2" />
-                        Notes
+                        Ghi chú
                     </CardTitle>
                     <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
                         <DialogTrigger asChild>
@@ -71,44 +71,44 @@ export default function NotesSection({ notes, onAddNote, onUpdateNote, onDeleteN
                                 className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-transparent"
                             >
                                 <Plus className="w-4 h-4 mr-2" />
-                                Add Note
+                                Thêm ghi chú
                             </Button>
                         </DialogTrigger>
                         <DialogContent className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
                             <DialogHeader>
-                                <DialogTitle className="text-gray-900 dark:text-white">Add New Note</DialogTitle>
+                                <DialogTitle className="text-gray-900 dark:text-white">Thêm ghi chú mới</DialogTitle>
                             </DialogHeader>
                             <div className="space-y-4">
                                 <div>
                                     <Label htmlFor="note-title" className="text-gray-700 dark:text-gray-300">
-                                        Title
+                                        Tiêu đề
                                     </Label>
                                     <Input
                                         id="note-title"
                                         value={newNote.title}
                                         onChange={(e) => setNewNote({ ...newNote, title: e.target.value })}
-                                        placeholder="Enter note title"
+                                        placeholder="Nhập tiêu đề ghi chú"
                                         className="bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white"
                                     />
                                 </div>
                                 <div>
                                     <Label htmlFor="note-description" className="text-gray-700 dark:text-gray-300">
-                                        Description
+                                        Mô tả
                                     </Label>
                                     <Textarea
                                         id="note-description"
                                         value={newNote.description}
                                         onChange={(e) => setNewNote({ ...newNote, description: e.target.value })}
-                                        placeholder="Enter note description"
+                                        placeholder="Nhập mô tả ghi chú"
                                         rows={3}
                                         className="bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white"
                                     />
                                 </div>
                                 <div className="flex justify-end space-x-2">
                                     <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
-                                        Cancel
+                                        Hủy
                                     </Button>
-                                    <Button onClick={handleAddNote}>Add Note</Button>
+                                    <Button onClick={handleAddNote}>Thêm ghi chú</Button>
                                 </div>
                             </div>
                         </DialogContent>
@@ -120,7 +120,7 @@ export default function NotesSection({ notes, onAddNote, onUpdateNote, onDeleteN
                     {notes.length === 0 ? (
                         <div className="text-center py-8 text-gray-500 dark:text-gray-400">
                             <FileText className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                            <p className="text-sm">No notes yet. Add your first note!</p>
+                            <p className="text-sm">Chưa có ghi chú. Hãy thêm ghi chú đầu tiên.</p>
                         </div>
                     ) : (
                         notes.map((note) => (
@@ -148,40 +148,40 @@ export default function NotesSection({ notes, onAddNote, onUpdateNote, onDeleteN
                                         </DialogTrigger>
                                         <DialogContent className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
                                             <DialogHeader>
-                                                <DialogTitle className="text-gray-900 dark:text-white">Edit Note</DialogTitle>
+                                                <DialogTitle className="text-gray-900 dark:text-white">Chỉnh sửa ghi chú</DialogTitle>
                                             </DialogHeader>
                                             {editingNote && (
                                                 <div className="space-y-4">
                                                     <div>
                                                         <Label htmlFor="edit-title" className="text-gray-700 dark:text-gray-300">
-                                                            Title
+                                                            Tiêu đề
                                                         </Label>
                                                         <Input
                                                             id="edit-title"
                                                             value={editingNote.title}
                                                             onChange={(e) => setEditingNote({ ...editingNote, title: e.target.value })}
-                                                            placeholder="Enter note title"
+                                                            placeholder="Nhập tiêu đề ghi chú"
                                                             className="bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white"
                                                         />
                                                     </div>
                                                     <div>
                                                         <Label htmlFor="edit-description" className="text-gray-700 dark:text-gray-300">
-                                                            Description
+                                                            Mô tả
                                                         </Label>
                                                         <Textarea
                                                             id="edit-description"
                                                             value={editingNote.description}
                                                             onChange={(e) => setEditingNote({ ...editingNote, description: e.target.value })}
-                                                            placeholder="Enter note description"
+                                                            placeholder="Nhập mô tả ghi chú"
                                                             rows={3}
                                                             className="bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white"
                                                         />
                                                     </div>
                                                     <div className="flex justify-end space-x-2">
                                                         <Button variant="outline" onClick={() => setEditingNote(null)}>
-                                                            Cancel
+                                                            Hủy
                                                         </Button>
-                                                        <Button onClick={handleEditNote}>Save Changes</Button>
+                                                        <Button onClick={handleEditNote}>Lưu thay đổi</Button>
                                                     </div>
                                                 </div>
                                             )}

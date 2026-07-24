@@ -72,6 +72,7 @@ type ScheduleFormState = {
 }
 
 type SharePermission = "Can view" | "Can comment" | "Can edit"
+type GeneralAccess = "Restricted" | "Team" | "Anyone with link"
 
 interface SharedMember {
     personId: string
@@ -83,6 +84,35 @@ const TASK_STATUS_OPTIONS = {
     "In Progress": "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
     Completed: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
 } as const
+
+const TASK_STATUS_LABELS: Record<keyof typeof TASK_STATUS_OPTIONS, string> = {
+    Pending: "Chờ thực hiện",
+    "In Progress": "Đang thực hiện",
+    Completed: "Hoàn thành",
+}
+
+const SHARE_PERMISSION_LABELS: Record<SharePermission, string> = {
+    "Can view": "Có thể xem",
+    "Can comment": "Có thể bình luận",
+    "Can edit": "Có thể chỉnh sửa",
+}
+
+const GENERAL_ACCESS_LABELS: Record<GeneralAccess, string> = {
+    Restricted: "Hạn chế",
+    Team: "Nhóm",
+    "Anyone with link": "Bất kỳ ai có liên kết",
+}
+
+function formatPeriodLabel(period: TimePeriod) {
+    switch (period) {
+        case "This Week":
+            return "Tuần này"
+        case "Last Week":
+            return "Tuần trước"
+        case "This Month":
+            return "Tháng này"
+    }
+}
 
 export default function MyTaskPage() {
     const vietnamNow = useMemo(() => {
@@ -96,21 +126,21 @@ export default function MyTaskPage() {
     const [notes, setNotes] = useState<Note[]>([
         {
             id: "1",
-            title: "Landing Page For Website",
-            description: "To get started on a landing page, could you provide a bit more detail about its purpose?",
+            title: "Trang giới thiệu website",
+            description: "Cần xác định rõ mục tiêu của trang trước khi triển khai nội dung.",
             completed: false,
         },
         {
             id: "2",
-            title: "Fixing icons with dark backgrounds",
+            title: "Sửa biểu tượng trên nền tối",
             description:
-                "Use icons that are easily recognizable and straightforward. Avoid overly complex designs that might confuse users",
+                "Ưu tiên biểu tượng dễ nhận diện, rõ nghĩa và không quá phức tạp.",
             completed: false,
         },
         {
             id: "3",
-            title: "Discussion regarding userflow improvement",
-            description: "What's the main goal of the landing page? (e.g., lead generation, product)",
+            title: "Trao đổi cải thiện luồng người dùng",
+            description: "Xác định mục tiêu chính của luồng để tối ưu thứ tự thao tác.",
             completed: true,
         },
     ])
@@ -127,7 +157,7 @@ export default function MyTaskPage() {
     const [isUpdatingTask, setIsUpdatingTask] = useState(false)
     const [shareSearchQuery, setShareSearchQuery] = useState("")
     const [sharePermission, setSharePermission] = useState<SharePermission>("Can view")
-    const [generalAccess, setGeneralAccess] = useState<"Restricted" | "Team" | "Anyone with link">("Restricted")
+    const [generalAccess, setGeneralAccess] = useState<GeneralAccess>("Restricted")
     const [sharedMembers, setSharedMembers] = useState<SharedMember[]>([
         { personId: "people_1", permission: "Can edit" },
         { personId: "people_4", permission: "Can comment" },
@@ -189,7 +219,7 @@ export default function MyTaskPage() {
     }
 
     const getCurrentWeekDays = () => {
-        const days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+        const days = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
         return days.map((day, index) => ({
             day,
             date: currentWeekStart + index,
@@ -208,8 +238,8 @@ export default function MyTaskPage() {
         findPersonForAuthUser(user, people) ??
         people.find((person) => person.id === currentUserId) ?? {
             id: user?.id ?? "guest-user",
-            name: user?.name ?? "Guest User",
-            role: isAdminUser ? "Admin" : "Member",
+            name: user?.name ?? "Khách",
+            role: isAdminUser ? "Quản trị viên" : "Thành viên",
             email: user?.email ?? "",
             imageURL: "/placeholder.svg",
             workingHours: { start: "09:00", end: "17:00", timezone: "UTC" },
@@ -217,7 +247,7 @@ export default function MyTaskPage() {
         }
     const unknownPerson = {
         id: "unknown-person",
-        name: "Unknown",
+        name: "Không xác định",
         role: "Nhân viên",
         email: "",
         imageURL: "/placeholder.svg",
@@ -240,23 +270,23 @@ export default function MyTaskPage() {
     const isCeoUser = user?.role === "ceo"
     const isLeaderUser = user?.role === "leader" || currentUser.role.toLowerCase() === "leader"
     const canManageSchedule = isCeoUser || isLeaderUser
-    const greetingLabel = `${isAdminUser ? "Admin" : currentTeam?.name ?? "Team"} · ${currentUser.name}`
+    const greetingLabel = `${isAdminUser ? "Quản trị viên" : currentTeam?.name ?? "Nhóm"} · ${currentUser.name}`
     const greetingText = useMemo(() => {
         const hour = vietnamNow.getHours()
 
         if (hour < 12) {
-            return "Good Morning!"
+            return "Chào buổi sáng!"
         }
 
         if (hour < 18) {
-            return "Good Afternoon!"
+            return "Chào buổi chiều!"
         }
 
-        return "Good Evening!"
+        return "Chào buổi tối!"
     }, [vietnamNow])
     const todayLabel = useMemo(
         () =>
-            new Intl.DateTimeFormat("en-GB", {
+            new Intl.DateTimeFormat("vi-VN", {
                 timeZone: "Asia/Ho_Chi_Minh",
                 weekday: "long",
                 day: "numeric",
@@ -270,10 +300,10 @@ export default function MyTaskPage() {
         name: "",
         assigneeId: currentUserId,
         status: "Pending",
-        executionPeriod: "Week 1 (01/03 - 07/03/2026)",
-        audience: "Personal",
+        executionPeriod: "Tuần 1 (01/03 - 07/03/2026)",
+        audience: "Cá nhân",
         weight: "20%",
-        resultMethod: "Manual Entry",
+        resultMethod: "Nhập thủ công",
         target: "",
         progress: 0,
         kpis: [],
@@ -374,10 +404,10 @@ export default function MyTaskPage() {
             name: "",
             assigneeId: currentUserId,
             status: "Pending",
-            executionPeriod: "Week 1 (01/03 - 07/03/2026)",
-            audience: "Personal",
+            executionPeriod: "Tuần 1 (01/03 - 07/03/2026)",
+            audience: "Cá nhân",
             weight: "20%",
-            resultMethod: "Manual Entry",
+            resultMethod: "Nhập thủ công",
             target: "",
             progress: 0,
             kpis: [],
@@ -497,7 +527,7 @@ export default function MyTaskPage() {
             setTaskDraft(updatedTask)
             toast({
                 title: "Cập nhật thành công",
-                description: "Nội dung task đã được cập nhật và đang chờ phản hồi từ leader.",
+                description: "Nội dung việc đã được cập nhật và đang chờ phản hồi từ trưởng nhóm.",
             })
         } finally {
             setIsUpdatingTask(false)
@@ -517,19 +547,19 @@ export default function MyTaskPage() {
             return [...prev, { personId, permission: sharePermission }]
         })
         setShareSearchQuery("")
-        setShareFeedback("Access updated.")
+        setShareFeedback("Đã cập nhật quyền truy cập.")
     }
 
     const handleUpdateSharedMemberPermission = (personId: string, permission: SharePermission) => {
         setSharedMembers((prev) =>
             prev.map((member) => (member.personId === personId ? { ...member, permission } : member)),
         )
-        setShareFeedback("Permission updated.")
+        setShareFeedback("Đã cập nhật quyền.")
     }
 
     const handleRemoveSharedMember = (personId: string) => {
         setSharedMembers((prev) => prev.filter((member) => member.personId !== personId))
-        setShareFeedback("Member removed from share list.")
+        setShareFeedback("Đã xóa thành viên khỏi danh sách chia sẻ.")
     }
 
     const handleCopyShareLink = async () => {
@@ -548,23 +578,19 @@ export default function MyTaskPage() {
                 document.body.removeChild(textArea)
             }
 
-            setShareFeedback("Share link copied.")
+            setShareFeedback("Đã sao chép liên kết chia sẻ.")
         } catch {
-            setShareFeedback("Unable to copy automatically. Copy the link manually.")
+            setShareFeedback("Không thể tự động sao chép. Vui lòng sao chép liên kết thủ công.")
         }
     }
 
     const formatScheduleTimeRange = (startTime: string, endTime: string) => {
         const formatTime = (value: string) => {
             const [hours = "00", minutes = "00"] = value.split(":")
-            const hourNumber = Number(hours)
-            const normalizedHour = Number.isNaN(hourNumber) ? 0 : hourNumber
-            const period = normalizedHour >= 12 ? "PM" : "AM"
-            const displayHour = normalizedHour % 12 || 12
-            return `${String(displayHour).padStart(2, "0")}:${minutes} ${period}`
+            return `${hours}:${minutes}`
         }
 
-        return `${formatTime(startTime)} to ${formatTime(endTime)}`
+        return `${formatTime(startTime)} đến ${formatTime(endTime)}`
     }
 
     const refreshSchedules = async () => {
@@ -810,27 +836,27 @@ export default function MyTaskPage() {
                                 className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 bg-transparent"
                             >
                                 <Share className="w-4 h-4 mr-2" />
-                                Share
+                                Chia sẻ
                             </Button>
                         </DialogTrigger>
                         <DialogContent className="max-w-2xl bg-white dark:bg-gray-800">
                             <DialogHeader>
                                 <DialogTitle className="text-gray-900 dark:text-white">
-                                    Share {selectedProject ? selectedProject.name : "workspace"}
+                                    Chia sẻ {selectedProject ? selectedProject.name : "không gian làm việc"}
                                 </DialogTitle>
                             </DialogHeader>
                             <div className="space-y-6 py-2">
                                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900">
                                     <div className="flex items-start justify-between gap-4">
                                         <div className="space-y-1">
-                                            <p className="text-sm font-medium text-gray-900 dark:text-white">Share link</p>
+                                            <p className="text-sm font-medium text-gray-900 dark:text-white">Liên kết chia sẻ</p>
                                             <p className="text-sm text-gray-500 dark:text-gray-400">
-                                                Copy a direct link to this {selectedProject ? "project" : "workspace view"}.
+                                                Sao chép liên kết trực tiếp đến {selectedProject ? "dự án này" : "không gian làm việc này"}.
                                             </p>
                                         </div>
                                         <Button type="button" variant="outline" onClick={handleCopyShareLink}>
                                             <Copy className="mr-2 h-4 w-4" />
-                                            Copy link
+                                            Sao chép
                                         </Button>
                                     </div>
                                     <div className="mt-3 flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-800">
@@ -841,16 +867,16 @@ export default function MyTaskPage() {
 
                                 <div className="grid gap-4 md:grid-cols-[1fr_180px]">
                                     <div className="space-y-2">
-                                        <Label htmlFor="share-search">Invite people</Label>
+                                        <Label htmlFor="share-search">Mời thành viên</Label>
                                         <Input
                                             id="share-search"
                                             value={shareSearchQuery}
                                             onChange={(event) => setShareSearchQuery(event.target.value)}
-                                            placeholder="Search by name or email"
+                                            placeholder="Tìm theo tên hoặc email"
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <Label>Permission</Label>
+                                        <Label>Quyền</Label>
                                         <Select
                                             value={sharePermission}
                                             onValueChange={(value: SharePermission) => setSharePermission(value)}
@@ -859,9 +885,9 @@ export default function MyTaskPage() {
                                                 <SelectValue />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="Can view">Can view</SelectItem>
-                                                <SelectItem value="Can comment">Can comment</SelectItem>
-                                                <SelectItem value="Can edit">Can edit</SelectItem>
+                                                <SelectItem value="Can view">{SHARE_PERMISSION_LABELS["Can view"]}</SelectItem>
+                                                <SelectItem value="Can comment">{SHARE_PERMISSION_LABELS["Can comment"]}</SelectItem>
+                                                <SelectItem value="Can edit">{SHARE_PERMISSION_LABELS["Can edit"]}</SelectItem>
                                             </SelectContent>
                                         </Select>
                                     </div>
@@ -901,7 +927,7 @@ export default function MyTaskPage() {
                                                     size="sm"
                                                     onClick={() => handleAddSharedMember(person.id)}
                                                 >
-                                                    {existingMember ? "Update access" : "Add"}
+                                                    {existingMember ? "Cập nhật quyền" : "Thêm"}
                                                 </Button>
                                             </div>
                                         )
@@ -910,11 +936,11 @@ export default function MyTaskPage() {
 
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
-                                        <p className="text-sm font-medium text-gray-900 dark:text-white">General access</p>
+                                        <p className="text-sm font-medium text-gray-900 dark:text-white">Quyền truy cập chung</p>
                                         <div className="w-48">
                                             <Select
                                                 value={generalAccess}
-                                                onValueChange={(value: "Restricted" | "Team" | "Anyone with link") =>
+                                                onValueChange={(value: GeneralAccess) =>
                                                     setGeneralAccess(value)
                                                 }
                                             >
@@ -922,25 +948,25 @@ export default function MyTaskPage() {
                                                     <SelectValue />
                                                 </SelectTrigger>
                                                 <SelectContent>
-                                                    <SelectItem value="Restricted">Restricted</SelectItem>
-                                                    <SelectItem value="Team">Team</SelectItem>
-                                                    <SelectItem value="Anyone with link">Anyone with link</SelectItem>
+                                                    <SelectItem value="Restricted">{GENERAL_ACCESS_LABELS.Restricted}</SelectItem>
+                                                    <SelectItem value="Team">{GENERAL_ACCESS_LABELS.Team}</SelectItem>
+                                                    <SelectItem value="Anyone with link">{GENERAL_ACCESS_LABELS["Anyone with link"]}</SelectItem>
                                                 </SelectContent>
                                             </Select>
                                         </div>
                                     </div>
                                     <p className="text-xs text-gray-500 dark:text-gray-400">
                                         {generalAccess === "Restricted" &&
-                                            "Only people added below can open this view."}
+                                            "Chỉ những người được thêm bên dưới mới có thể mở màn hình này."}
                                         {generalAccess === "Team" &&
-                                            "Anyone in your team can open this view with the link."}
+                                            "Mọi người trong nhóm của bạn có thể mở màn hình này bằng liên kết."}
                                         {generalAccess === "Anyone with link" &&
-                                            "Anyone with the link can open this view."}
+                                            "Bất kỳ ai có liên kết đều có thể mở màn hình này."}
                                     </p>
                                 </div>
 
                                 <div className="space-y-3">
-                                    <p className="text-sm font-medium text-gray-900 dark:text-white">People with access</p>
+                                    <p className="text-sm font-medium text-gray-900 dark:text-white">Người có quyền truy cập</p>
                                     <div className="space-y-2 rounded-xl border border-gray-200 p-3 dark:border-gray-700">
                                         <div className="flex items-center justify-between gap-3 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900">
                                             <div className="flex items-center gap-3">
@@ -958,7 +984,7 @@ export default function MyTaskPage() {
                                                     <p className="text-xs text-gray-500 dark:text-gray-400">{currentUser.email}</p>
                                                 </div>
                                             </div>
-                                            <Badge variant="secondary">Owner</Badge>
+                                            <Badge variant="secondary">Chủ sở hữu</Badge>
                                         </div>
 
                                         {sharedMembers.length > 0 ? (
@@ -1005,9 +1031,9 @@ export default function MyTaskPage() {
                                                                         <SelectValue />
                                                                     </SelectTrigger>
                                                                     <SelectContent>
-                                                                        <SelectItem value="Can view">Can view</SelectItem>
-                                                                        <SelectItem value="Can comment">Can comment</SelectItem>
-                                                                        <SelectItem value="Can edit">Can edit</SelectItem>
+                                                                        <SelectItem value="Can view">{SHARE_PERMISSION_LABELS["Can view"]}</SelectItem>
+                                                                        <SelectItem value="Can comment">{SHARE_PERMISSION_LABELS["Can comment"]}</SelectItem>
+                                                                        <SelectItem value="Can edit">{SHARE_PERMISSION_LABELS["Can edit"]}</SelectItem>
                                                                     </SelectContent>
                                                                 </Select>
                                                             </div>
@@ -1026,7 +1052,7 @@ export default function MyTaskPage() {
                                             })
                                         ) : (
                                             <div className="rounded-lg border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                                                No collaborators added yet.
+                                                Chưa có cộng tác viên nào.
                                             </div>
                                         )}
                                     </div>
@@ -1047,21 +1073,21 @@ export default function MyTaskPage() {
                                 className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 bg-transparent"
                             >
                                 <Plus className="w-4 h-4 mr-2" />
-                                Add Task
+                                Thêm việc
                             </Button>
                         </DialogTrigger>
                         <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto bg-white dark:bg-gray-800">
                             <DialogHeader>
-                                <DialogTitle className="text-gray-900 dark:text-white">Create New Task</DialogTitle>
+                                <DialogTitle className="text-gray-900 dark:text-white">Tạo việc mới</DialogTitle>
                             </DialogHeader>
                             <div className="grid gap-6 py-2 md:grid-cols-2">
                                 <div className="space-y-2 md:col-span-2">
-                                    <Label htmlFor="task-name">Tên Task</Label>
+                                    <Label htmlFor="task-name">Tên việc</Label>
                                     <Input
                                         id="task-name"
                                         value={newTaskForm.name}
                                         onChange={(event) => updateNewTaskForm("name", event.target.value)}
-                                        placeholder="Enter task name"
+                                        placeholder="Nhập tên việc"
                                     />
                                 </div>
                                 <div className="space-y-2">
@@ -1071,7 +1097,7 @@ export default function MyTaskPage() {
                                         onValueChange={(value) => updateNewTaskForm("projectId", value)}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Select project" />
+                                            <SelectValue placeholder="Chọn dự án" />
                                         </SelectTrigger>
                                         <SelectContent>
                                             {projects.map((project) => (
@@ -1089,7 +1115,7 @@ export default function MyTaskPage() {
                                         onValueChange={(value: TimePeriod) => updateNewTaskForm("timePeriod", value)}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Select time period" />
+                                            <SelectValue placeholder="Chọn khoảng thời gian" />
                                         </SelectTrigger>
                                         <SelectContent>
                                             <SelectItem value="This Week">Tuần này</SelectItem>
@@ -1105,7 +1131,7 @@ export default function MyTaskPage() {
                                         onValueChange={(value) => updateNewTaskForm("assigneeId", value)}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Select assignee" />
+                                            <SelectValue placeholder="Chọn người thực hiện" />
                                         </SelectTrigger>
                                         <SelectContent>
                                             {currentTeamPeople.map((person) => (
@@ -1123,11 +1149,11 @@ export default function MyTaskPage() {
                                         onValueChange={(value: Task["status"]) => updateNewTaskForm("status", value)}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Select status" />
+                                            <SelectValue placeholder="Chọn trạng thái" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="Pending">Đang chờ</SelectItem>
-                                            <SelectItem value="In Progress">Đang thưc hiện</SelectItem>
+                                            <SelectItem value="Pending">Chờ thực hiện</SelectItem>
+                                            <SelectItem value="In Progress">Đang thực hiện</SelectItem>
                                             <SelectItem value="Completed">Hoàn thành</SelectItem>
                                         </SelectContent>
                                     </Select>
@@ -1183,12 +1209,12 @@ export default function MyTaskPage() {
                                 </div>
                                
                                 <div className="space-y-2 md:col-span-2">
-                                    <Label htmlFor="description">Description</Label>
+                                    <Label htmlFor="description">Mô tả</Label>
                                     <Textarea
                                         id="description"
                                         value={newTaskForm.description}
                                         onChange={(event) => updateNewTaskForm("description", event.target.value)}
-                                        placeholder="Describe the task details and expected result"
+                                        placeholder="Mô tả chi tiết việc cần làm và kết quả mong đợi"
                                     />
                                 </div>
                                 <div className="space-y-3 md:col-span-2">
@@ -1199,7 +1225,7 @@ export default function MyTaskPage() {
                                     >
                                         <Paperclip className="mb-2 h-5 w-5 text-gray-500 dark:text-gray-400" />
                                         <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
-                                            Upload file cho task này
+                                            Tải tệp lên cho việc này
                                         </span>
                                         <span className="text-xs text-gray-500 dark:text-gray-400">
                                             Có thể chọn một hoặc nhiều file
@@ -1247,10 +1273,10 @@ export default function MyTaskPage() {
                             </div>
                             <div className="flex justify-end gap-2">
                                 <Button variant="outline" onClick={() => setIsAddTaskOpen(false)} disabled={isCreatingTask}>
-                                    Cancel
+                                    Hủy
                                 </Button>
                                 <Button onClick={handleSubmitTask} loading={isCreatingTask}>
-                                    {isCreatingTask ? "Creating..." : "Create Task"}
+                                    {isCreatingTask ? "Đang tạo..." : "Tạo việc"}
                                 </Button>
                             </div>
                         </DialogContent>
@@ -1262,17 +1288,17 @@ export default function MyTaskPage() {
                     <div className="flex items-center">
                         <Clock className="w-4 h-4 mr-2 text-gray-500 dark:text-gray-400" />
                         <span className="font-semibold text-gray-900 dark:text-white">12hrs</span>
-                        <span className="text-sm text-gray-500 dark:text-gray-400 ml-1">Time Saved</span>
+                        <span className="text-sm text-gray-500 dark:text-gray-400 ml-1">Giờ tiết kiệm</span>
                     </div>
                     <div className="flex items-center">
                         <CheckCircle className="w-4 h-4 mr-2 text-gray-500 dark:text-gray-400" />
                         <span className="font-semibold text-gray-900 dark:text-white">24</span>
-                        <span className="text-sm text-gray-500 dark:text-gray-400 ml-1">Projects Completed</span>
+                        <span className="text-sm text-gray-500 dark:text-gray-400 ml-1">Dự án hoàn thành</span>
                     </div>
                     <div className="flex items-center">
                         <Zap className="w-4 h-4 mr-2 text-gray-500 dark:text-gray-400" />
                         <span className="font-semibold text-gray-900 dark:text-white">7</span>
-                        <span className="text-sm text-gray-500 dark:text-gray-400 ml-1">Projects In-progress</span>
+                        <span className="text-sm text-gray-500 dark:text-gray-400 ml-1">Dự án đang thực hiện</span>
                     </div>
                 </div>
             </div>
@@ -1285,7 +1311,7 @@ export default function MyTaskPage() {
                             <div className="flex items-center justify-between">
                                 <CardTitle className="flex items-center text-gray-900 dark:text-white">
                                     <BarChart3 className="w-5 h-5 mr-2" />
-                                    {selectedProject ? `${selectedProject.name} Tasks` : "My Tasks"}
+                                    {selectedProject ? `Việc trong ${selectedProject.name}` : "Việc của tôi"}
                                 </CardTitle>
                                 <div className="flex items-center space-x-2">
                                     {canManageAllTasks && (
@@ -1296,7 +1322,7 @@ export default function MyTaskPage() {
                                             className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-transparent"
                                         >
                                             <Users className="w-4 h-4 mr-2" />
-                                            Team&apos;s Tasks
+                                            Việc của nhóm
                                         </Button>
                                     )}
                                     <DropdownMenu>
@@ -1306,7 +1332,7 @@ export default function MyTaskPage() {
                                                 size="sm"
                                                 className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-transparent"
                                             >
-                                                {selectedTimePeriod}
+                                                {formatPeriodLabel(selectedTimePeriod)}
                                                 <ChevronDown className="w-4 h-4 ml-2" />
                                             </Button>
                                         </DropdownMenuTrigger>
@@ -1315,24 +1341,24 @@ export default function MyTaskPage() {
                                                 onClick={() => setSelectedTimePeriod("This Week")}
                                                 className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
                                             >
-                                                This Week
+                                                Tuần này
                                             </DropdownMenuItem>
                                             <DropdownMenuItem
                                                 onClick={() => setSelectedTimePeriod("Last Week")}
                                                 className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
                                             >
-                                                Last Week
+                                                Tuần trước
                                             </DropdownMenuItem>
                                             <DropdownMenuItem
                                                 onClick={() => setSelectedTimePeriod("This Month")}
                                                 className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
                                             >
-                                                This Month
+                                                Tháng này
                                             </DropdownMenuItem>
                                         </DropdownMenuContent>
                                     </DropdownMenu>
                                     <Button variant="ghost" size="sm" className="text-gray-600 dark:text-gray-300">
-                                        See All
+                                        Xem tất cả
                                     </Button>
                                 </div>
                             </div>
@@ -1343,15 +1369,15 @@ export default function MyTaskPage() {
                                 <div className="grid grid-cols-12 gap-4 text-sm font-medium text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700 pb-2">
                                     <div className="col-span-6 flex items-center">
                                         <Edit3 className="w-4 h-4 mr-2" />
-                                        Task Name
+                                        Tên việc
                                     </div>
                                     <div className="col-span-3 flex items-center">
                                         <Users className="w-4 h-4 mr-2" />
-                                        Assign
+                                        Người thực hiện
                                     </div>
                                     <div className="col-span-3 flex items-center">
                                         <Zap className="w-4 h-4 mr-2" />
-                                        Status
+                                        Trạng thái
                                     </div>
                                 </div>
 
@@ -1441,7 +1467,7 @@ export default function MyTaskPage() {
                                                     <SelectContent>
                                                         {Object.keys(TASK_STATUS_OPTIONS).map((status) => (
                                                             <SelectItem key={status} value={status}>
-                                                                {status}
+                                                                {TASK_STATUS_LABELS[status as keyof typeof TASK_STATUS_OPTIONS]}
                                                             </SelectItem>
                                                         ))}
                                                     </SelectContent>
@@ -1452,7 +1478,7 @@ export default function MyTaskPage() {
                                 })}
                                 {currentTasks.length === 0 && (
                                     <div className="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                                        No tasks found for this view. Add a new task to start tracking work here.
+                                        Không có việc nào trong màn hình này. Thêm việc mới để bắt đầu theo dõi.
                                     </div>
                                 )}
                             </div>
@@ -1468,7 +1494,7 @@ export default function MyTaskPage() {
                             <div className="flex items-center justify-between">
                                 <CardTitle className="flex items-center text-gray-900 dark:text-white">
                                     <Calendar className="w-5 h-5 mr-2" />
-                                    Schedule
+                                    Lịch
                                 </CardTitle>
                                 <div className="flex items-center gap-2">
                                     {canManageSchedule ? (
@@ -1579,7 +1605,7 @@ export default function MyTaskPage() {
                                 ) : (
                                     <div className="text-center py-8 text-gray-500 dark:text-gray-400">
                                         <Calendar className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                                        <p className="text-sm">No events scheduled for this day</p>
+                                        <p className="text-sm">Chưa có lịch nào trong ngày này</p>
                                     </div>
                                 )}
                             </div>
@@ -1650,7 +1676,7 @@ export default function MyTaskPage() {
                                 </div>
                                 {isCeoUser ? (
                                     <div className="grid gap-2">
-                                        <Label>Lọc thành viên theo team</Label>
+                                        <Label>Lọc thành viên theo nhóm</Label>
                                         <Select
                                             value={scheduleForm.teamFilter}
                                             onValueChange={(value) =>
@@ -1658,10 +1684,10 @@ export default function MyTaskPage() {
                                             }
                                         >
                                             <SelectTrigger>
-                                                <SelectValue placeholder="Chọn team" />
+                                                <SelectValue placeholder="Chọn nhóm" />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="all">Tất cả team</SelectItem>
+                                                <SelectItem value="all">Tất cả nhóm</SelectItem>
                                                 {scheduleTeamOptions.map((team) => (
                                                     <SelectItem key={team.id} value={team.id}>
                                                         {team.name}
@@ -1715,8 +1741,8 @@ export default function MyTaskPage() {
                                     </div>
                                     <p className="text-xs text-gray-500 dark:text-gray-400">
                                         {isCeoUser
-                                            ? "CEO có thể chọn tất cả thành viên trong hệ thống và lọc theo từng team."
-                                            : `Leader chỉ có thể chọn thành viên trong team ${currentTeam?.name ?? "của mình"}.`}
+                                            ? "CEO có thể chọn tất cả thành viên trong hệ thống và lọc theo từng nhóm."
+                                            : `Trưởng nhóm chỉ có thể chọn thành viên trong nhóm ${currentTeam?.name ?? "của mình"}.`}
                                     </p>
                                 </div>
                             </div>
@@ -1760,17 +1786,17 @@ export default function MyTaskPage() {
                     <SheetHeader className="border-b border-gray-200 pb-4 dark:border-gray-700">
                         <div className="pr-10">
                             <div className="mb-2 flex items-center gap-2">
-                                <Badge variant="secondary">{selectedTimePeriod}</Badge>
+                                <Badge variant="secondary">{formatPeriodLabel(selectedTimePeriod)}</Badge>
                                 <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                                    {currentTeam?.name ?? "Your team"}
+                                    {currentTeam?.name ?? "Nhóm của bạn"}
                                 </span>
                             </div>
                             <SheetTitle className="flex items-center text-2xl font-bold text-gray-900 dark:text-white">
                                 <Users className="mr-2 h-6 w-6" />
-                                Team&apos;s Tasks
+                                Việc của nhóm
                             </SheetTitle>
                             <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-                                Manage tasks of everyone in {currentTeam?.name ?? "your team"} without mixing them into your personal list.
+                                Quản lý việc của mọi người trong {currentTeam?.name ?? "nhóm của bạn"} mà không trộn vào danh sách cá nhân.
                             </p>
                         </div>
                     </SheetHeader>
@@ -1778,15 +1804,15 @@ export default function MyTaskPage() {
                         <div className="grid grid-cols-12 gap-4 border-b border-gray-200 pb-2 text-sm font-medium text-gray-500 dark:border-gray-700 dark:text-gray-400">
                             <div className="col-span-6 flex items-center">
                                 <Edit3 className="mr-2 h-4 w-4" />
-                                Task Name
+                                Tên việc
                             </div>
                             <div className="col-span-3 flex items-center">
                                 <Users className="mr-2 h-4 w-4" />
-                                Assign
+                                Người thực hiện
                             </div>
                             <div className="col-span-3 flex items-center">
                                 <Zap className="mr-2 h-4 w-4" />
-                                Status
+                                Trạng thái
                             </div>
                         </div>
 
@@ -1878,7 +1904,7 @@ export default function MyTaskPage() {
                                             <SelectContent>
                                                 {Object.keys(TASK_STATUS_OPTIONS).map((status) => (
                                                     <SelectItem key={status} value={status}>
-                                                        {status}
+                                                        {TASK_STATUS_LABELS[status as keyof typeof TASK_STATUS_OPTIONS]}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
@@ -1890,7 +1916,7 @@ export default function MyTaskPage() {
 
                         {teamTasks.length === 0 && (
                             <div className="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                                No team tasks found for this view.
+                                Không có việc nhóm nào trong màn hình này.
                             </div>
                         )}
                     </div>
@@ -1912,7 +1938,9 @@ export default function MyTaskPage() {
                             <SheetHeader className="border-b border-gray-200 pb-4 dark:border-gray-700">
                                 <div className="pr-10">
                                     <div className="mb-2 flex items-center gap-2">
-                                        <Badge className={taskDraft.statusColor}>{taskDraft.status}</Badge>
+                                        <Badge className={taskDraft.statusColor}>
+                                            {TASK_STATUS_LABELS[taskDraft.status as keyof typeof TASK_STATUS_OPTIONS]}
+                                        </Badge>
                                         {selectedTaskProject && (
                                             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
                                                 {selectedTaskProject.name}
@@ -1926,12 +1954,12 @@ export default function MyTaskPage() {
                             </SheetHeader>
                             <div className="grid gap-8 py-6">
                                 <div className="grid gap-6 md:grid-cols-[150px_1fr]">
-                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Execution Period</p>
+                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Kỳ thực hiện</p>
                                     <Input
                                         value={taskDraft.executionPeriod}
                                         onChange={(event) => updateTaskDraft("executionPeriod", event.target.value)}
                                     />
-                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Status</p>
+                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Trạng thái</p>
                                     <Select
                                         value={taskDraft.status}
                                         onValueChange={(value: keyof typeof TASK_STATUS_OPTIONS) => {
@@ -1940,17 +1968,17 @@ export default function MyTaskPage() {
                                         }}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Select status" />
+                                            <SelectValue placeholder="Chọn trạng thái" />
                                         </SelectTrigger>
                                         <SelectContent>
                                             {Object.keys(TASK_STATUS_OPTIONS).map((status) => (
                                                 <SelectItem key={status} value={status}>
-                                                    {status}
+                                                    {TASK_STATUS_LABELS[status as keyof typeof TASK_STATUS_OPTIONS]}
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
                                     </Select>
-                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Assignee</p>
+                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Người thực hiện</p>
                                     <div className="border-b border-gray-200 pb-2 dark:border-gray-700">
                                         {canManageAllTasks ? (
                                             <Select
@@ -1958,7 +1986,7 @@ export default function MyTaskPage() {
                                                 onValueChange={(value) => updateTaskDraft("assigneeId", value)}
                                             >
                                                 <SelectTrigger>
-                                                    <SelectValue placeholder="Select assignee" />
+                                                    <SelectValue placeholder="Chọn người thực hiện" />
                                                 </SelectTrigger>
                                                 <SelectContent>
                                                     {taskDetailAssignees.map((person) => (
@@ -1981,7 +2009,7 @@ export default function MyTaskPage() {
                                                 </Avatar>
                                                 <div>
                                                     <p className="text-sm font-medium text-gray-900 dark:text-white">
-                                                        {selectedTaskAssignee?.name || "Unknown"}
+                                                        {selectedTaskAssignee?.name || "Không xác định"}
                                                     </p>
                                                     <p className="text-xs text-gray-500 dark:text-gray-400">
                                                         {selectedTaskAssignee?.email || ""}
@@ -1990,17 +2018,17 @@ export default function MyTaskPage() {
                                             </div>
                                         )}
                                     </div>
-                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Audience</p>
+                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Đối tượng</p>
                                     <Input
                                         value={taskDraft.audience}
                                         onChange={(event) => updateTaskDraft("audience", event.target.value)}
                                     />
-                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Weight</p>
+                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Trọng số</p>
                                     <Input
                                         value={taskDraft.weight}
                                         onChange={(event) => updateTaskDraft("weight", event.target.value)}
                                     />
-                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Result Method</p>
+                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Cách tính kết quả</p>
                                     <Input
                                         value={taskDraft.resultMethod}
                                         onChange={(event) => updateTaskDraft("resultMethod", event.target.value)}
@@ -2047,12 +2075,12 @@ export default function MyTaskPage() {
                                             }
                                         />
                                     </div>
-                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Child Goal</p>
+                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Mục tiêu con</p>
                                     <Input
                                         value={taskDraft.childGoal}
                                         onChange={(event) => updateTaskDraft("childGoal", event.target.value)}
                                     />
-                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Parent Goal</p>
+                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Mục tiêu cha</p>
                                     <Input
                                         value={taskDraft.parentGoal}
                                         onChange={(event) => updateTaskDraft("parentGoal", event.target.value)}
@@ -2084,7 +2112,7 @@ export default function MyTaskPage() {
                                                             </div>
                                                         </div>
                                                         <span className="text-xs text-gray-500 dark:text-gray-400">
-                                                            {attachment.type || "File"}
+                                                            {attachment.type || "Tệp"}
                                                         </span>
                                                     </div>
                                                 ))}
@@ -2103,10 +2131,10 @@ export default function MyTaskPage() {
                                         }}
                                         disabled={isUpdatingTask}
                                     >
-                                        Cancel
+                                        Hủy
                                     </Button>
                                     <Button onClick={handleSubmitTaskUpdate} loading={isUpdatingTask}>
-                                        {isUpdatingTask ? "Updating..." : "Update Task"}
+                                        {isUpdatingTask ? "Đang cập nhật..." : "Cập nhật việc"}
                                     </Button>
                                 </div>
                             </div>

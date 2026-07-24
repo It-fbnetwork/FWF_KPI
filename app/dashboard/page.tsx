@@ -184,6 +184,23 @@ function getProgressMeta(progress: number) {
     }
 }
 
+function formatPeriodLabel(period: PeriodFilter | string) {
+    switch (period) {
+        case "all":
+            return "Tất cả kỳ"
+        case "This Week":
+            return "Tuần này"
+        case "Last Week":
+            return "Tuần trước"
+        case "This Month":
+            return "Tháng này"
+        case "Last Month":
+            return "Tháng trước"
+        default:
+            return period
+    }
+}
+
 export default function DashboardPage() {
     const { user } = useAuth()
     const { people, teams } = useDirectory()
@@ -208,8 +225,8 @@ export default function DashboardPage() {
         findPersonForAuthUser(user, people) ??
         people.find((person) => person.id === currentUserId) ?? {
             id: user?.id ?? "guest-user",
-            name: user?.name ?? "Guest User",
-            role: isAdminUser ? "Admin" : "Member",
+            name: user?.name ?? "Khách",
+            role: isAdminUser ? "Quản trị viên" : "Thành viên",
             email: user?.email ?? "",
             imageURL: "/placeholder.svg",
             workingHours: { start: "09:00", end: "17:00", timezone: "UTC" },
@@ -309,7 +326,7 @@ export default function DashboardPage() {
         testId: string
         testTitle: string
     }) => {
-        const confirmed = window.confirm(`Reset bài thi "${input.testTitle}" cho ${input.personName}? Nhân viên sẽ có thể làm lại từ đầu.`)
+        const confirmed = window.confirm(`Đặt lại bài thi "${input.testTitle}" cho ${input.personName}? Nhân viên sẽ có thể làm lại từ đầu.`)
         if (!confirmed) return
 
         const resetKey = `${input.personId}:${input.testId}`
@@ -322,14 +339,14 @@ export default function DashboardPage() {
                 body: JSON.stringify({ personId: input.personId }),
             })
             const data = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string }
-            if (!res.ok || data.ok === false) throw new Error(data.message || "Không thể reset bài thi")
+            if (!res.ok || data.ok === false) throw new Error(data.message || "Không thể đặt lại bài thi")
             await refreshTestReport()
             toast({
-                title: "Đã reset bài thi",
+                title: "Đã đặt lại bài thi",
                 description: `${input.personName} có thể làm lại bài thi từ đầu.`,
             })
         } catch (error) {
-            toast({ title: error instanceof Error ? error.message : "Không thể reset bài thi", variant: "destructive" })
+            toast({ title: error instanceof Error ? error.message : "Không thể đặt lại bài thi", variant: "destructive" })
         } finally {
             setResettingReportTestKey(null)
         }
@@ -418,7 +435,7 @@ export default function DashboardPage() {
 
                 return {
                     key: assigneeId,
-                    title: person?.name || "Unknown",
+                    title: person?.name || "Không xác định",
                     subtitle: team?.name || "-",
                     pending: tasks.filter((task) => task.status === "Pending" && task.timePeriod !== "Last Week").length,
                     inProgress: tasks.filter((task) => task.status === "In Progress").length,
@@ -443,8 +460,8 @@ export default function DashboardPage() {
 
             return {
                 key: projectId,
-                title: project?.name || "Unknown Project",
-                subtitle: tasks[0]?.executionPeriod || "-",
+                title: project?.name || "Dự án không xác định",
+                subtitle: tasks[0]?.executionPeriod ? formatPeriodLabel(tasks[0].executionPeriod) : "-",
                 pending: tasks.filter((task) => task.status === "Pending" && task.timePeriod !== "Last Week").length,
                 inProgress: tasks.filter((task) => task.status === "In Progress").length,
                 completed: tasks.filter((task) => task.status === "Completed").length,
@@ -631,7 +648,7 @@ export default function DashboardPage() {
                                                     </span>
                                                 </div>
                                                 <Badge variant="secondary" className="mt-3 shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-semibold">
-                                                    {item.value} task · {percentage}%
+                                                    {item.value} việc · {percentage}%
                                                 </Badge>
                                             </div>
                                         )
@@ -653,7 +670,7 @@ export default function DashboardPage() {
                                 <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">{scopedProjects.length}</p>
                             </div>
                             <div className="rounded-xl bg-gray-50 p-4 dark:bg-gray-800">
-                                <p className="text-sm text-gray-500 dark:text-gray-400">Task đang lọc</p>
+                                <p className="text-sm text-gray-500 dark:text-gray-400">Việc đang lọc</p>
                                 <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">{totalTasks}</p>
                             </div>
                             <div className="rounded-xl bg-gray-50 p-4 dark:bg-gray-800">
@@ -682,7 +699,7 @@ export default function DashboardPage() {
                                 Bảng báo cáo chi tiết
                             </CardTitle>
                             <button className="inline-flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                                {selectedPeriod === "all" ? "Tất cả kỳ" : selectedPeriod}
+                                {formatPeriodLabel(selectedPeriod)}
                                 <ChevronDown className="h-4 w-4" />
                             </button>
                         </div>
@@ -1287,7 +1304,7 @@ export default function DashboardPage() {
                                                                                             }}
                                                                                         >
                                                                                             {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
-                                                                                            Reset
+                                                                                            Đặt lại
                                                                                         </Button>
                                                                                     </div>
                                                                                 </td>
@@ -1335,7 +1352,7 @@ export default function DashboardPage() {
                                                                                             }}
                                                                                         >
                                                                                             {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
-                                                                                            Reset
+                                                                                            Đặt lại
                                                                                         </Button>
                                                                                     </div>
                                                                                 </td>
@@ -1404,7 +1421,7 @@ export default function DashboardPage() {
                                                                                         }}
                                                                                     >
                                                                                         {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
-                                                                                        Reset
+                                                                                        Đặt lại
                                                                                     </Button>
                                                                                 </td>
                                                                                 <td className="px-5 py-3 text-xs text-gray-400">

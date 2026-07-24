@@ -25,6 +25,19 @@ type ProjectSummary = {
     latestPeriod: TimePeriod | null
 }
 
+function formatPeriodLabel(period: TimePeriod | null) {
+    switch (period) {
+        case "This Week":
+            return "Tuần này"
+        case "Last Week":
+            return "Tuần trước"
+        case "This Month":
+            return "Tháng này"
+        default:
+            return "-"
+    }
+}
+
 export default function ProjectsPage() {
     const router = useRouter()
     const { user } = useAuth()
@@ -36,8 +49,8 @@ export default function ProjectsPage() {
         findPersonForAuthUser(user, people) ??
         people.find((person) => person.id === currentUserId) ?? {
             id: user?.id ?? "guest-user",
-            name: user?.name ?? "Guest User",
-            role: "Member",
+            name: user?.name ?? "Khách",
+            role: "Thành viên",
             email: user?.email ?? "",
             imageURL: "/placeholder.svg",
             workingHours: { start: "09:00", end: "17:00", timezone: "UTC" },
@@ -102,11 +115,11 @@ export default function ProjectsPage() {
             <div className="mx-auto max-w-7xl space-y-6">
                 <div className="flex items-end justify-between gap-4">
                     <div>
-                        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Teams</h1>
+                        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Nhóm</h1>
                         <p className="mt-2 text-gray-600 dark:text-gray-400">
                             {isAdmin
-                                ? "Theo dõi tất cả team đang tồn tại trong hệ thống và các thành viên thuộc từng team."
-                                : `Theo dõi các team bạn đang tham gia cùng những thành viên được cấp quyền hiển thị trong team ${getTeamById(currentUser.team, teams)?.name ?? ""}.`}
+                                ? "Theo dõi tất cả nhóm đang tồn tại trong hệ thống và các thành viên thuộc từng nhóm."
+                                : `Theo dõi các nhóm bạn đang tham gia cùng những thành viên được cấp quyền hiển thị trong nhóm ${getTeamById(currentUser.team, teams)?.name ?? ""}.`}
                         </p>
                     </div>
                 </div>
@@ -114,25 +127,25 @@ export default function ProjectsPage() {
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                     <Card className="border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
                         <CardContent className="p-5">
-                            <p className="text-sm text-gray-500 dark:text-gray-400">Visible Teams</p>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">Nhóm hiển thị</p>
                             <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">{totals.projects}</p>
                         </CardContent>
                     </Card>
                     <Card className="border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
                         <CardContent className="p-5">
-                            <p className="text-sm text-gray-500 dark:text-gray-400">Total Tasks</p>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">Tổng số việc</p>
                             <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">{totals.tasks}</p>
                         </CardContent>
                     </Card>
                     <Card className="border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
                         <CardContent className="p-5">
-                            <p className="text-sm text-gray-500 dark:text-gray-400">Completed Tasks</p>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">Việc đã hoàn thành</p>
                             <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">{totals.completed}</p>
                         </CardContent>
                     </Card>
                     <Card className="border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
                         <CardContent className="p-5">
-                            <p className="text-sm text-gray-500 dark:text-gray-400">Contributors</p>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">Người tham gia</p>
                             <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">{totals.contributors}</p>
                         </CardContent>
                     </Card>
@@ -141,7 +154,7 @@ export default function ProjectsPage() {
                 {visibleProjects.length === 0 ? (
                     <Card className="border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
                         <CardContent className="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
-                            Không có team nào phù hợp với phạm vi quyền hiện tại.
+                            Không có nhóm nào phù hợp với phạm vi quyền hiện tại.
                         </CardContent>
                     </Card>
                 ) : (
@@ -161,7 +174,7 @@ export default function ProjectsPage() {
                                                 </CardTitle>
                                             </div>
                                             <p className="text-sm text-gray-500 dark:text-gray-400">
-                                                Kỳ gần nhất: {project.latestPeriod ?? "-"}
+                                                Kỳ gần nhất: {formatPeriodLabel(project.latestPeriod)}
                                             </p>
                                         </div>
                                         <Button
@@ -170,7 +183,7 @@ export default function ProjectsPage() {
                                             onClick={() => router.push(`/?projectId=${project.id}`)}
                                         >
                                             <FolderOpen className="mr-2 h-4 w-4" />
-                                            Open Team
+                                            Mở nhóm
                                         </Button>
                                     </div>
                                 </CardHeader>
@@ -179,7 +192,7 @@ export default function ProjectsPage() {
                                         <div className="rounded-xl bg-gray-50 p-4 dark:bg-gray-800">
                                             <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
                                                 <BarChart3 className="h-4 w-4" />
-                                                <span className="text-sm">Total Tasks</span>
+                                                <span className="text-sm">Tổng số việc</span>
                                             </div>
                                             <p className="mt-2 text-2xl font-bold text-gray-900 dark:text-white">
                                                 {project.totalTasks}
@@ -188,7 +201,7 @@ export default function ProjectsPage() {
                                         <div className="rounded-xl bg-gray-50 p-4 dark:bg-gray-800">
                                             <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
                                                 <Users className="h-4 w-4" />
-                                                <span className="text-sm">Members</span>
+                                                <span className="text-sm">Thành viên</span>
                                             </div>
                                             <p className="mt-2 text-2xl font-bold text-gray-900 dark:text-white">
                                                 {project.contributors.length}
@@ -199,19 +212,19 @@ export default function ProjectsPage() {
                                     <div className="flex flex-wrap gap-2">
                                         <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300">
                                             <Clock3 className="mr-1 h-3 w-3" />
-                                            In Progress: {project.inProgress}
+                                            Đang thực hiện: {project.inProgress}
                                         </Badge>
                                         <Badge className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300">
                                             <CheckCircle2 className="mr-1 h-3 w-3" />
-                                            Completed: {project.completed}
+                                            Hoàn thành: {project.completed}
                                         </Badge>
                                         <Badge className="bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-300">
-                                            Pending: {project.pending}
+                                            Chờ thực hiện: {project.pending}
                                         </Badge>
                                     </div>
 
                                     <div className="space-y-2">
-                                        <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Members</p>
+                                        <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Thành viên</p>
                                         <div className="flex flex-wrap gap-2">
                                             {project.contributors.map((assigneeId) => {
                                                 const person = people.find((item) => item.id === assigneeId)

@@ -119,20 +119,20 @@ export default function GlobalError({
                         <div className="error-icon">!</div>
                         <div>
                             <p className="error-message">
-                                An application error has occurred while loading{' '}
+                                Đã xảy ra lỗi khi tải{' '}
                                 <code>{pathname || '/'}</code>
                             </p>
                         </div>
                     </div>
                     <div className="error-summary">
-                        {error.message || 'Unknown error'}
+                        {error.message || 'Lỗi không xác định'}
                     </div>
                     {error.stack && (
                         <div className="error-details-wrapper">
                             <details className="error-details">
                                 <summary>
                                     <span className="chevron">▼</span>
-                                    View full error trace
+                                    Xem chi tiết lỗi
                                 </summary>
                             </details>
                             <div className="error-stack-slot">
