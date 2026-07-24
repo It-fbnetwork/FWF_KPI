@@ -172,6 +172,11 @@ export default function PeoplePage() {
     const shouldEditStoreLeadLocation =
         personForm.team === "store" &&
         personForm.role === "Cửa hàng trưởng"
+    const shouldEditTechnicianLocation =
+        Boolean(editingPerson) &&
+        personForm.team === "store" &&
+        personForm.role === "Kỹ thuật viên"
+    const shouldEditStoreLocation = shouldEditStoreLeadLocation || shouldEditTechnicianLocation
     const regionBranches = useMemo(() => {
         const branches = STORE_BRANCHES_BY_REGION[personForm.storeRegion] ?? []
         if (!isStoreManager) return branches
@@ -460,6 +465,14 @@ export default function PeoplePage() {
             })
             return
         }
+        if (shouldEditTechnicianLocation && personForm.storeBranchIds.length !== 1) {
+            toast({
+                title: "Thiếu cửa hàng",
+                description: "Vui lòng chọn 1 cửa hàng cho kỹ thuật viên.",
+                variant: "destructive",
+            })
+            return
+        }
 
         setIsSubmitting(true)
 
@@ -474,8 +487,8 @@ export default function PeoplePage() {
                     email: personForm.email,
                     team: personForm.team,
                     imageURL: personForm.imageURL,
-                    storeRegion: shouldEditStoreLeadLocation ? personForm.storeRegion : undefined,
-                    storeBranchIds: shouldEditStoreLeadLocation ? personForm.storeBranchIds : undefined,
+                    storeRegion: shouldEditStoreLocation ? personForm.storeRegion : undefined,
+                    storeBranchIds: shouldEditStoreLocation ? personForm.storeBranchIds : undefined,
                     storeLeadUserId: canEditTechnicianSupervisor ? personForm.storeLeadUserId : undefined,
                     storeManagerUserId: canEditStoreLeadManager && !shouldEditStoreLeadLocation ? personForm.storeManagerUserId : undefined,
                     workingHours: {
@@ -613,9 +626,9 @@ export default function PeoplePage() {
                                         {person.workingHours.start} - {person.workingHours.end} {person.workingHours.timezone}
                                     </span>
                                     {isWorking ? (
-                                        <span className="ml-2 text-green-600 dark:text-green-400">• Online</span>
+                                        <span className="ml-2 text-green-600 dark:text-green-400">• Đang làm việc</span>
                                     ) : (
-                                        <span className="ml-2 text-gray-400 dark:text-gray-500">• Offline</span>
+                                        <span className="ml-2 text-gray-400 dark:text-gray-500">• Ngoài giờ</span>
                                     )}
                                 </div>
                             </div>
@@ -654,7 +667,7 @@ export default function PeoplePage() {
                             <div className="flex items-center space-x-3">
                                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{team.name}</h3>
                                 <Badge className={team.color}>
-                                    {teamPeople.length} member{teamPeople.length !== 1 ? "s" : ""}
+                                    {teamPeople.length} thành viên
                                 </Badge>
                             </div>
                         </div>
@@ -674,9 +687,9 @@ export default function PeoplePage() {
             <div className="mb-6">
                 <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
                     <div>
-                        <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">People</h1>
+                        <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Nhân sự</h1>
                         <p className="text-gray-600 dark:text-gray-400">
-                            Manage your team members and view their availability
+                            Quản lý thành viên trong nhóm và theo dõi khung giờ làm việc.
                         </p>
                     </div>
                     {canManagePeople ? (
@@ -701,7 +714,7 @@ export default function PeoplePage() {
                     <div className="relative">
                         <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 w-4 h-4" />
                         <Input
-                            placeholder="Search people by name or email..."
+                            placeholder="Tìm nhân sự theo tên hoặc email..."
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                             className="pl-10 bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white"
@@ -719,8 +732,8 @@ export default function PeoplePage() {
                                 <Filter className="w-4 h-4 mr-2" />
                                 {selectedTeam === "all"
                                     ? isAdmin
-                                        ? "All Teams"
-                                        : getTeamById(currentTeamId, teams)?.name ?? "My Team"
+                                        ? "Tất cả nhóm"
+                                        : getTeamById(currentTeamId, teams)?.name ?? "Nhóm của tôi"
                                     : getTeamById(selectedTeam, teams)?.name}
                                 <ChevronDown className="w-4 h-4 ml-2" />
                             </Button>
@@ -730,7 +743,7 @@ export default function PeoplePage() {
                                 onClick={() => setSelectedTeam("all")}
                                 className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
                             >
-                                {isAdmin ? "All Teams" : getTeamById(currentTeamId, teams)?.name ?? "My Team"}
+                                {isAdmin ? "Tất cả nhóm" : getTeamById(currentTeamId, teams)?.name ?? "Nhóm của tôi"}
                             </DropdownMenuItem>
                             {visibleTeams.map((team) => (
                                 <DropdownMenuItem
@@ -760,8 +773,8 @@ export default function PeoplePage() {
 
             <div className="mb-4">
                 <p className="text-sm text-gray-600 dark:text-gray-400">
-                    Showing {filteredPeople.length} of {accessiblePeople.length} people
-                    {selectedTeam !== "all" && ` in ${getTeamById(selectedTeam, teams)?.name}`}
+                    Đang hiển thị {filteredPeople.length}/{accessiblePeople.length} nhân sự
+                    {selectedTeam !== "all" && ` trong ${getTeamById(selectedTeam, teams)?.name}`}
                 </p>
             </div>
 
@@ -769,8 +782,8 @@ export default function PeoplePage() {
                 {filteredPeople.length === 0 ? (
                     <div className="text-center py-12">
                         <Users className="w-12 h-12 mx-auto mb-4 text-gray-400 dark:text-gray-500" />
-                        <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No people found</h3>
-                        <p className="text-gray-600 dark:text-gray-400">Try adjusting your search or filter criteria</p>
+                        <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Không tìm thấy nhân sự</h3>
+                        <p className="text-gray-600 dark:text-gray-400">Thử đổi từ khóa tìm kiếm hoặc bộ lọc.</p>
                     </div>
                 ) : (
                     <>
@@ -782,17 +795,17 @@ export default function PeoplePage() {
             </div>
 
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-                <DialogContent className="sm:max-w-xl">
-                    <DialogHeader>
+                <DialogContent className="!flex !max-h-[calc(100dvh-1rem)] !max-w-2xl !flex-col !gap-0 !overflow-hidden !p-0 sm:!max-h-[calc(100dvh-2rem)]">
+                    <DialogHeader className="shrink-0 border-b border-gray-200 px-5 py-4 pr-14 dark:border-gray-800 sm:px-6 sm:py-5">
                         <DialogTitle>{editingPerson ? "Chỉnh sửa nhân sự" : "Thêm nhân sự mới"}</DialogTitle>
                         <DialogDescription>
                             {editingPerson
                                 ? "Cập nhật thông tin nhân sự trong hệ thống."
-                                : "Tạo hồ sơ nhân sự mới để admin quản lý trong data."}
+                                : "Tạo hồ sơ nhân sự mới để quản trị viên quản lý trong hệ thống."}
                         </DialogDescription>
                     </DialogHeader>
 
-                    <div className="grid gap-4 py-2">
+                    <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto overscroll-contain px-5 py-4 sm:px-6">
                         <div className="grid gap-2">
                             <Label htmlFor="person-name">Họ và tên</Label>
                             <Input id="person-name" value={personForm.name} onChange={(event) => updatePersonForm("name", event.target.value)} />
@@ -803,10 +816,10 @@ export default function PeoplePage() {
                         </div>
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                             <div className="grid gap-2">
-                                <Label htmlFor="person-role">Role hiển thị</Label>
+                                <Label htmlFor="person-role">Vai trò hiển thị</Label>
                                 <Select value={personForm.role} onValueChange={(value) => updatePersonForm("role", value)}>
                                     <SelectTrigger id="person-role">
-                                        <SelectValue placeholder="Chọn role hiển thị" />
+                                        <SelectValue placeholder="Chọn vai trò hiển thị" />
                                     </SelectTrigger>
                                     <SelectContent>
                                         {availablePersonRoles.map((role) => (
@@ -818,14 +831,14 @@ export default function PeoplePage() {
                                 </Select>
                             </div>
                             <div className="grid gap-2">
-                                <Label>Team</Label>
+                                <Label>Nhóm</Label>
                                 <Select
                                     value={personForm.team}
                                     onValueChange={(value) => updatePersonForm("team", value)}
                                     disabled={isStoreTrainer}
                                 >
                                     <SelectTrigger>
-                                        <SelectValue placeholder="Chọn team" />
+                                        <SelectValue placeholder="Chọn nhóm" />
                                     </SelectTrigger>
                                     <SelectContent>
                                         {(isStoreTrainer ? teams.filter((team) => team.id === "store") : teams).map((team) => (
@@ -860,10 +873,10 @@ export default function PeoplePage() {
                                 </Select>
                             </div>
                         )}
-                        {shouldEditStoreLeadLocation && (
+                        {shouldEditStoreLocation && (
                             <div className="grid gap-3 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
                                 <div className="grid gap-2">
-                                    <Label htmlFor="store-lead-region">Khu vực</Label>
+                                    <Label htmlFor="store-location-region">Khu vực</Label>
                                     <Select
                                         value={personForm.storeRegion}
                                         onValueChange={(value) => {
@@ -875,7 +888,7 @@ export default function PeoplePage() {
                                             }))
                                         }}
                                     >
-                                        <SelectTrigger id="store-lead-region">
+                                        <SelectTrigger id="store-location-region">
                                             <SelectValue placeholder="Chọn khu vực" />
                                         </SelectTrigger>
                                         <SelectContent>
@@ -888,8 +901,8 @@ export default function PeoplePage() {
                                     </Select>
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label>Chi nhánh (chọn 1)</Label>
-                                    <div className="max-h-52 space-y-2 overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-950">
+                                    <Label>{shouldEditTechnicianLocation ? "Cửa hàng (chọn 1)" : "Chi nhánh (chọn 1)"}</Label>
+                                    <div className="max-h-[28dvh] space-y-2 overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-950 sm:max-h-52">
                                         {regionBranches.length === 0 ? (
                                             <p className="px-2 py-3 text-sm text-gray-500 dark:text-gray-400">
                                                 Không có chi nhánh khả dụng trong khu vực này.
@@ -941,7 +954,7 @@ export default function PeoplePage() {
                             </div>
                         )}
                         <div className="grid gap-2">
-                            <Label htmlFor="person-image">Avatar URL</Label>
+                            <Label htmlFor="person-image">Đường dẫn ảnh đại diện</Label>
                             <Input id="person-image" value={personForm.imageURL} onChange={(event) => updatePersonForm("imageURL", event.target.value)} placeholder="https://..." />
                         </div>
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -954,13 +967,13 @@ export default function PeoplePage() {
                                 <Input id="person-end" value={personForm.end} onChange={(event) => updatePersonForm("end", event.target.value)} placeholder="17:00" />
                             </div>
                             <div className="grid gap-2">
-                                <Label htmlFor="person-timezone">Timezone</Label>
+                                <Label htmlFor="person-timezone">Múi giờ</Label>
                                 <Input id="person-timezone" value={personForm.timezone} onChange={(event) => updatePersonForm("timezone", event.target.value)} placeholder="UTC+7" />
                             </div>
                         </div>
                     </div>
 
-                    <DialogFooter>
+                    <DialogFooter className="shrink-0 gap-2 border-t border-gray-200 bg-background px-5 py-4 dark:border-gray-800 sm:px-6">
                         <Button variant="outline" onClick={() => setIsDialogOpen(false)} disabled={isSubmitting}>
                             Hủy
                         </Button>

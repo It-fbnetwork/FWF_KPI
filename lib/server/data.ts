@@ -1207,7 +1207,12 @@ async function createApprovedUserFromRequest(
   let resolvedStoreRegion = request.storeRegion;
   let resolvedStoreBranchIds = request.storeBranchIds ?? [];
 
-  if (request.department === "Cửa hàng" && request.role === "store_technician" && request.storeLeadUserId) {
+  if (
+    request.department === "Cửa hàng" &&
+    request.role === "store_technician" &&
+    request.storeLeadUserId &&
+    (!resolvedStoreRegion || resolvedStoreBranchIds.length === 0)
+  ) {
     const leadUser = await db.collection<DbUser>("users").findOne({ _id: request.storeLeadUserId, verified: true });
     if (leadUser?.storeRegion && (leadUser.storeBranchIds?.length ?? 0) > 0) {
       resolvedStoreRegion = leadUser.storeRegion;
@@ -2942,7 +2947,8 @@ export async function createRegistrationOtp(input: {
             return { ok: false, message: "Cửa hàng trưởng chưa có cấu hình khu vực/chi nhánh." };
           }
         }
-      } else if (input.role !== "store_trainer") {
+      }
+      if (input.role !== "store_trainer") {
         if (!normalizedStoreRegion || !(STORE_REGIONS as readonly string[]).includes(normalizedStoreRegion)) {
           return { ok: false, message: "Vui lòng chọn khu vực hợp lệ." };
         }
@@ -2974,11 +2980,11 @@ export async function createRegistrationOtp(input: {
       role: input.role,
       department: input.department,
       storeRegion:
-        input.department === "Cửa hàng" && input.role !== "store_technician" && input.role !== "store_trainer"
+        input.department === "Cửa hàng" && input.role !== "store_trainer"
           ? normalizedStoreRegion
           : undefined,
       storeBranchIds:
-        input.department === "Cửa hàng" && input.role !== "store_technician" && input.role !== "store_trainer"
+        input.department === "Cửa hàng" && input.role !== "store_trainer"
           ? normalizedStoreBranchIds
           : undefined,
       storeLeadUserId: input.department === "Cửa hàng" && input.role === "store_technician" && normalizedStoreLeadUserId ? normalizedStoreLeadUserId : undefined,
@@ -3093,7 +3099,8 @@ export async function createRegistrationOtp(input: {
           return { ok: false, message: "Cửa hàng trưởng chưa có cấu hình khu vực/chi nhánh." };
         }
       }
-    } else if (input.role !== "store_trainer") {
+    }
+    if (input.role !== "store_trainer") {
       if (!normalizedStoreRegion || !(STORE_REGIONS as readonly string[]).includes(normalizedStoreRegion)) {
         return { ok: false, message: "Vui lòng chọn khu vực hợp lệ." };
       }
@@ -3126,11 +3133,11 @@ export async function createRegistrationOtp(input: {
     role: input.role,
     department: input.department,
     storeRegion:
-      input.department === "Cửa hàng" && input.role !== "store_technician" && input.role !== "store_trainer"
+      input.department === "Cửa hàng" && input.role !== "store_trainer"
         ? normalizedStoreRegion
         : undefined,
     storeBranchIds:
-      input.department === "Cửa hàng" && input.role !== "store_technician" && input.role !== "store_trainer"
+      input.department === "Cửa hàng" && input.role !== "store_trainer"
         ? normalizedStoreBranchIds
         : undefined,
     storeLeadUserId: input.department === "Cửa hàng" && input.role === "store_technician" && normalizedStoreLeadUserId ? normalizedStoreLeadUserId : undefined,
@@ -3322,7 +3329,12 @@ export async function verifyRegistrationOtp(email: string, otp: string) {
 
     let resolvedStoreRegion = pending.storeRegion;
     let resolvedStoreBranchIds = pending.storeBranchIds ?? [];
-    if (pending.department === "Cửa hàng" && pending.role === "store_technician" && pending.storeLeadUserId) {
+    if (
+      pending.department === "Cửa hàng" &&
+      pending.role === "store_technician" &&
+      pending.storeLeadUserId &&
+      (!resolvedStoreRegion || resolvedStoreBranchIds.length === 0)
+    ) {
       const leadUserRes = await pgQuery("select store_region, store_branch_ids from users where id = $1 and verified = true limit 1", [
         pending.storeLeadUserId
       ]);
@@ -3588,6 +3600,8 @@ type SelfProfileMutationInput = {
   name: string;
   email: string;
   imageURL?: string;
+  storeRegion?: string;
+  storeBranchIds?: number[];
   workingHours: Person["workingHours"];
 };
 
@@ -3890,6 +3904,9 @@ export async function updatePersonRecord(
     const directStoreLeadLocation = updates.team === "store" && normalizedRole === "Cửa hàng trưởng" && updates.storeBranchIds !== undefined
       ? normalizeStoreLeadLocationInput(actor, updates)
       : null;
+    const directTechnicianLocation = updates.team === "store" && normalizedRole === "Kỹ thuật viên" && updates.storeBranchIds !== undefined
+      ? normalizeStoreLeadLocationInput(actor, updates)
+      : null;
     const nextAuthRole = updates.team === "store" ? mapStoreDisplayRoleToAuthRole(normalizedRole) : undefined;
     let nextStoreLeadUser: UserAccount | null = null;
     let shouldClearTechnicianSupervisor = false;
@@ -4040,6 +4057,26 @@ export async function updatePersonRecord(
         ]
       );
     }
+    if (directTechnicianLocation) {
+      const targetUsersRes = await pgQuery("select * from users where person_id = $1 or email = $2", [personId, existingPerson.email]);
+      const targetTechnicianUserForLocation = targetUsersRes.rows
+        .map((row) => mapDbUser(mapPgUserRow(row)))
+        .find((targetUser) => targetUser.role === "store_technician") ?? null;
+      if (!targetTechnicianUserForLocation) {
+        throw new Error("Chỉ được cập nhật khu vực/cửa hàng cho tài khoản Kỹ thuật viên.");
+      }
+      await pgQuery(
+        `update users
+         set store_region=$2, store_branch_ids=$3::jsonb, updated_at=$4::timestamptz
+         where id=$1`,
+        [
+          targetTechnicianUserForLocation.id,
+          directTechnicianLocation.storeRegion,
+          JSON.stringify(directTechnicianLocation.storeBranchIds),
+          now
+        ]
+      );
+    }
 
     const updatedRes = await pgQuery("select * from people where id = $1 limit 1", [personId]);
     return updatedRes.rows[0] ? mapDbPerson(mapPgPersonRow(updatedRes.rows[0])) : null;
@@ -4095,6 +4132,9 @@ export async function updatePersonRecord(
     }
   }
   const directStoreLeadLocation = updates.team === "store" && normalizedRole === "Cửa hàng trưởng" && updates.storeBranchIds !== undefined
+    ? normalizeStoreLeadLocationInput(actor, updates)
+    : null;
+  const directTechnicianLocation = updates.team === "store" && normalizedRole === "Kỹ thuật viên" && updates.storeBranchIds !== undefined
     ? normalizeStoreLeadLocationInput(actor, updates)
     : null;
   const nextAuthRole = updates.team === "store" ? mapStoreDisplayRoleToAuthRole(normalizedRole) : undefined;
@@ -4252,6 +4292,23 @@ export async function updatePersonRecord(
       }
     );
   }
+  if (directTechnicianLocation) {
+    const targetUsers = await db.collection<DbUser>("users").find({ $or: [{ personId }, { email: existingPerson.email }] }).toArray();
+    const targetTechnicianUserForLocation = targetUsers.map(mapDbUser).find((targetUser) => targetUser.role === "store_technician") ?? null;
+    if (!targetTechnicianUserForLocation) {
+      throw new Error("Chỉ được cập nhật khu vực/cửa hàng cho tài khoản Kỹ thuật viên.");
+    }
+    await db.collection<DbUser>("users").updateOne(
+      { _id: targetTechnicianUserForLocation.id },
+      {
+        $set: {
+          storeRegion: directTechnicianLocation.storeRegion,
+          storeBranchIds: directTechnicianLocation.storeBranchIds,
+          updatedAt: new Date().toISOString()
+        }
+      }
+    );
+  }
 
   const updatedPerson = await db.collection<DbPerson>("people").findOne({ _id: personId });
   return updatedPerson ? mapDbPerson(updatedPerson) : null;
@@ -4264,6 +4321,23 @@ export async function updateOwnProfile(
   const actor = await getSessionActor(sessionUserId);
   if (!actor) {
     throw new Error("Unauthorized");
+  }
+
+  const canUpdateOwnStoreLocation = actor.user.department === "Cửa hàng" && actor.user.role === "store_technician";
+  const normalizedStoreRegion = updates.storeRegion?.trim() as StoreRegion | undefined;
+  const normalizedStoreBranchIds = Array.from(
+    new Set((updates.storeBranchIds ?? []).map((value) => Number(value)).filter(Number.isFinite))
+  );
+  if (canUpdateOwnStoreLocation) {
+    if (!normalizedStoreRegion || !(STORE_REGIONS as readonly string[]).includes(normalizedStoreRegion)) {
+      throw new Error("Vui lòng chọn khu vực hợp lệ.");
+    }
+    if (normalizedStoreBranchIds.length !== 1) {
+      throw new Error("Kỹ thuật viên cần chọn đúng 1 cửa hàng.");
+    }
+    if (!normalizedStoreBranchIds.every((branchId) => STORE_BRANCH_ID_SET.has(branchId))) {
+      throw new Error("Danh sách cửa hàng không hợp lệ.");
+    }
   }
 
   if (shouldUseSupabasePhaseA()) {
@@ -4298,9 +4372,21 @@ export async function updateOwnProfile(
 
     await pgQuery(
       `update users
-       set name = $1, email = $2, updated_at = $3::timestamptz
+       set name = $1,
+           email = $2,
+           store_region = case when $5::boolean then $6 else store_region end,
+           store_branch_ids = case when $5::boolean then $7::jsonb else store_branch_ids end,
+           updated_at = $3::timestamptz
        where id = $4`,
-      [updates.name.trim(), normalizedEmail, now, actor.user.id]
+      [
+        updates.name.trim(),
+        normalizedEmail,
+        now,
+        actor.user.id,
+        canUpdateOwnStoreLocation,
+        normalizedStoreRegion ?? null,
+        JSON.stringify(normalizedStoreBranchIds)
+      ]
     );
 
     const updatedRes = await pgQuery("select * from people where id = $1 limit 1", [actor.person.id]);
@@ -4343,6 +4429,12 @@ export async function updateOwnProfile(
       $set: {
         name: updates.name.trim(),
         email: normalizedEmail,
+        ...(canUpdateOwnStoreLocation
+          ? {
+              storeRegion: normalizedStoreRegion,
+              storeBranchIds: normalizedStoreBranchIds,
+            }
+          : {}),
         updatedAt: new Date().toISOString()
       }
     }

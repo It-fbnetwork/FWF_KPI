@@ -23,6 +23,7 @@ import { useDirectory } from "@/components/directory-provider"
 import { useWorkspace } from "@/components/workspace-context"
 import { isAdminLikeRole } from "@/lib/auth"
 import { findPersonForAuthUser, getTeamById } from "@/lib/people"
+import { STORE_BRANCHES_BY_REGION, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches"
 import {
     Plus,
     Bell,
@@ -58,6 +59,8 @@ type ProfileFormState = {
     name: string
     email: string
     imageURL: string
+    storeRegion: StoreRegion
+    storeBranchIds: number[]
     start: string
     end: string
     timezone: string
@@ -73,12 +76,12 @@ type ApprovalRequest = {
 }
 
 const roleDisplayLabel: Record<ApprovalRequest["role"], string> = {
-    admin: "Admin",
+    admin: "Quản trị viên",
     ceo: "CEO",
-    leader: "Leader",
+    leader: "Trưởng nhóm",
     employee: "Nhân viên",
     store_staff: "Nhân viên cửa hàng",
-    store_trainer: "Trainer",
+    store_trainer: "Đào tạo viên",
     store_manager: "Quản lí khu vực",
     store_lead: "Cửa hàng trưởng",
     store_technician: "Kỹ thuật viên"
@@ -163,7 +166,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const isAdminUser = isAdminLikeRole(user?.role)
     const todayLabel = useMemo(
         () =>
-            new Intl.DateTimeFormat("en-GB", {
+            new Intl.DateTimeFormat("vi-VN", {
                 weekday: "long",
                 day: "2-digit",
                 month: "long",
@@ -175,21 +178,30 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const currentUser =
         findPersonForAuthUser(user, people) ?? {
             id: user?.id ?? "guest-user",
-            name: user?.name ?? "Guest User",
+            name: user?.name ?? "Khách",
             role: "Nhân viên",
             email: user?.email ?? "",
             imageURL: "/placeholder.svg",
             workingHours: { start: "09:00", end: "17:00", timezone: "UTC" },
             team: "product",
         }
+    const currentStoreRegion = ((currentUser.storeRegion ?? user?.storeRegion ?? "Hồ Chí Minh") as StoreRegion)
+    const currentStoreBranchIds = currentUser.storeBranchIds ?? user?.storeBranchIds ?? []
     const [profileForm, setProfileForm] = useState<ProfileFormState>({
         name: currentUser.name,
         email: currentUser.email,
         imageURL: currentUser.imageURL === "/placeholder.svg" ? "" : currentUser.imageURL,
+        storeRegion: currentStoreRegion,
+        storeBranchIds: currentStoreBranchIds,
         start: currentUser.workingHours.start,
         end: currentUser.workingHours.end,
         timezone: currentUser.workingHours.timezone,
     })
+    const canUpdateOwnStoreLocation = user?.department === "Cửa hàng" && user?.role === "store_technician"
+    const profileRegionBranches = useMemo(
+        () => STORE_BRANCHES_BY_REGION[profileForm.storeRegion] ?? [],
+        [profileForm.storeRegion],
+    )
 
     const canAccessELearning =
         user?.department === "Cửa hàng" || user?.role === "admin" || user?.role === "ceo"
@@ -198,19 +210,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         (user?.department === "Cửa hàng" || user?.role?.startsWith("store_"))
     const sidebarItems: SidebarItem[] = isStoreSidebarUser
         ? [
-            { name: "Dashboard", icon: BarChart3, path: "/dashboard" },
-            { name: "People", icon: Users, path: "/people" },
+            { name: "Tổng quan", icon: BarChart3, path: "/dashboard" },
+            { name: "Nhân sự", icon: Users, path: "/people" },
             { name: "E-learning", icon: FileText, path: "/documents" },
-            { name: "Chats", icon: MessageSquare, path: "/chats" },
+            { name: "Tin nhắn", icon: MessageSquare, path: "/chats" },
         ]
         : [
-            { name: "Dashboard", icon: BarChart3, path: "/dashboard" },
-            { name: "Teams", icon: FileText, path: "/projects" },
-            { name: "My Task", icon: CheckCircle, path: "/" },
-            { name: "People", icon: Users, path: "/people" },
-            { name: "Chats", icon: MessageSquare, path: "/chats" },
+            { name: "Tổng quan", icon: BarChart3, path: "/dashboard" },
+            { name: "Nhóm", icon: FileText, path: "/projects" },
+            { name: "Việc của tôi", icon: CheckCircle, path: "/" },
+            { name: "Nhân sự", icon: Users, path: "/people" },
+            { name: "Tin nhắn", icon: MessageSquare, path: "/chats" },
             ...(canAccessELearning ? [{ name: "E-learning", icon: FileText, path: "/documents" } as SidebarItem] : []),
-            { name: "Receipts", icon: Receipt, path: "/recipts" },
+            { name: "Biên nhận", icon: Receipt, path: "/recipts" },
         ]
     const isOperationsLeader = user?.role === "leader" && user?.department === "Vận hành"
     if (isOperationsLeader) {
@@ -218,12 +230,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
 
     const colorOptions = [
-        { name: "Blue", value: "bg-blue-200 dark:bg-blue-800" },
-        { name: "Pink", value: "bg-pink-200 dark:bg-pink-800" },
-        { name: "Green", value: "bg-green-200 dark:bg-green-800" },
-        { name: "Yellow", value: "bg-yellow-200 dark:bg-yellow-800" },
-        { name: "Purple", value: "bg-purple-200 dark:bg-purple-800" },
-        { name: "Red", value: "bg-red-200 dark:bg-red-800" },
+        { name: "Xanh dương", value: "bg-blue-200 dark:bg-blue-800" },
+        { name: "Hồng", value: "bg-pink-200 dark:bg-pink-800" },
+        { name: "Xanh lá", value: "bg-green-200 dark:bg-green-800" },
+        { name: "Vàng", value: "bg-yellow-200 dark:bg-yellow-800" },
+        { name: "Tím", value: "bg-purple-200 dark:bg-purple-800" },
+        { name: "Đỏ", value: "bg-red-200 dark:bg-red-800" },
     ]
 
     const buildNotification = useCallback((event: RealtimeEventPayload, id: string, unread: boolean) => {
@@ -240,16 +252,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         if (event.type === "workspace.updated") {
             if (event.entityType === "task" && event.action === "assigned") {
-                title = "Task được giao"
-                message = `${actorName} đã giao task "${entityLabel}" cho bạn.`
+                title = "Việc được giao"
+                message = `${actorName} đã giao việc "${entityLabel}" cho bạn.`
             } else if (event.entityType === "task" && event.action === "created") {
-                title = "Task mới"
-                message = `${actorName} vừa tạo task "${entityLabel}".`
+                title = "Việc mới"
+                message = `${actorName} vừa tạo việc "${entityLabel}".`
             } else if (event.entityType === "project" && event.action === "created") {
-                title = "Team mới"
-                message = `${actorName} vừa tạo team "${entityLabel}".`
+                title = "Nhóm mới"
+                message = `${actorName} vừa tạo nhóm "${entityLabel}".`
             } else {
-                title = "Workspace cập nhật"
+                title = "Không gian làm việc cập nhật"
                 message = `${actorName} vừa cập nhật "${entityLabel}".`
             }
         } else if (event.type === "schedule.updated") {
@@ -476,6 +488,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             name: currentUser.name,
             email: currentUser.email,
             imageURL: currentUser.imageURL === "/placeholder.svg" ? "" : currentUser.imageURL,
+            storeRegion: ((currentUser.storeRegion ?? user?.storeRegion ?? "Hồ Chí Minh") as StoreRegion),
+            storeBranchIds: currentUser.storeBranchIds ?? user?.storeBranchIds ?? [],
             start: currentUser.workingHours.start,
             end: currentUser.workingHours.end,
             timezone: currentUser.workingHours.timezone,
@@ -496,6 +510,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             })
             return
         }
+        if (canUpdateOwnStoreLocation) {
+            if (profileForm.storeBranchIds.length !== 1) {
+                toast({
+                    title: "Thiếu cửa hàng",
+                    description: "Kỹ thuật viên cần chọn đúng 1 cửa hàng đang phụ trách.",
+                    variant: "destructive",
+                })
+                return
+            }
+        }
 
         setIsProfileSubmitting(true)
 
@@ -508,6 +532,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     name: profileForm.name,
                     email: profileForm.email,
                     imageURL: profileForm.imageURL,
+                    storeRegion: canUpdateOwnStoreLocation ? profileForm.storeRegion : undefined,
+                    storeBranchIds: canUpdateOwnStoreLocation ? profileForm.storeBranchIds : undefined,
                     workingHours: {
                         start: profileForm.start,
                         end: profileForm.end,
@@ -567,12 +593,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             }
             updateProfileForm("imageURL", payload.url)
             toast({
-                title: "Upload ảnh thành công",
+                title: "Tải ảnh lên thành công",
                 description: "Ảnh đại diện đã được chọn. Nhấn \"Lưu thay đổi\" để cập nhật hồ sơ.",
             })
         } catch (error) {
             toast({
-                title: "Upload ảnh thất bại",
+                title: "Tải ảnh lên thất bại",
                 description: error instanceof Error ? error.message : "Không thể upload ảnh đại diện.",
                 variant: "destructive",
             })
@@ -674,7 +700,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <div className="p-4 border-t border-gray-200 dark:border-gray-700">
                     <div className="mb-4">
                         <div className="flex items-center justify-between mb-2">
-                            <span className="text-sm font-medium text-gray-900 dark:text-white">Teams</span>
+                            <span className="text-sm font-medium text-gray-900 dark:text-white">Nhóm</span>
                             <Dialog open={isProjectDialogOpen} onOpenChange={setIsProjectDialogOpen}>
                                 <DialogTrigger asChild>
                                     <Button size="sm" variant="ghost" className="h-6 w-6 p-0">
@@ -683,23 +709,23 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                 </DialogTrigger>
                                 <DialogContent className="bg-white dark:bg-gray-800">
                                     <DialogHeader>
-                                        <DialogTitle className="text-gray-900 dark:text-white">Add New Team</DialogTitle>
+                                        <DialogTitle className="text-gray-900 dark:text-white">Thêm nhóm mới</DialogTitle>
                                     </DialogHeader>
                                     <div className="space-y-4">
                                         <div>
                                             <Label htmlFor="project-name" className="text-gray-700 dark:text-gray-300">
-                                                Team Name
+                                                Tên nhóm
                                             </Label>
                                             <Input
                                                 id="project-name"
                                                 value={newProjectName}
                                                 onChange={(e) => setNewProjectName(e.target.value)}
-                                                placeholder="Enter team name"
+                                                placeholder="Nhập tên nhóm"
                                                 className="bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white"
                                             />
                                         </div>
                                         <div>
-                                            <Label className="text-gray-700 dark:text-gray-300">Team Color</Label>
+                                            <Label className="text-gray-700 dark:text-gray-300">Màu nhóm</Label>
                                             <div className="flex space-x-2 mt-2">
                                                 {colorOptions.map((color) => (
                                                     <button
@@ -715,7 +741,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                             </div>
                                         </div>
                                         <div>
-                                            <Label className="text-gray-700 dark:text-gray-300">Team Members</Label>
+                                            <Label className="text-gray-700 dark:text-gray-300">Thành viên nhóm</Label>
                                             <div className="mt-3 space-y-3 rounded-xl border border-gray-200 p-3 dark:border-gray-700">
                                                 {currentTeamPeople.map((person) => {
                                                     const isChecked =
@@ -756,7 +782,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                                                     <p className="text-xs text-gray-500 dark:text-gray-400">{person.role}</p>
                                                                 </div>
                                                             </div>
-                                                            {person.id === currentUser.id && <Badge variant="secondary">Owner</Badge>}
+                                                            {person.id === currentUser.id && <Badge variant="secondary">Chủ sở hữu</Badge>}
                                                         </label>
                                                     )
                                                 })}
@@ -764,10 +790,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                         </div>
                                         <div className="flex justify-end space-x-2">
                                             <Button variant="outline" onClick={() => setIsProjectDialogOpen(false)}>
-                                                Cancel
+                                                Hủy
                                             </Button>
                                             <Button onClick={handleAddProject} loading={isProjectSubmitting}>
-                                                {isProjectSubmitting ? "Creating..." : "Create Team"}
+                                                {isProjectSubmitting ? "Đang tạo..." : "Tạo nhóm"}
                                             </Button>
                                         </div>
                                     </div>
@@ -793,11 +819,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     <div className="space-y-2">
                         <button className="w-full flex items-center px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
                             <Settings className="w-4 h-4 mr-3" />
-                            Settings
+                            Cài đặt
                         </button>
                         <button className="w-full flex items-center px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
                             <HelpCircle className="w-4 h-4 mr-3" />
-                            Help & Support
+                            Trợ giúp và hỗ trợ
                             <Badge
                                 variant="secondary"
                                 className="ml-auto bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300"
@@ -824,7 +850,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                 <Menu className="h-5 w-5" />
                             </button>
                             <div className="hidden rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5 shadow-sm dark:border-gray-700 dark:bg-gray-900 md:block">
-                                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Today</p>
+                                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Hôm nay</p>
                                 <p className="text-base font-semibold text-gray-900 dark:text-white">{todayLabel}</p>
                             </div>
                             {/* App name on mobile */}
@@ -839,7 +865,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                     onClick={() => setIsProjectDialogOpen(true)}
                                 >
                                     <Plus className="w-4 h-4 mr-2" />
-                                    New Team
+                                    Nhóm mới
                                 </Button>
                                 <DropdownMenu>
                                     <DropdownMenuTrigger asChild>
@@ -849,13 +875,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                     </DropdownMenuTrigger>
                                     <DropdownMenuContent align="end" className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
                                         <DropdownMenuItem className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700">
-                                            <Folder className="w-4 h-4 mr-2" />New Folder
+                                            <Folder className="w-4 h-4 mr-2" />Thư mục mới
                                         </DropdownMenuItem>
                                         <DropdownMenuItem className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700">
-                                            <Template className="w-4 h-4 mr-2" />From Template
+                                            <Template className="w-4 h-4 mr-2" />Từ mẫu có sẵn
                                         </DropdownMenuItem>
                                         <DropdownMenuItem className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700">
-                                            <Import className="w-4 h-4 mr-2" />Import Team
+                                            <Import className="w-4 h-4 mr-2" />Nhập nhóm
                                         </DropdownMenuItem>
                                     </DropdownMenuContent>
                                 </DropdownMenu>
@@ -887,7 +913,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                 >
                                     <div className="space-y-4">
                                         <div className="flex items-center justify-between">
-                                            <h3 className="font-semibold text-gray-900 dark:text-white">Notifications</h3>
+                                            <h3 className="font-semibold text-gray-900 dark:text-white">Thông báo</h3>
                                             <Button
                                                 variant="ghost"
                                                 size="sm"
@@ -901,7 +927,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                                     }).then(() => loadNotifications())
                                                 }}
                                             >
-                                                Mark all as read
+                                                Đánh dấu đã đọc
                                             </Button>
                                         </div>
                                         <div className="flex items-center gap-2">
@@ -910,14 +936,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                                 variant={notificationTab === "all" ? "default" : "outline"}
                                                 onClick={() => setNotificationTab("all")}
                                             >
-                                                All
+                                                Tất cả
                                             </Button>
                                             <Button
                                                 size="sm"
                                                 variant={notificationTab === "unread" ? "default" : "outline"}
                                                 onClick={() => setNotificationTab("unread")}
                                             >
-                                                Unread
+                                                Chưa đọc
                                             </Button>
                                         </div>
                                         <Separator className="bg-gray-200 dark:bg-gray-700" />
@@ -984,7 +1010,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                                     loading={isLoadingMoreNotifications}
                                                     onClick={() => void loadNotifications({ append: true })}
                                                 >
-                                                    {isLoadingMoreNotifications ? "Đang tải..." : "Load more"}
+                                                    {isLoadingMoreNotifications ? "Đang tải..." : "Tải thêm"}
                                                 </Button>
                                             ) : null}
                                         </div>
@@ -1009,8 +1035,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                     align="end"
                                 >
                                     <div className="space-y-4">
-                                        <div className="flex items-center space-x-3">
-                                            <Avatar className="w-12 h-12">
+                                        <div className="flex min-w-0 items-center gap-3">
+                                            <Avatar className="h-12 w-12 shrink-0">
                                                 <AvatarImage src={currentUser.imageURL || "/placeholder.svg"} />
                                                 <AvatarFallback className="bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white">
                                                     {currentUser.name
@@ -1019,9 +1045,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                                         .join("")}
                                                 </AvatarFallback>
                                             </Avatar>
-                                            <div>
-                                                <p className="font-semibold text-gray-900 dark:text-white">{currentUser.name}</p>
-                                                <p className="text-sm text-gray-600 dark:text-gray-300">{currentUser.email}</p>
+                                            <div className="min-w-0 flex-1">
+                                                <p className="truncate font-semibold text-gray-900 dark:text-white">{currentUser.name}</p>
+                                                <p className="truncate text-sm text-gray-600 dark:text-gray-300" title={currentUser.email}>
+                                                    {currentUser.email}
+                                                </p>
                                             </div>
                                         </div>
                                         <Separator className="bg-gray-200 dark:bg-gray-700" />
@@ -1032,21 +1060,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                                 onClick={openProfileDialog}
                                             >
                                                 <User className="w-4 h-4 mr-2" />
-                                                Profile Settings
+                                                Cài đặt hồ sơ
                                             </Button>
                                             <Button
                                                 variant="ghost"
                                                 className="w-full justify-start text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
                                             >
                                                 <Settings className="w-4 h-4 mr-2" />
-                                                Account Settings
+                                                Cài đặt tài khoản
                                             </Button>
                                             <Button
                                                 variant="ghost"
                                                 className="w-full justify-start text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
                                             >
                                                 <HelpCircle className="w-4 h-4 mr-2" />
-                                                Help & Support
+                                                Trợ giúp và hỗ trợ
                                             </Button>
                                         </div>
                                         <Separator className="bg-gray-200 dark:bg-gray-700" />
@@ -1057,7 +1085,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                             onClick={handleSignOut}
                                         >
                                             <LogOut className="w-4 h-4 mr-2" />
-                                            Sign Out
+                                            Đăng xuất
                                         </Button>
                                     </div>
                                 </PopoverContent>
@@ -1099,7 +1127,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <Dialog open={isProfileDialogOpen} onOpenChange={setIsProfileDialogOpen}>
                 <DialogContent className="sm:max-w-xl bg-white dark:bg-gray-800">
                     <DialogHeader>
-                        <DialogTitle className="text-gray-900 dark:text-white">Profile Settings</DialogTitle>
+                        <DialogTitle className="text-gray-900 dark:text-white">Cài đặt hồ sơ</DialogTitle>
                         <DialogDescription>
                             Bạn có thể tự cập nhật thông tin tài khoản cá nhân tại đây.
                         </DialogDescription>
@@ -1115,7 +1143,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                             <Input id="profile-email" type="email" value={profileForm.email} onChange={(event) => updateProfileForm("email", event.target.value)} />
                         </div>
                         <div className="grid gap-2">
-                            <Label htmlFor="profile-image">Avatar URL</Label>
+                            <Label htmlFor="profile-image">Đường dẫn ảnh đại diện</Label>
                             <Input id="profile-image" value={profileForm.imageURL} onChange={(event) => updateProfileForm("imageURL", event.target.value)} placeholder="https://..." />
                             <div className="flex items-center gap-2">
                                 <input
@@ -1133,20 +1161,75 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                     disabled={isAvatarUploading || isProfileSubmitting}
                                 >
                                     <Upload className="mr-2 h-4 w-4" />
-                                    {isAvatarUploading ? "Đang upload..." : "Chọn ảnh từ máy"}
+                                    {isAvatarUploading ? "Đang tải lên..." : "Chọn ảnh từ máy"}
                                 </Button>
                             </div>
                         </div>
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                             <div className="grid gap-2">
-                                <Label>Role</Label>
+                                <Label>Vai trò</Label>
                                 <Input value={currentUser.role} disabled />
                             </div>
                             <div className="grid gap-2">
-                                <Label>Team</Label>
+                                <Label>Nhóm</Label>
                                 <Input value={getTeamById(currentUser.team, teams)?.name ?? currentUser.team} disabled />
                             </div>
                         </div>
+                        {canUpdateOwnStoreLocation ? (
+                            <div className="grid gap-4 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                                <div className="grid gap-2">
+                                    <Label htmlFor="profile-store-region">Khu vực</Label>
+                                    <select
+                                        id="profile-store-region"
+                                        value={profileForm.storeRegion}
+                                        onChange={(event) => {
+                                            updateProfileForm("storeRegion", event.target.value as StoreRegion)
+                                            updateProfileForm("storeBranchIds", [])
+                                        }}
+                                        className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-gray-900 ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 dark:text-white"
+                                    >
+                                        {STORE_REGIONS.map((region) => (
+                                            <option key={region} value={region}>
+                                                {region}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label>Cửa hàng phụ trách</Label>
+                                    <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border border-gray-200 p-2 dark:border-gray-700">
+                                        {profileRegionBranches.map((branch) => {
+                                            const checked = profileForm.storeBranchIds.includes(branch.id)
+                                            const disabled = !checked && profileForm.storeBranchIds.length >= 1
+                                            return (
+                                                <label
+                                                    key={branch.id}
+                                                    className={`flex cursor-pointer items-start gap-2 rounded-md p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-700/50 ${disabled ? "opacity-50" : ""}`}
+                                                >
+                                                    <Checkbox
+                                                        checked={checked}
+                                                        disabled={disabled}
+                                                        onCheckedChange={(nextChecked) => {
+                                                            updateProfileForm(
+                                                                "storeBranchIds",
+                                                                nextChecked === true
+                                                                    ? [branch.id]
+                                                                    : profileForm.storeBranchIds.filter((id) => id !== branch.id),
+                                                            )
+                                                        }}
+                                                    />
+                                                    <span>
+                                                        <span className="font-medium text-gray-900 dark:text-white">{branch.name}</span>
+                                                        <br />
+                                                        <span className="text-xs text-gray-500 dark:text-gray-400">{branch.address}</span>
+                                                    </span>
+                                                </label>
+                                            )
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+                        ) : null}
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                             <div className="grid gap-2">
                                 <Label htmlFor="profile-start">Bắt đầu</Label>
@@ -1157,7 +1240,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                 <Input id="profile-end" value={profileForm.end} onChange={(event) => updateProfileForm("end", event.target.value)} placeholder="17:00" />
                             </div>
                             <div className="grid gap-2">
-                                <Label htmlFor="profile-timezone">Timezone</Label>
+                                <Label htmlFor="profile-timezone">Múi giờ</Label>
                                 <Input id="profile-timezone" value={profileForm.timezone} onChange={(event) => updateProfileForm("timezone", event.target.value)} placeholder="UTC+7" />
                             </div>
                         </div>

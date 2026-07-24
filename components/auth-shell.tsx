@@ -22,12 +22,12 @@ type AuthMode = "login" | "register";
 type EmailMode = "company" | "external";
 
 const roleLabels: Record<UserRole, string> = {
-  admin: "Admin",
+  admin: "Quản trị viên",
   ceo: "CEO",
   employee: "Nhân viên",
-  leader: "Leader",
+  leader: "Trưởng nhóm",
   store_staff: "Nhân viên cửa hàng",
-  store_trainer: "Trainer",
+  store_trainer: "Đào tạo viên",
   store_manager: "Quản lí khu vực",
   store_lead: "Cửa hàng trưởng",
   store_technician: "Kỹ thuật viên"
@@ -211,10 +211,10 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
     setStoreBranchIds((prev) => prev.filter((id) => regionBranches.some((branch) => branch.id === id)));
   }, [isStoreManagerRole, managerAreaBranches, managerAreaDefaultCity, regionBranches]);
 
-  const normalizedStoreRegion = isStoreDepartment && !isStoreTechnicianRole && !isStoreTrainerRole
+  const normalizedStoreRegion = isStoreDepartment && !isStoreTrainerRole
     ? (isStoreManagerRole ? managerAreaDefaultCity : storeRegion)
     : undefined;
-  const normalizedStoreBranchIds = isStoreDepartment && !isStoreTechnicianRole && !isStoreTrainerRole
+  const normalizedStoreBranchIds = isStoreDepartment && !isStoreTrainerRole
     ? (isStoreManagerRole ? managerAreaBranches : storeBranchIds)
     : undefined;
 
@@ -327,8 +327,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
     }
 
     if (registerStep === "form" && isStoreDepartment) {
-      if (isStoreTechnicianRole) {
-      } else if (!isStoreTrainerRole) {
+      if (!isStoreTrainerRole) {
         const candidateBranchIds = isStoreManagerRole ? managerAreaBranches : storeBranchIds;
         if (candidateBranchIds.length === 0) {
           setError("Phòng ban Cửa hàng bắt buộc chọn ít nhất 1 chi nhánh.");
@@ -373,7 +372,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
       setResendCountdown(30);
       setSuccess(
         role === "admin" || role === "ceo" || isExternalEmail
-          ? "OTP đã được gửi. Sau khi xác thực, tài khoản sẽ chuyển sang trạng thái chờ admin/CEO duyệt trước khi sử dụng."
+          ? "OTP đã được gửi. Sau khi xác thực, tài khoản sẽ chuyển sang trạng thái chờ quản trị viên/CEO duyệt trước khi sử dụng."
           : "OTP đã được gửi tới email công ty. Nhập mã xác nhận để hoàn tất đăng ký."
       );
       setIsSubmitting(false);
@@ -390,7 +389,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
 
     if (result.requiresApproval) {
       setError("");
-      setSuccess(result.message ?? "Tài khoản đang chờ admin gốc duyệt.");
+      setSuccess(result.message ?? "Tài khoản đang chờ quản trị viên gốc duyệt.");
       setRegisterStep("form");
       setOtp("");
       setOtpPreview("");
@@ -434,7 +433,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
 
       <section className="rounded-[28px] border border-[rgba(55,45,33,0.12)] bg-[rgba(255,252,247,0.8)] p-4 shadow-float backdrop-blur-xl sm:p-6 lg:rounded-[32px] lg:p-10">
         <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">
-          {mode === "login" ? "Sign In" : "Sign Up"}
+          {mode === "login" ? "Đăng nhập" : "Đăng ký"}
         </p>
         <h2 className="text-2xl font-semibold text-text sm:text-3xl">
           {mode === "login"
@@ -537,71 +536,73 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
 
               {isStoreDepartment ? (
                 <>
-                  {isStoreTechnicianRole ? (
-                    <label className="grid gap-2">
-                      <span className="text-sm font-medium text-text">
-                        Cửa hàng trưởng quản lý
-                      </span>
-                      <button
-                        type="button"
-                        className={`${selectClassName} flex w-full items-center justify-between text-left`}
-                        onClick={() => setIsManagerPickerOpen(true)}
-                      >
-                        <span className={storeLeadUserId ? "text-slate-900 dark:text-slate-100" : "text-slate-500 dark:text-slate-300"}>
-                          {technicianManagerDisplay}
-                        </span>
-                        <span className="text-lg leading-none text-slate-500">⌄</span>
-                      </button>
-                      <Dialog open={isManagerPickerOpen} onOpenChange={setIsManagerPickerOpen}>
-                        <DialogContent className="max-w-lg rounded-2xl border border-[rgba(55,45,33,0.15)] bg-white p-0">
-                          <DialogHeader className="border-b border-[rgba(55,45,33,0.12)] px-5 py-4">
-                            <DialogTitle className="text-base font-semibold text-slate-900">
-                              Chọn cửa hàng trưởng quản lý
-                            </DialogTitle>
-                          </DialogHeader>
-                          <div className="max-h-[60vh] space-y-2 overflow-y-auto px-3 py-3">
-                            <button
-                              type="button"
-                              className={`w-full rounded-xl border px-3 py-3 text-left text-sm font-medium transition ${
-                                !storeLeadUserId
-                                  ? "border-orange-300 bg-orange-50 text-slate-900"
-                                  : "border-[rgba(55,45,33,0.12)] text-slate-700 hover:bg-slate-50"
-                              }`}
-                              onClick={() => {
-                                setStoreLeadUserId("");
-                                setIsManagerPickerOpen(false);
-                              }}
-                            >
-                              Không có
-                            </button>
-                            {managerOptionsForTechnician.map((lead) => (
-                              <button
-                                key={lead.id}
-                                type="button"
-                                className={`w-full rounded-xl border px-3 py-3 text-left text-sm transition ${
-                                  lead.id === storeLeadUserId
-                                    ? "border-orange-300 bg-orange-50 text-slate-900"
-                                    : "border-[rgba(55,45,33,0.12)] text-slate-800 hover:bg-slate-50"
-                                }`}
-                                onClick={() => {
-                                  setStoreLeadUserId(lead.id);
-                                  setIsManagerPickerOpen(false);
-                                }}
-                              >
-                                {lead.name} ({lead.email})
-                              </button>
-                            ))}
-                            {managerOptionsForTechnician.length === 0 ? (
-                              <div className="rounded-xl border border-[rgba(55,45,33,0.12)] bg-slate-50 px-3 py-3 text-sm text-slate-500">
-                                Chưa có cửa hàng trưởng khả dụng.
-                              </div>
-                            ) : null}
-                          </div>
-                        </DialogContent>
-                      </Dialog>
-                    </label>
-                  ) : isStoreTrainerRole ? null : (
+                  {isStoreTrainerRole ? null : (
                     <>
+                      {isStoreTechnicianRole ? (
+                        <label className="grid gap-2">
+                          <span className="text-sm font-medium text-text">
+                            Cửa hàng trưởng quản lý
+                          </span>
+                          <button
+                            type="button"
+                            className={`${selectClassName} flex w-full items-center justify-between text-left`}
+                            onClick={() => setIsManagerPickerOpen(true)}
+                          >
+                            <span className={storeLeadUserId ? "text-slate-900 dark:text-slate-100" : "text-slate-500 dark:text-slate-300"}>
+                              {technicianManagerDisplay}
+                            </span>
+                            <span className="text-lg leading-none text-slate-500">⌄</span>
+                          </button>
+                          <Dialog open={isManagerPickerOpen} onOpenChange={setIsManagerPickerOpen}>
+                            <DialogContent className="max-w-lg rounded-2xl border border-[rgba(55,45,33,0.15)] bg-white p-0">
+                              <DialogHeader className="border-b border-[rgba(55,45,33,0.12)] px-5 py-4">
+                                <DialogTitle className="text-base font-semibold text-slate-900">
+                                  Chọn cửa hàng trưởng quản lý
+                                </DialogTitle>
+                              </DialogHeader>
+                              <div className="max-h-[60vh] space-y-2 overflow-y-auto px-3 py-3">
+                                <button
+                                  type="button"
+                                  className={`w-full rounded-xl border px-3 py-3 text-left text-sm font-medium transition ${
+                                    !storeLeadUserId
+                                      ? "border-orange-300 bg-orange-50 text-slate-900"
+                                      : "border-[rgba(55,45,33,0.12)] text-slate-700 hover:bg-slate-50"
+                                  }`}
+                                  onClick={() => {
+                                    setStoreLeadUserId("");
+                                    setIsManagerPickerOpen(false);
+                                  }}
+                                >
+                                  Không có
+                                </button>
+                                {managerOptionsForTechnician.map((lead) => (
+                                  <button
+                                    key={lead.id}
+                                    type="button"
+                                    className={`w-full rounded-xl border px-3 py-3 text-left text-sm transition ${
+                                      lead.id === storeLeadUserId
+                                        ? "border-orange-300 bg-orange-50 text-slate-900"
+                                        : "border-[rgba(55,45,33,0.12)] text-slate-800 hover:bg-slate-50"
+                                    }`}
+                                    onClick={() => {
+                                      setStoreLeadUserId(lead.id);
+                                      setIsManagerPickerOpen(false);
+                                    }}
+                                  >
+                                    {lead.name} ({lead.email})
+                                  </button>
+                                ))}
+                                {managerOptionsForTechnician.length === 0 ? (
+                                  <div className="rounded-xl border border-[rgba(55,45,33,0.12)] bg-slate-50 px-3 py-3 text-sm text-slate-500">
+                                    Chưa có cửa hàng trưởng khả dụng.
+                                  </div>
+                                ) : null}
+                              </div>
+                            </DialogContent>
+                          </Dialog>
+                        </label>
+                      ) : null}
+
                       {isStoreManagerRole ? (
                         <>
                           <label className="grid gap-2">
