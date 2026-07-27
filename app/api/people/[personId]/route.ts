@@ -7,6 +7,13 @@ type RouteContext = {
   params: Promise<{ personId: string }>;
 };
 
+function getMutationErrorStatus(error: unknown) {
+  if (!(error instanceof Error)) return 400;
+  if (error.message === "Unauthorized") return 401;
+  if (error.message === "Forbidden") return 403;
+  return 400;
+}
+
 export async function PATCH(request: Request, context: RouteContext) {
   try {
     const sessionUserId = await getSessionUserId();
@@ -34,7 +41,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   } catch (error) {
     return NextResponse.json(
       { ok: false, message: error instanceof Error ? error.message : "Failed to update person." },
-      { status: error instanceof Error && error.message === "Unauthorized" ? 401 : 403 }
+      { status: getMutationErrorStatus(error) }
     );
   }
 }
@@ -64,7 +71,7 @@ export async function DELETE(_: Request, context: RouteContext) {
   } catch (error) {
     return NextResponse.json(
       { ok: false, message: error instanceof Error ? error.message : "Failed to delete person." },
-      { status: error instanceof Error && error.message === "Unauthorized" ? 401 : 403 }
+      { status: getMutationErrorStatus(error) }
     );
   }
 }

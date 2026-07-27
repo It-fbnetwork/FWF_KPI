@@ -3,6 +3,13 @@ import { createPersonRecord, getAllRealtimePersonIds, getAuthState, getDirectory
 import { publishAppEventToPersons } from "@/lib/server/realtime";
 import { getSessionUserId } from "@/lib/server/session";
 
+function getMutationErrorStatus(error: unknown) {
+  if (!(error instanceof Error)) return 400;
+  if (error.message === "Unauthorized") return 401;
+  if (error.message === "Forbidden") return 403;
+  return 400;
+}
+
 export async function GET() {
   const payload = await getDirectory();
   return NextResponse.json(payload);
@@ -28,7 +35,7 @@ export async function POST(request: Request) {
   } catch (error) {
     return NextResponse.json(
       { ok: false, message: error instanceof Error ? error.message : "Failed to create person." },
-      { status: error instanceof Error && error.message === "Unauthorized" ? 401 : 403 }
+      { status: getMutationErrorStatus(error) }
     );
   }
 }

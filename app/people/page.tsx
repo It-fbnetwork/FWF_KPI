@@ -101,6 +101,13 @@ const DEFAULT_FORM: PersonFormState = {
 
 const NO_STORE_LEAD_VALUE = "__none__"
 
+function getStoreBranchIdsForRegion(branchIds: number[], region: StoreRegion, limit: number) {
+    const validBranchIds = new Set(
+        STORE_BRANCHES.filter((branch) => branch.city === region).map((branch) => branch.id)
+    )
+    return Array.from(new Set(branchIds.filter((branchId) => validBranchIds.has(branchId)))).slice(0, limit)
+}
+
 export default function PeoplePage() {
     const { user } = useAuth()
     const { people, teams, refresh } = useDirectory()
@@ -479,14 +486,21 @@ export default function PeoplePage() {
         const normalizedRole = personDisplayRoles.includes(person.role as (typeof personDisplayRoles)[number])
             ? person.role
             : personDisplayRoles[0]
+        const nextStoreRegion = (person.storeRegion as StoreRegion | undefined) ?? DEFAULT_FORM.storeRegion
+        const nextStoreBranchLimit = normalizedRole === "Quản lí khu vực" ? 5 : 1
+        const nextStoreBranchIds = getStoreBranchIdsForRegion(
+            person.storeBranchIds ?? [],
+            nextStoreRegion,
+            nextStoreBranchLimit,
+        )
         setPersonForm({
             name: person.name,
             role: normalizedRole,
             email: person.email,
             team: person.team,
             imageURL: person.imageURL === "/placeholder.svg" ? "" : person.imageURL,
-            storeRegion: (person.storeRegion as StoreRegion | undefined) ?? DEFAULT_FORM.storeRegion,
-            storeBranchIds: person.storeBranchIds ?? [],
+            storeRegion: nextStoreRegion,
+            storeBranchIds: nextStoreBranchIds,
             storeLeadUserId: person.storeLeadUserId ?? "",
             storeManagerUserId: storeManagerOptions.find((manager) =>
                 (person.storeBranchIds ?? []).some((branchId) => (manager.storeBranchIds ?? []).includes(branchId))
