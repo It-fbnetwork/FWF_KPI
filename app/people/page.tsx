@@ -116,6 +116,7 @@ export default function PeoplePage() {
     const [selectedBranchId, setSelectedBranchId] = useState<number | "all">("all")
     const [selectedRegion, setSelectedRegion] = useState<"all" | StoreRegion>("all")
     const [selectedRole, setSelectedRole] = useState<string>("all")
+    const [storeBranchSearchQuery, setStoreBranchSearchQuery] = useState("")
     const [isDialogOpen, setIsDialogOpen] = useState(false)
     const [editingPerson, setEditingPerson] = useState<Person | null>(null)
     const [personForm, setPersonForm] = useState<PersonFormState>(DEFAULT_FORM)
@@ -205,6 +206,13 @@ export default function PeoplePage() {
         if (!isStoreManager) return branches
         return branches.filter((branch) => managerBranchIds.has(branch.id))
     }, [isStoreManager, managerBranchIds, personForm.storeRegion])
+    const filteredRegionBranches = useMemo(() => {
+        const normalizedQuery = storeBranchSearchQuery.trim().toLowerCase()
+        if (!normalizedQuery) return regionBranches
+        return regionBranches.filter((branch) =>
+            `${branch.name} ${branch.address}`.toLowerCase().includes(normalizedQuery)
+        )
+    }, [regionBranches, storeBranchSearchQuery])
     const accessiblePeople = isAdmin
         ? people
         : isStoreManager
@@ -471,6 +479,7 @@ export default function PeoplePage() {
 
     const openCreateDialog = () => {
         setEditingPerson(null)
+        setStoreBranchSearchQuery("")
         setPersonForm({
             ...DEFAULT_FORM,
             team: isStoreTrainer ? "store" : teams[0]?.id ?? "marketing",
@@ -483,6 +492,7 @@ export default function PeoplePage() {
 
     const openEditDialog = (person: Person) => {
         setEditingPerson(person)
+        setStoreBranchSearchQuery("")
         const normalizedRole = personDisplayRoles.includes(person.role as (typeof personDisplayRoles)[number])
             ? person.role
             : personDisplayRoles[0]
@@ -1025,6 +1035,7 @@ export default function PeoplePage() {
                                         value={personForm.storeRegion}
                                         onValueChange={(value) => {
                                             const nextRegion = value as StoreRegion
+                                            setStoreBranchSearchQuery("")
                                             setPersonForm((prev) => ({
                                                 ...prev,
                                                 storeRegion: nextRegion,
@@ -1045,20 +1056,42 @@ export default function PeoplePage() {
                                     </Select>
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label>
-                                        {shouldEditStoreManagerLocation
-                                            ? "Cửa hàng quản lí (chọn tối đa 5)"
-                                            : shouldEditTechnicianLocation
-                                                ? "Cửa hàng (chọn 1)"
-                                                : "Chi nhánh (chọn 1)"}
-                                    </Label>
+                                    <div className="flex items-center justify-between gap-3">
+                                        <Label>
+                                            {shouldEditStoreManagerLocation
+                                                ? "Cửa hàng quản lí (chọn tối đa 5)"
+                                                : shouldEditTechnicianLocation
+                                                    ? "Cửa hàng (chọn 1)"
+                                                    : "Chi nhánh (chọn 1)"}
+                                        </Label>
+                                        {personForm.storeBranchIds.length > 0 ? (
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-8 px-2 text-xs"
+                                                onClick={() => updatePersonForm("storeBranchIds", [])}
+                                            >
+                                                Bỏ chọn tất cả
+                                            </Button>
+                                        ) : null}
+                                    </div>
+                                    <Input
+                                        value={storeBranchSearchQuery}
+                                        onChange={(event) => setStoreBranchSearchQuery(event.target.value)}
+                                        placeholder="Tìm theo tên cửa hàng..."
+                                    />
                                     <div className="max-h-[28dvh] space-y-2 overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-950 sm:max-h-52">
                                         {regionBranches.length === 0 ? (
                                             <p className="px-2 py-3 text-sm text-gray-500 dark:text-gray-400">
                                                 Không có chi nhánh khả dụng trong khu vực này.
                                             </p>
+                                        ) : filteredRegionBranches.length === 0 ? (
+                                            <p className="px-2 py-3 text-sm text-gray-500 dark:text-gray-400">
+                                                Không tìm thấy cửa hàng phù hợp.
+                                            </p>
                                         ) : (
-                                            regionBranches.map((branch) => {
+                                            filteredRegionBranches.map((branch) => {
                                                 const checked = personForm.storeBranchIds.includes(branch.id)
                                                 const disabled = !checked && personForm.storeBranchIds.length >= storeLocationBranchSelectionLimit
                                                 return (
