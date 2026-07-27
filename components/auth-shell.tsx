@@ -9,12 +9,8 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { COMPANY_DOMAIN, departments, registrationRoles, storeRegistrationRoles, type Department, type UserRole } from "@/lib/auth";
 import {
-  STORE_AREA_OPTIONS,
-  STORE_AREAS,
   STORE_BRANCHES_BY_REGION,
   STORE_REGIONS,
-  getBranchIdsByArea,
-  type StoreAreaId,
   type StoreRegion
 } from "@/lib/store-branches";
 
@@ -132,7 +128,6 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
   const [department, setDepartment] = useState<Department>("IT");
   const [role, setRole] = useState<UserRole>("employee");
   const [storeRegion, setStoreRegion] = useState<StoreRegion>("Hồ Chí Minh");
-  const [storeArea, setStoreArea] = useState<StoreAreaId>("south");
   const [storeBranchIds, setStoreBranchIds] = useState<number[]>([]);
   const [storeLeadUserId, setStoreLeadUserId] = useState("");
   const [otp, setOtp] = useState("");
@@ -171,11 +166,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
   const isStoreDepartment = department === "Cửa hàng";
   const isStoreTechnicianRole = role === "store_technician";
   const isStoreTrainerRole = role === "store_trainer";
-  const managerAreaBranches = useMemo(() => getBranchIdsByArea(storeArea), [storeArea]);
-  const managerAreaDefaultCity = useMemo<StoreRegion>(
-    () => STORE_AREAS[storeArea].cities[0] as StoreRegion,
-    [storeArea]
-  );
+  const storeBranchSelectionLimit = isStoreManagerRole ? 5 : 1;
   const storeLeadOptions = useMemo(
     () => users.filter((user) => user.department === "Cửa hàng" && user.role === "store_lead" && user.verified),
     [users]
@@ -203,19 +194,14 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
   }, [isStoreTechnicianRole, managerOptionsForTechnician, storeLeadUserId]);
 
   useEffect(() => {
-    if (isStoreManagerRole) {
-      setStoreRegion(managerAreaDefaultCity);
-      setStoreBranchIds(managerAreaBranches);
-      return;
-    }
     setStoreBranchIds((prev) => prev.filter((id) => regionBranches.some((branch) => branch.id === id)));
-  }, [isStoreManagerRole, managerAreaBranches, managerAreaDefaultCity, regionBranches]);
+  }, [regionBranches]);
 
   const normalizedStoreRegion = isStoreDepartment && !isStoreTrainerRole
-    ? (isStoreManagerRole ? managerAreaDefaultCity : storeRegion)
+    ? storeRegion
     : undefined;
   const normalizedStoreBranchIds = isStoreDepartment && !isStoreTrainerRole
-    ? (isStoreManagerRole ? managerAreaBranches : storeBranchIds)
+    ? storeBranchIds
     : undefined;
 
   const maskedEmail = useMemo(() => maskEmail(email), [email]);
@@ -328,13 +314,17 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
 
     if (registerStep === "form" && isStoreDepartment) {
       if (!isStoreTrainerRole) {
-        const candidateBranchIds = isStoreManagerRole ? managerAreaBranches : storeBranchIds;
-        if (candidateBranchIds.length === 0) {
+        if (storeBranchIds.length === 0) {
           setError("Phòng ban Cửa hàng bắt buộc chọn ít nhất 1 chi nhánh.");
           setIsSubmitting(false);
           return;
         }
-        if (!isStoreManagerRole && candidateBranchIds.length !== 1) {
+        if (isStoreManagerRole && storeBranchIds.length > 5) {
+          setError("Quản lí khu vực chỉ được chọn tối đa 5 cửa hàng.");
+          setIsSubmitting(false);
+          return;
+        }
+        if (!isStoreManagerRole && storeBranchIds.length !== 1) {
           setError("Vai trò này chỉ được chọn đúng 1 chi nhánh.");
           setIsSubmitting(false);
           return;
@@ -399,7 +389,6 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
       setRole("employee");
       setDepartment("IT");
       setStoreRegion("Hồ Chí Minh");
-      setStoreArea("south");
       setStoreBranchIds([]);
       setStoreLeadUserId("");
       setIsSubmitting(false);
@@ -603,27 +592,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                         </label>
                       ) : null}
 
-                      {isStoreManagerRole ? (
-                        <>
-                          <label className="grid gap-2">
-                            <span className="text-sm font-medium text-text">Khu vực</span>
-                            <select
-                              value={storeArea}
-                              onChange={(event) => setStoreArea(event.target.value as StoreAreaId)}
-                              className={selectClassName}
-                            >
-                              {STORE_AREA_OPTIONS.map((area) => (
-                                <option key={area.id} value={area.id}>
-                                  {area.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <p className="text-xs text-muted">
-                            Quản lí khu vực sẽ quản lý toàn bộ Cửa hàng trưởng và Kỹ thuật viên thuộc khu vực đã chọn.
-                          </p>
-                        </>
-                      ) : (
+                      {!isStoreTrainerRole ? (
                         <>
                           <label className="grid gap-2">
                             <span className="text-sm font-medium text-text">Khu vực</span>
@@ -641,11 +610,13 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                           </label>
 
                           <div className="grid gap-2">
-                            <span className="text-sm font-medium text-text">Chi nhánh (chọn 1)</span>
+                            <span className="text-sm font-medium text-text">
+                              {isStoreManagerRole ? "Cửa hàng quản lí (chọn tối đa 5)" : "Chi nhánh (chọn 1)"}
+                            </span>
                             <div className="max-h-56 space-y-2 overflow-y-auto rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 p-3">
                               {regionBranches.map((branch) => {
                                 const checked = storeBranchIds.includes(branch.id);
-                                const disabled = !checked && storeBranchIds.length >= 1;
+                                const disabled = !checked && storeBranchIds.length >= storeBranchSelectionLimit;
                                 return (
                                   <label key={branch.id} className={`flex cursor-pointer items-start gap-2 rounded-xl p-2 ${disabled ? "opacity-50" : ""}`}>
                                     <input
@@ -654,7 +625,10 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                                       disabled={disabled}
                                       onChange={(event) => {
                                         setStoreBranchIds((prev) => {
-                                          if (event.target.checked) return [...prev, branch.id];
+                                          if (event.target.checked) {
+                                            if (prev.includes(branch.id) || prev.length >= storeBranchSelectionLimit) return prev;
+                                            return isStoreManagerRole ? [...prev, branch.id] : [branch.id];
+                                          }
                                           return prev.filter((id) => id !== branch.id);
                                         });
                                       }}
@@ -668,9 +642,14 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                                 );
                               })}
                             </div>
+                            {isStoreManagerRole ? (
+                              <p className="text-xs text-muted">
+                                Quản lí khu vực có thể chọn tối đa 5 cửa hàng trong khu vực đã chọn.
+                              </p>
+                            ) : null}
                           </div>
                         </>
-                      )}
+                      ) : null}
                     </>
                   )}
                 </>

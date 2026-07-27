@@ -197,7 +197,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         end: currentUser.workingHours.end,
         timezone: currentUser.workingHours.timezone,
     })
-    const canUpdateOwnStoreLocation = user?.department === "Cửa hàng" && user?.role === "store_technician"
+    const canUpdateOwnStoreLocation =
+        user?.department === "Cửa hàng" && (user?.role === "store_technician" || user?.role === "store_manager")
+    const isProfileStoreManager = user?.department === "Cửa hàng" && user?.role === "store_manager"
+    const profileStoreBranchSelectionLimit = isProfileStoreManager ? 5 : 1
     const profileRegionBranches = useMemo(
         () => STORE_BRANCHES_BY_REGION[profileForm.storeRegion] ?? [],
         [profileForm.storeRegion],
@@ -511,7 +514,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             return
         }
         if (canUpdateOwnStoreLocation) {
-            if (profileForm.storeBranchIds.length !== 1) {
+            if (isProfileStoreManager && (profileForm.storeBranchIds.length === 0 || profileForm.storeBranchIds.length > 5)) {
+                toast({
+                    title: "Thiếu cửa hàng",
+                    description: "Quản lí khu vực cần chọn từ 1 đến 5 cửa hàng đang phụ trách.",
+                    variant: "destructive",
+                })
+                return
+            }
+            if (!isProfileStoreManager && profileForm.storeBranchIds.length !== 1) {
                 toast({
                     title: "Thiếu cửa hàng",
                     description: "Kỹ thuật viên cần chọn đúng 1 cửa hàng đang phụ trách.",
@@ -1196,11 +1207,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                     </select>
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label>Cửa hàng phụ trách</Label>
+                                    <Label>{isProfileStoreManager ? "Cửa hàng quản lí (chọn tối đa 5)" : "Cửa hàng phụ trách"}</Label>
                                     <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border border-gray-200 p-2 dark:border-gray-700">
                                         {profileRegionBranches.map((branch) => {
                                             const checked = profileForm.storeBranchIds.includes(branch.id)
-                                            const disabled = !checked && profileForm.storeBranchIds.length >= 1
+                                            const disabled = !checked && profileForm.storeBranchIds.length >= profileStoreBranchSelectionLimit
                                             return (
                                                 <label
                                                     key={branch.id}
@@ -1213,7 +1224,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                                             updateProfileForm(
                                                                 "storeBranchIds",
                                                                 nextChecked === true
-                                                                    ? [branch.id]
+                                                                    ? isProfileStoreManager
+                                                                        ? profileForm.storeBranchIds.includes(branch.id) || profileForm.storeBranchIds.length >= profileStoreBranchSelectionLimit
+                                                                            ? profileForm.storeBranchIds
+                                                                            : [...profileForm.storeBranchIds, branch.id]
+                                                                        : [branch.id]
                                                                     : profileForm.storeBranchIds.filter((id) => id !== branch.id),
                                                             )
                                                         }}

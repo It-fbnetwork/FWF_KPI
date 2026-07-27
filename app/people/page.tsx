@@ -186,7 +186,13 @@ export default function PeoplePage() {
         Boolean(editingPerson) &&
         personForm.team === "store" &&
         personForm.role === "Kỹ thuật viên"
-    const shouldEditStoreLocation = shouldEditStoreLeadLocation || shouldEditTechnicianLocation
+    const shouldEditStoreManagerLocation =
+        Boolean(editingPerson) &&
+        personForm.team === "store" &&
+        personForm.role === "Quản lí khu vực" &&
+        (isAdmin || isStoreTrainer)
+    const shouldEditStoreLocation = shouldEditStoreLeadLocation || shouldEditTechnicianLocation || shouldEditStoreManagerLocation
+    const storeLocationBranchSelectionLimit = shouldEditStoreManagerLocation ? 5 : 1
     const regionBranches = useMemo(() => {
         const branches = STORE_BRANCHES_BY_REGION[personForm.storeRegion] ?? []
         if (!isStoreManager) return branches
@@ -521,6 +527,14 @@ export default function PeoplePage() {
             toast({
                 title: "Thiếu cửa hàng",
                 description: "Vui lòng chọn 1 cửa hàng cho kỹ thuật viên.",
+                variant: "destructive",
+            })
+            return
+        }
+        if (shouldEditStoreManagerLocation && (personForm.storeBranchIds.length === 0 || personForm.storeBranchIds.length > 5)) {
+            toast({
+                title: "Thiếu cửa hàng",
+                description: "Vui lòng chọn từ 1 đến 5 cửa hàng cho quản lí khu vực.",
                 variant: "destructive",
             })
             return
@@ -1017,7 +1031,13 @@ export default function PeoplePage() {
                                     </Select>
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label>{shouldEditTechnicianLocation ? "Cửa hàng (chọn 1)" : "Chi nhánh (chọn 1)"}</Label>
+                                    <Label>
+                                        {shouldEditStoreManagerLocation
+                                            ? "Cửa hàng quản lí (chọn tối đa 5)"
+                                            : shouldEditTechnicianLocation
+                                                ? "Cửa hàng (chọn 1)"
+                                                : "Chi nhánh (chọn 1)"}
+                                    </Label>
                                     <div className="max-h-[28dvh] space-y-2 overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-950 sm:max-h-52">
                                         {regionBranches.length === 0 ? (
                                             <p className="px-2 py-3 text-sm text-gray-500 dark:text-gray-400">
@@ -1026,16 +1046,27 @@ export default function PeoplePage() {
                                         ) : (
                                             regionBranches.map((branch) => {
                                                 const checked = personForm.storeBranchIds.includes(branch.id)
+                                                const disabled = !checked && personForm.storeBranchIds.length >= storeLocationBranchSelectionLimit
                                                 return (
-                                                    <label key={branch.id} className="flex cursor-pointer items-start gap-2 rounded-md p-2 hover:bg-gray-50 dark:hover:bg-gray-900">
+                                                    <label
+                                                        key={branch.id}
+                                                        className={`flex cursor-pointer items-start gap-2 rounded-md p-2 hover:bg-gray-50 dark:hover:bg-gray-900 ${disabled ? "opacity-50" : ""}`}
+                                                    >
                                                         <input
                                                             type="checkbox"
                                                             className="mt-1"
                                                             checked={checked}
+                                                            disabled={disabled}
                                                             onChange={(event) => {
                                                                 setPersonForm((prev) => ({
                                                                     ...prev,
-                                                                    storeBranchIds: event.target.checked ? [branch.id] : [],
+                                                                    storeBranchIds: event.target.checked
+                                                                        ? shouldEditStoreManagerLocation
+                                                                            ? prev.storeBranchIds.includes(branch.id) || prev.storeBranchIds.length >= storeLocationBranchSelectionLimit
+                                                                                ? prev.storeBranchIds
+                                                                                : [...prev.storeBranchIds, branch.id]
+                                                                            : [branch.id]
+                                                                        : prev.storeBranchIds.filter((id) => id !== branch.id),
                                                                 }))
                                                             }}
                                                         />
