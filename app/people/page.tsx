@@ -30,7 +30,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "@/components/ui/use-toast"
 import { isAdminLikeRole } from "@/lib/auth"
 import { findPersonForAuthUser, getTeamById, isPersonWorking, personDisplayRoles, type Person } from "@/lib/people"
-import { STORE_BRANCHES, STORE_BRANCHES_BY_REGION, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches"
+import {
+    STORE_BRANCHES,
+    STORE_BRANCHES_BY_REGION,
+    STORE_REGIONS,
+    getStoreBranchesByRegions,
+    getStoreRegionsForBranchIds,
+    type StoreRegion,
+} from "@/lib/store-branches"
 import {
     ChevronDown,
     CheckCircle2,
@@ -59,6 +66,7 @@ type PersonFormState = {
     team: string
     imageURL: string
     storeRegion: StoreRegion
+    storeRegions: StoreRegion[]
     storeBranchIds: number[]
     storeLeadUserId: string
     storeManagerUserId: string
@@ -91,6 +99,7 @@ const DEFAULT_FORM: PersonFormState = {
     team: "marketing",
     imageURL: "",
     storeRegion: "Hồ Chí Minh",
+    storeRegions: ["Hồ Chí Minh"],
     storeBranchIds: [],
     storeLeadUserId: "",
     storeManagerUserId: "",
@@ -105,6 +114,11 @@ function getStoreBranchIdsForRegion(branchIds: number[], region: StoreRegion, li
     const validBranchIds = new Set(
         STORE_BRANCHES.filter((branch) => branch.city === region).map((branch) => branch.id)
     )
+    return Array.from(new Set(branchIds.filter((branchId) => validBranchIds.has(branchId)))).slice(0, limit)
+}
+
+function getStoreBranchIdsForRegions(branchIds: number[], regions: StoreRegion[], limit: number) {
+    const validBranchIds = new Set(getStoreBranchesByRegions(regions).map((branch) => branch.id))
     return Array.from(new Set(branchIds.filter((branchId) => validBranchIds.has(branchId)))).slice(0, limit)
 }
 
@@ -200,12 +214,15 @@ export default function PeoplePage() {
         personForm.role === "Quản lí khu vực" &&
         (isAdmin || isStoreTrainer)
     const shouldEditStoreLocation = shouldEditStoreLeadLocation || shouldEditTechnicianLocation || shouldEditStoreManagerLocation
-    const storeLocationBranchSelectionLimit = shouldEditStoreManagerLocation ? 5 : 1
+    const canEditMultipleStoreBranches = shouldEditStoreManagerLocation || shouldEditStoreLeadLocation
+    const storeLocationBranchSelectionLimit = canEditMultipleStoreBranches ? 5 : 1
     const regionBranches = useMemo(() => {
-        const branches = STORE_BRANCHES_BY_REGION[personForm.storeRegion] ?? []
+        const branches = shouldEditStoreManagerLocation
+            ? getStoreBranchesByRegions(personForm.storeRegions)
+            : STORE_BRANCHES_BY_REGION[personForm.storeRegion] ?? []
         if (!isStoreManager) return branches
         return branches.filter((branch) => managerBranchIds.has(branch.id))
-    }, [isStoreManager, managerBranchIds, personForm.storeRegion])
+    }, [isStoreManager, managerBranchIds, personForm.storeRegion, personForm.storeRegions, shouldEditStoreManagerLocation])
     const filteredRegionBranches = useMemo(() => {
         const normalizedQuery = storeBranchSearchQuery.trim().toLowerCase()
         if (!normalizedQuery) return regionBranches
@@ -270,9 +287,8 @@ export default function PeoplePage() {
     const filterRegionOptions = useMemo(() => {
         const regions = new Set<StoreRegion>()
         accessiblePeople.forEach((person) => {
-            if (person.storeRegion && STORE_REGIONS.includes(person.storeRegion as StoreRegion)) {
-                regions.add(person.storeRegion as StoreRegion)
-            }
+            getStoreRegionsForBranchIds(person.storeBranchIds).forEach((region) => regions.add(region))
+            if (person.storeRegion && STORE_REGIONS.includes(person.storeRegion as StoreRegion)) regions.add(person.storeRegion as StoreRegion)
         })
 
         return STORE_REGIONS.filter((region) => regions.has(region))
@@ -289,7 +305,8 @@ export default function PeoplePage() {
             person.email.toLowerCase().includes(searchQuery.toLowerCase())
         const matchesBranch =
             selectedBranchId === "all" || (person.storeBranchIds ?? []).includes(selectedBranchId)
-        const matchesRegion = selectedRegion === "all" || person.storeRegion === selectedRegion
+        const personStoreRegions = getStoreRegionsForBranchIds(person.storeBranchIds)
+        const matchesRegion = selectedRegion === "all" || person.storeRegion === selectedRegion || personStoreRegions.includes(selectedRegion)
         const matchesRole = selectedRole === "all" || person.role === selectedRole
         return matchesSearch && matchesBranch && matchesRegion && matchesRole
     })
@@ -485,6 +502,7 @@ export default function PeoplePage() {
             team: isStoreTrainer ? "store" : teams[0]?.id ?? "marketing",
             role: isStoreTrainer ? "Kỹ thuật viên" : DEFAULT_FORM.role,
             storeRegion: (user?.storeRegion as StoreRegion | undefined) ?? DEFAULT_FORM.storeRegion,
+            storeRegions: [(user?.storeRegion as StoreRegion | undefined) ?? DEFAULT_FORM.storeRegion],
             storeBranchIds: [],
         })
         setIsDialogOpen(true)
@@ -497,12 +515,14 @@ export default function PeoplePage() {
             ? person.role
             : personDisplayRoles[0]
         const nextStoreRegion = (person.storeRegion as StoreRegion | undefined) ?? DEFAULT_FORM.storeRegion
-        const nextStoreBranchLimit = normalizedRole === "Quản lí khu vực" ? 5 : 1
-        const nextStoreBranchIds = getStoreBranchIdsForRegion(
-            person.storeBranchIds ?? [],
-            nextStoreRegion,
-            nextStoreBranchLimit,
-        )
+        const nextStoreBranchLimit = normalizedRole === "Quản lí khu vực" || normalizedRole === "Cửa hàng trưởng" ? 5 : 1
+        const branchRegions = getStoreRegionsForBranchIds(person.storeBranchIds ?? [])
+        const nextStoreRegions = normalizedRole === "Quản lí khu vực"
+            ? (branchRegions.length > 0 ? branchRegions.slice(0, 2) : [nextStoreRegion])
+            : [nextStoreRegion]
+        const nextStoreBranchIds = normalizedRole === "Quản lí khu vực"
+            ? getStoreBranchIdsForRegions(person.storeBranchIds ?? [], nextStoreRegions, nextStoreBranchLimit)
+            : getStoreBranchIdsForRegion(person.storeBranchIds ?? [], nextStoreRegion, nextStoreBranchLimit)
         setPersonForm({
             name: person.name,
             role: normalizedRole,
@@ -510,6 +530,7 @@ export default function PeoplePage() {
             team: person.team,
             imageURL: person.imageURL === "/placeholder.svg" ? "" : person.imageURL,
             storeRegion: nextStoreRegion,
+            storeRegions: nextStoreRegions,
             storeBranchIds: nextStoreBranchIds,
             storeLeadUserId: person.storeLeadUserId ?? "",
             storeManagerUserId: storeManagerOptions.find((manager) =>
@@ -539,10 +560,10 @@ export default function PeoplePage() {
             })
             return
         }
-        if (shouldEditStoreLeadLocation && personForm.storeBranchIds.length !== 1) {
+        if (shouldEditStoreLeadLocation && (personForm.storeBranchIds.length === 0 || personForm.storeBranchIds.length > 5)) {
             toast({
                 title: "Thiếu chi nhánh",
-                description: "Vui lòng chọn 1 chi nhánh cho cửa hàng trưởng.",
+                description: "Vui lòng chọn từ 1 đến 5 cửa hàng cho cửa hàng trưởng.",
                 variant: "destructive",
             })
             return
@@ -551,6 +572,14 @@ export default function PeoplePage() {
             toast({
                 title: "Thiếu cửa hàng",
                 description: "Vui lòng chọn 1 cửa hàng cho kỹ thuật viên.",
+                variant: "destructive",
+            })
+            return
+        }
+        if (shouldEditStoreManagerLocation && (personForm.storeRegions.length === 0 || personForm.storeRegions.length > 2)) {
+            toast({
+                title: "Thiếu khu vực",
+                description: "Vui lòng chọn từ 1 đến 2 khu vực cho quản lí khu vực.",
                 variant: "destructive",
             })
             return
@@ -577,7 +606,12 @@ export default function PeoplePage() {
                     email: personForm.email,
                     team: personForm.team,
                     imageURL: personForm.imageURL,
-                    storeRegion: shouldEditStoreLocation ? personForm.storeRegion : undefined,
+                    storeRegion: shouldEditStoreLocation
+                        ? shouldEditStoreManagerLocation
+                            ? personForm.storeRegions[0]
+                            : personForm.storeRegion
+                        : undefined,
+                    storeRegions: shouldEditStoreManagerLocation ? personForm.storeRegions : undefined,
                     storeBranchIds: shouldEditStoreLocation ? personForm.storeBranchIds : undefined,
                     storeLeadUserId: canEditTechnicianSupervisor ? personForm.storeLeadUserId : undefined,
                     storeManagerUserId: canEditStoreLeadManager && !shouldEditStoreLeadLocation ? personForm.storeManagerUserId : undefined,
@@ -652,7 +686,7 @@ export default function PeoplePage() {
             .map((branchId) => STORE_BRANCHES.find((branch) => branch.id === branchId)?.name)
             .filter((name): name is string => Boolean(name))
         const storeLocationLabel = storeBranchNames.length > 0 ? storeBranchNames.join(", ") : "Chưa gán cửa hàng"
-        const storeRegionLabel = person.storeRegion ?? "Chưa gán khu vực"
+        const storeRegionLabel = getStoreRegionsForBranchIds(person.storeBranchIds).join(", ") || person.storeRegion || "Chưa gán khu vực"
 
         return (
             <Card className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow">
@@ -1030,39 +1064,84 @@ export default function PeoplePage() {
                         {shouldEditStoreLocation && (
                             <div className="grid gap-3 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
                                 <div className="grid gap-2">
-                                    <Label htmlFor="store-location-region">Khu vực</Label>
-                                    <Select
-                                        value={personForm.storeRegion}
-                                        onValueChange={(value) => {
-                                            const nextRegion = value as StoreRegion
-                                            setStoreBranchSearchQuery("")
-                                            setPersonForm((prev) => ({
-                                                ...prev,
-                                                storeRegion: nextRegion,
-                                                storeBranchIds: [],
-                                            }))
-                                        }}
-                                    >
-                                        <SelectTrigger id="store-location-region">
-                                            <SelectValue placeholder="Chọn khu vực" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {STORE_REGIONS.map((region) => (
-                                                <SelectItem key={region} value={region}>
-                                                    {region}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
+                                    {shouldEditStoreManagerLocation ? (
+                                        <>
+                                            <Label>Khu vực quản lí (chọn tối đa 2)</Label>
+                                            <div className="grid grid-cols-1 gap-2 rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-950 sm:grid-cols-2">
+                                                {STORE_REGIONS.map((region) => {
+                                                    const checked = personForm.storeRegions.includes(region)
+                                                    const disabled = !checked && personForm.storeRegions.length >= 2
+                                                    return (
+                                                        <label
+                                                            key={region}
+                                                            className={`flex cursor-pointer items-center gap-2 rounded-md p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-900 ${disabled ? "opacity-50" : ""}`}
+                                                        >
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={checked}
+                                                                disabled={disabled}
+                                                                onChange={(event) => {
+                                                                    setStoreBranchSearchQuery("")
+                                                                    setPersonForm((prev) => {
+                                                                        const nextRegions = event.target.checked
+                                                                            ? prev.storeRegions.includes(region) || prev.storeRegions.length >= 2
+                                                                                ? prev.storeRegions
+                                                                                : [...prev.storeRegions, region]
+                                                                            : prev.storeRegions.filter((item) => item !== region)
+                                                                        const allowedBranchIds = new Set(getStoreBranchesByRegions(nextRegions).map((branch) => branch.id))
+                                                                        return {
+                                                                            ...prev,
+                                                                            storeRegion: nextRegions[0] ?? prev.storeRegion,
+                                                                            storeRegions: nextRegions,
+                                                                            storeBranchIds: prev.storeBranchIds.filter((branchId) => allowedBranchIds.has(branchId)),
+                                                                        }
+                                                                    })
+                                                                }}
+                                                            />
+                                                            <span>{region}</span>
+                                                        </label>
+                                                    )
+                                                })}
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Label htmlFor="store-location-region">Khu vực</Label>
+                                            <Select
+                                                value={personForm.storeRegion}
+                                                onValueChange={(value) => {
+                                                    const nextRegion = value as StoreRegion
+                                                    setStoreBranchSearchQuery("")
+                                                    setPersonForm((prev) => ({
+                                                        ...prev,
+                                                        storeRegion: nextRegion,
+                                                        storeRegions: [nextRegion],
+                                                        storeBranchIds: [],
+                                                    }))
+                                                }}
+                                            >
+                                                <SelectTrigger id="store-location-region">
+                                                    <SelectValue placeholder="Chọn khu vực" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {STORE_REGIONS.map((region) => (
+                                                        <SelectItem key={region} value={region}>
+                                                            {region}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </>
+                                    )}
                                 </div>
                                 <div className="grid gap-2">
                                     <div className="flex items-center justify-between gap-3">
                                         <Label>
                                             {shouldEditStoreManagerLocation
-                                                ? "Cửa hàng quản lí (chọn tối đa 5)"
-                                                : shouldEditTechnicianLocation
-                                                    ? "Cửa hàng (chọn 1)"
-                                                    : "Chi nhánh (chọn 1)"}
+                                            ? "Cửa hàng quản lí (chọn tối đa 5)"
+                                            : shouldEditTechnicianLocation
+                                                ? "Cửa hàng (chọn 1)"
+                                                : "Cửa hàng phụ trách (chọn tối đa 5)"}
                                         </Label>
                                         {personForm.storeBranchIds.length > 0 ? (
                                             <Button
@@ -1108,7 +1187,7 @@ export default function PeoplePage() {
                                                                 setPersonForm((prev) => ({
                                                                     ...prev,
                                                                     storeBranchIds: event.target.checked
-                                                                        ? shouldEditStoreManagerLocation
+                                                                        ? canEditMultipleStoreBranches
                                                                             ? prev.storeBranchIds.includes(branch.id) || prev.storeBranchIds.length >= storeLocationBranchSelectionLimit
                                                                                 ? prev.storeBranchIds
                                                                                 : [...prev.storeBranchIds, branch.id]

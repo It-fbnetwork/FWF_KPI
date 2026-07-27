@@ -12,6 +12,7 @@ type RegisterInput = {
   role: UserRole;
   department: Department;
   storeRegion?: string;
+  storeRegions?: string[];
   storeBranchIds?: number[];
   storeLeadUserId?: string;
 };

@@ -80,6 +80,23 @@ export const STORE_BRANCHES_BY_REGION = STORE_REGIONS.reduce<Record<StoreRegion,
 });
 
 export const STORE_BRANCH_ID_SET = new Set(STORE_BRANCHES.map((branch) => branch.id));
+export const STORE_BRANCH_BY_ID = new Map(STORE_BRANCHES.map((branch) => [branch.id, branch]));
+
+export function getStoreRegionsForBranchIds(branchIds: number[] | undefined) {
+  const regions = new Set<StoreRegion>();
+  for (const branchId of branchIds ?? []) {
+    const branch = STORE_BRANCH_BY_ID.get(branchId);
+    if (branch && STORE_REGIONS.includes(branch.city as StoreRegion)) {
+      regions.add(branch.city as StoreRegion);
+    }
+  }
+  return Array.from(regions);
+}
+
+export function getStoreBranchesByRegions(regions: StoreRegion[]) {
+  const regionSet = new Set(regions);
+  return STORE_BRANCHES.filter((branch) => regionSet.has(branch.city as StoreRegion));
+}
 
 export const STORE_AREAS = {
   north: {

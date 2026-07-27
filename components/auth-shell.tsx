@@ -11,6 +11,7 @@ import { COMPANY_DOMAIN, departments, registrationRoles, storeRegistrationRoles,
 import {
   STORE_BRANCHES_BY_REGION,
   STORE_REGIONS,
+  getStoreBranchesByRegions,
   type StoreRegion
 } from "@/lib/store-branches";
 
@@ -128,6 +129,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
   const [department, setDepartment] = useState<Department>("IT");
   const [role, setRole] = useState<UserRole>("employee");
   const [storeRegion, setStoreRegion] = useState<StoreRegion>("Hồ Chí Minh");
+  const [storeRegions, setStoreRegions] = useState<StoreRegion[]>(["Hồ Chí Minh"]);
   const [storeBranchIds, setStoreBranchIds] = useState<number[]>([]);
   const [storeLeadUserId, setStoreLeadUserId] = useState("");
   const [otp, setOtp] = useState("");
@@ -161,12 +163,17 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
     }
   }, [role]);
 
-  const regionBranches = useMemo(() => STORE_BRANCHES_BY_REGION[storeRegion] ?? [], [storeRegion]);
   const isStoreManagerRole = role === "store_manager";
   const isStoreDepartment = department === "Cửa hàng";
+  const isStoreLeadRole = role === "store_lead";
   const isStoreTechnicianRole = role === "store_technician";
   const isStoreTrainerRole = role === "store_trainer";
-  const storeBranchSelectionLimit = isStoreManagerRole ? 5 : 1;
+  const storeBranchSelectionLimit = isStoreManagerRole || isStoreLeadRole ? 5 : 1;
+  const selectedStoreRegions = isStoreManagerRole ? storeRegions : [storeRegion];
+  const regionBranches = useMemo(
+    () => (isStoreManagerRole ? getStoreBranchesByRegions(storeRegions) : STORE_BRANCHES_BY_REGION[storeRegion] ?? []),
+    [isStoreManagerRole, storeRegion, storeRegions]
+  );
   const storeLeadOptions = useMemo(
     () => users.filter((user) => user.department === "Cửa hàng" && user.role === "store_lead" && user.verified),
     [users]
@@ -194,11 +201,15 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
   }, [isStoreTechnicianRole, managerOptionsForTechnician, storeLeadUserId]);
 
   useEffect(() => {
-    setStoreBranchIds((prev) => prev.filter((id) => regionBranches.some((branch) => branch.id === id)));
+    const allowedBranchIds = new Set(regionBranches.map((branch) => branch.id));
+    setStoreBranchIds((prev) => prev.filter((id) => allowedBranchIds.has(id)));
   }, [regionBranches]);
 
   const normalizedStoreRegion = isStoreDepartment && !isStoreTrainerRole
-    ? storeRegion
+    ? selectedStoreRegions[0]
+    : undefined;
+  const normalizedStoreRegions = isStoreDepartment && isStoreManagerRole
+    ? selectedStoreRegions
     : undefined;
   const normalizedStoreBranchIds = isStoreDepartment && !isStoreTrainerRole
     ? storeBranchIds
@@ -251,6 +262,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
           role,
           department: effectiveDepartment,
           storeRegion: normalizedStoreRegion,
+          storeRegions: normalizedStoreRegions,
           storeBranchIds: normalizedStoreBranchIds,
           storeLeadUserId: isStoreDepartment && isStoreTechnicianRole ? storeLeadUserId : undefined
         });
@@ -314,17 +326,22 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
 
     if (registerStep === "form" && isStoreDepartment) {
       if (!isStoreTrainerRole) {
+        if (isStoreManagerRole && (storeRegions.length === 0 || storeRegions.length > 2)) {
+          setError("Quản lí khu vực cần chọn từ 1 đến 2 khu vực.");
+          setIsSubmitting(false);
+          return;
+        }
         if (storeBranchIds.length === 0) {
           setError("Phòng ban Cửa hàng bắt buộc chọn ít nhất 1 chi nhánh.");
           setIsSubmitting(false);
           return;
         }
-        if (isStoreManagerRole && storeBranchIds.length > 5) {
-          setError("Quản lí khu vực chỉ được chọn tối đa 5 cửa hàng.");
+        if ((isStoreManagerRole || isStoreLeadRole) && storeBranchIds.length > 5) {
+          setError("Vai trò này chỉ được chọn tối đa 5 cửa hàng.");
           setIsSubmitting(false);
           return;
         }
-        if (!isStoreManagerRole && storeBranchIds.length !== 1) {
+        if (!isStoreManagerRole && !isStoreLeadRole && storeBranchIds.length !== 1) {
           setError("Vai trò này chỉ được chọn đúng 1 chi nhánh.");
           setIsSubmitting(false);
           return;
@@ -347,6 +364,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
         role,
         department: effectiveDepartment,
         storeRegion: normalizedStoreRegion,
+        storeRegions: normalizedStoreRegions,
         storeBranchIds: normalizedStoreBranchIds,
         storeLeadUserId: isStoreDepartment && isStoreTechnicianRole ? storeLeadUserId : undefined
       });
@@ -389,6 +407,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
       setRole("employee");
       setDepartment("IT");
       setStoreRegion("Hồ Chí Minh");
+      setStoreRegions(["Hồ Chí Minh"]);
       setStoreBranchIds([]);
       setStoreLeadUserId("");
       setIsSubmitting(false);
@@ -594,24 +613,55 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
 
                       {!isStoreTrainerRole ? (
                         <>
-                          <label className="grid gap-2">
-                            <span className="text-sm font-medium text-text">Khu vực</span>
-                            <select
-                              value={storeRegion}
-                              onChange={(event) => setStoreRegion(event.target.value as StoreRegion)}
-                              className={selectClassName}
-                            >
-                              {STORE_REGIONS.map((region) => (
-                                <option key={region} value={region}>
-                                  {region}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
+                          {isStoreManagerRole ? (
+                            <div className="grid gap-2">
+                              <span className="text-sm font-medium text-text">Khu vực quản lí (chọn tối đa 2)</span>
+                              <div className="grid grid-cols-1 gap-2 rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 p-3 sm:grid-cols-2">
+                                {STORE_REGIONS.map((region) => {
+                                  const checked = storeRegions.includes(region);
+                                  const disabled = !checked && storeRegions.length >= 2;
+                                  return (
+                                    <label key={region} className={`flex cursor-pointer items-center gap-2 rounded-xl p-2 text-sm ${disabled ? "opacity-50" : ""}`}>
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        disabled={disabled}
+                                        onChange={(event) => {
+                                          setStoreRegions((prev) => {
+                                            if (event.target.checked) {
+                                              if (prev.includes(region) || prev.length >= 2) return prev;
+                                              return [...prev, region];
+                                            }
+                                            return prev.filter((item) => item !== region);
+                                          });
+                                        }}
+                                      />
+                                      <span>{region}</span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ) : (
+                            <label className="grid gap-2">
+                              <span className="text-sm font-medium text-text">Khu vực</span>
+                              <select
+                                value={storeRegion}
+                                onChange={(event) => setStoreRegion(event.target.value as StoreRegion)}
+                                className={selectClassName}
+                              >
+                                {STORE_REGIONS.map((region) => (
+                                  <option key={region} value={region}>
+                                    {region}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
 
                           <div className="grid gap-2">
                             <span className="text-sm font-medium text-text">
-                              {isStoreManagerRole ? "Cửa hàng quản lí (chọn tối đa 5)" : "Chi nhánh (chọn 1)"}
+                              {isStoreManagerRole || isStoreLeadRole ? "Cửa hàng phụ trách (chọn tối đa 5)" : "Chi nhánh (chọn 1)"}
                             </span>
                             <div className="max-h-56 space-y-2 overflow-y-auto rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/75 p-3">
                               {regionBranches.map((branch) => {
@@ -627,7 +677,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
                                         setStoreBranchIds((prev) => {
                                           if (event.target.checked) {
                                             if (prev.includes(branch.id) || prev.length >= storeBranchSelectionLimit) return prev;
-                                            return isStoreManagerRole ? [...prev, branch.id] : [branch.id];
+                                            return isStoreManagerRole || isStoreLeadRole ? [...prev, branch.id] : [branch.id];
                                           }
                                           return prev.filter((id) => id !== branch.id);
                                         });

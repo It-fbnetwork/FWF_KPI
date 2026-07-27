@@ -641,6 +641,7 @@ export type TeamLearningStatusRow = {
   personRole?: string;
   team: string;
   storeRegion?: string;
+  storeRegions?: string[];
   storeBranchIds?: number[];
   storeBranchNames?: string[];
   supervisorUserId?: string;
@@ -2904,6 +2905,7 @@ export async function createRegistrationOtp(input: {
   role: UserRole;
   department: Department;
   storeRegion?: string;
+  storeRegions?: string[];
   storeBranchIds?: number[];
   storeLeadUserId?: string;
 }) {
@@ -2924,6 +2926,9 @@ export async function createRegistrationOtp(input: {
     }
 
     const normalizedStoreRegion = input.storeRegion as StoreRegion | undefined;
+    const normalizedStoreRegions = Array.from(
+      new Set((input.storeRegions ?? []).map((value) => String(value).trim()).filter((value): value is StoreRegion => (STORE_REGIONS as readonly string[]).includes(value)))
+    );
     const normalizedStoreBranchIds = Array.from(
       new Set((input.storeBranchIds ?? []).map((value) => Number(value)).filter((value) => Number.isInteger(value)))
     );
@@ -2952,19 +2957,25 @@ export async function createRegistrationOtp(input: {
         if (!normalizedStoreRegion || !(STORE_REGIONS as readonly string[]).includes(normalizedStoreRegion)) {
           return { ok: false, message: "Vui lòng chọn khu vực hợp lệ." };
         }
+        const allowedStoreRegions = input.role === "store_manager"
+          ? (normalizedStoreRegions.length > 0 ? normalizedStoreRegions : [normalizedStoreRegion])
+          : [normalizedStoreRegion];
+        if (input.role === "store_manager" && allowedStoreRegions.length > 2) {
+          return { ok: false, message: "Quản lí khu vực chỉ được chọn tối đa 2 khu vực." };
+        }
         if (normalizedStoreBranchIds.length === 0) {
           return { ok: false, message: "Vui lòng chọn ít nhất 1 chi nhánh." };
         }
         if (!normalizedStoreBranchIds.every((branchId) => STORE_BRANCH_ID_SET.has(branchId))) {
           return { ok: false, message: "Danh sách chi nhánh không hợp lệ." };
         }
-        if (!normalizedStoreBranchIds.every((branchId) => STORE_BRANCHES.find((branch) => branch.id === branchId)?.city === normalizedStoreRegion)) {
+        if (!normalizedStoreBranchIds.every((branchId) => allowedStoreRegions.includes(STORE_BRANCHES.find((branch) => branch.id === branchId)?.city as StoreRegion))) {
           return { ok: false, message: "Chi nhánh không thuộc khu vực đã chọn." };
         }
-        if (input.role === "store_manager" && normalizedStoreBranchIds.length > 5) {
-          return { ok: false, message: "Quản lí khu vực chỉ được chọn tối đa 5 cửa hàng." };
+        if ((input.role === "store_manager" || input.role === "store_lead") && normalizedStoreBranchIds.length > 5) {
+          return { ok: false, message: "Vai trò này chỉ được chọn tối đa 5 cửa hàng." };
         }
-        if (input.role !== "store_manager" && normalizedStoreBranchIds.length !== 1) {
+        if (input.role !== "store_manager" && input.role !== "store_lead" && normalizedStoreBranchIds.length !== 1) {
           return { ok: false, message: "Role này chỉ được chọn đúng 1 chi nhánh." };
         }
       }
@@ -3084,6 +3095,9 @@ export async function createRegistrationOtp(input: {
   }
 
   const normalizedStoreRegion = input.storeRegion as StoreRegion | undefined;
+  const normalizedStoreRegions = Array.from(
+    new Set((input.storeRegions ?? []).map((value) => String(value).trim()).filter((value): value is StoreRegion => (STORE_REGIONS as readonly string[]).includes(value)))
+  );
   const normalizedStoreBranchIds = Array.from(
     new Set((input.storeBranchIds ?? []).map((value) => Number(value)).filter((value) => Number.isInteger(value)))
   );
@@ -3110,19 +3124,25 @@ export async function createRegistrationOtp(input: {
       if (!normalizedStoreRegion || !(STORE_REGIONS as readonly string[]).includes(normalizedStoreRegion)) {
         return { ok: false, message: "Vui lòng chọn khu vực hợp lệ." };
       }
+      const allowedStoreRegions = input.role === "store_manager"
+        ? (normalizedStoreRegions.length > 0 ? normalizedStoreRegions : [normalizedStoreRegion])
+        : [normalizedStoreRegion];
+      if (input.role === "store_manager" && allowedStoreRegions.length > 2) {
+        return { ok: false, message: "Quản lí khu vực chỉ được chọn tối đa 2 khu vực." };
+      }
       if (normalizedStoreBranchIds.length === 0) {
         return { ok: false, message: "Vui lòng chọn ít nhất 1 chi nhánh." };
       }
       if (!normalizedStoreBranchIds.every((branchId) => STORE_BRANCH_ID_SET.has(branchId))) {
         return { ok: false, message: "Danh sách chi nhánh không hợp lệ." };
       }
-      if (!normalizedStoreBranchIds.every((branchId) => STORE_BRANCHES.find((branch) => branch.id === branchId)?.city === normalizedStoreRegion)) {
+      if (!normalizedStoreBranchIds.every((branchId) => allowedStoreRegions.includes(STORE_BRANCHES.find((branch) => branch.id === branchId)?.city as StoreRegion))) {
         return { ok: false, message: "Chi nhánh không thuộc khu vực đã chọn." };
       }
-      if (input.role === "store_manager" && normalizedStoreBranchIds.length > 5) {
-        return { ok: false, message: "Quản lí khu vực chỉ được chọn tối đa 5 cửa hàng." };
+      if ((input.role === "store_manager" || input.role === "store_lead") && normalizedStoreBranchIds.length > 5) {
+        return { ok: false, message: "Vai trò này chỉ được chọn tối đa 5 cửa hàng." };
       }
-      if (input.role !== "store_manager" && normalizedStoreBranchIds.length !== 1) {
+      if (input.role !== "store_manager" && input.role !== "store_lead" && normalizedStoreBranchIds.length !== 1) {
         return { ok: false, message: "Role này chỉ được chọn đúng 1 chi nhánh." };
       }
     } else {
@@ -3602,6 +3622,7 @@ type PersonMutationInput = {
   imageURL?: string;
   team: string;
   storeRegion?: string;
+  storeRegions?: string[];
   storeBranchIds?: number[];
   storeLeadUserId?: string;
   storeManagerUserId?: string;
@@ -3613,6 +3634,7 @@ type SelfProfileMutationInput = {
   email: string;
   imageURL?: string;
   storeRegion?: string;
+  storeRegions?: string[];
   storeBranchIds?: number[];
   workingHours: Person["workingHours"];
 };
@@ -3678,12 +3700,19 @@ function assertCanAssignStoreLeadManager(actor: SessionActor, managerUser: UserA
 
 function normalizeStoreLocationInput(
   actor: SessionActor,
-  input: Pick<PersonMutationInput, "storeRegion" | "storeBranchIds">,
-  options: { label: string; minBranches: number; maxBranches: number }
+  input: Pick<PersonMutationInput, "storeRegion" | "storeRegions" | "storeBranchIds">,
+  options: { label: string; minBranches: number; maxBranches: number; maxRegions?: number }
 ) {
   const region = input.storeRegion?.trim() as StoreRegion | undefined;
   if (!region || !STORE_REGIONS.includes(region)) {
     throw new Error("Khu vực cửa hàng không hợp lệ.");
+  }
+  const regions = Array.from(
+    new Set((input.storeRegions ?? [region]).map((value) => String(value).trim()).filter((value): value is StoreRegion => STORE_REGIONS.includes(value as StoreRegion)))
+  );
+  const allowedRegions = options.maxRegions ? regions : [region];
+  if (options.maxRegions && (allowedRegions.length === 0 || allowedRegions.length > options.maxRegions)) {
+    throw new Error(`Vui lòng chọn từ 1 đến ${options.maxRegions} khu vực cho ${options.label}.`);
   }
 
   const branchIds = [...new Set(
@@ -3700,7 +3729,7 @@ function normalizeStoreLocationInput(
   }
 
   const branches = branchIds.map((branchId) => STORE_BRANCHES.find((item) => item.id === branchId));
-  if (branches.some((branch) => !branch || !STORE_BRANCH_ID_SET.has(branch.id) || branch.city !== region)) {
+  if (branches.some((branch) => !branch || !STORE_BRANCH_ID_SET.has(branch.id) || !allowedRegions.includes(branch.city as StoreRegion))) {
     throw new Error("Chi nhánh không thuộc khu vực đã chọn.");
   }
 
@@ -3708,18 +3737,18 @@ function normalizeStoreLocationInput(
     throw new Error(`Bạn không có quyền gán ${options.label} cho chi nhánh này.`);
   }
 
-  return { storeRegion: region, storeBranchIds: branchIds };
+  return { storeRegion: allowedRegions[0] ?? region, storeBranchIds: branchIds };
 }
 
-function normalizeStoreLeadLocationInput(actor: SessionActor, input: Pick<PersonMutationInput, "storeRegion" | "storeBranchIds">) {
-  return normalizeStoreLocationInput(actor, input, { label: "Cửa hàng trưởng", minBranches: 1, maxBranches: 1 });
+function normalizeStoreLeadLocationInput(actor: SessionActor, input: Pick<PersonMutationInput, "storeRegion" | "storeRegions" | "storeBranchIds">) {
+  return normalizeStoreLocationInput(actor, input, { label: "Cửa hàng trưởng", minBranches: 1, maxBranches: 5 });
 }
 
-function normalizeStoreManagerLocationInput(actor: SessionActor, input: Pick<PersonMutationInput, "storeRegion" | "storeBranchIds">) {
-  return normalizeStoreLocationInput(actor, input, { label: "Quản lí khu vực", minBranches: 1, maxBranches: 5 });
+function normalizeStoreManagerLocationInput(actor: SessionActor, input: Pick<PersonMutationInput, "storeRegion" | "storeRegions" | "storeBranchIds">) {
+  return normalizeStoreLocationInput(actor, input, { label: "Quản lí khu vực", minBranches: 1, maxBranches: 5, maxRegions: 2 });
 }
 
-function normalizeStoreTechnicianLocationInput(actor: SessionActor, input: Pick<PersonMutationInput, "storeRegion" | "storeBranchIds">) {
+function normalizeStoreTechnicianLocationInput(actor: SessionActor, input: Pick<PersonMutationInput, "storeRegion" | "storeRegions" | "storeBranchIds">) {
   return normalizeStoreLocationInput(actor, input, { label: "Kỹ thuật viên", minBranches: 1, maxBranches: 1 });
 }
 
@@ -4400,9 +4429,15 @@ export async function updateOwnProfile(
   }
 
   const canUpdateOwnStoreLocation =
-    actor.user.department === "Cửa hàng" && (actor.user.role === "store_technician" || actor.user.role === "store_manager");
+    actor.user.department === "Cửa hàng" &&
+    (actor.user.role === "store_technician" || actor.user.role === "store_manager" || actor.user.role === "store_lead");
   const isOwnStoreManagerProfile = actor.user.department === "Cửa hàng" && actor.user.role === "store_manager";
+  const isOwnStoreLeadProfile = actor.user.department === "Cửa hàng" && actor.user.role === "store_lead";
+  const canOwnProfileSelectMultipleStores = isOwnStoreManagerProfile || isOwnStoreLeadProfile;
   const normalizedStoreRegion = updates.storeRegion?.trim() as StoreRegion | undefined;
+  const normalizedStoreRegions = Array.from(
+    new Set((updates.storeRegions ?? []).map((value) => String(value).trim()).filter((value): value is StoreRegion => (STORE_REGIONS as readonly string[]).includes(value)))
+  );
   const normalizedStoreBranchIds = Array.from(
     new Set((updates.storeBranchIds ?? []).map((value) => Number(value)).filter((value) => Number.isInteger(value)))
   );
@@ -4410,16 +4445,22 @@ export async function updateOwnProfile(
     if (!normalizedStoreRegion || !(STORE_REGIONS as readonly string[]).includes(normalizedStoreRegion)) {
       throw new Error("Vui lòng chọn khu vực hợp lệ.");
     }
-    if (isOwnStoreManagerProfile && (normalizedStoreBranchIds.length === 0 || normalizedStoreBranchIds.length > 5)) {
-      throw new Error("Quản lí khu vực cần chọn từ 1 đến 5 cửa hàng.");
+    const allowedStoreRegions = isOwnStoreManagerProfile
+      ? (normalizedStoreRegions.length > 0 ? normalizedStoreRegions : [normalizedStoreRegion])
+      : [normalizedStoreRegion];
+    if (isOwnStoreManagerProfile && allowedStoreRegions.length > 2) {
+      throw new Error("Quản lí khu vực chỉ được chọn tối đa 2 khu vực.");
     }
-    if (!isOwnStoreManagerProfile && normalizedStoreBranchIds.length !== 1) {
+    if (canOwnProfileSelectMultipleStores && (normalizedStoreBranchIds.length === 0 || normalizedStoreBranchIds.length > 5)) {
+      throw new Error("Vai trò này cần chọn từ 1 đến 5 cửa hàng.");
+    }
+    if (!canOwnProfileSelectMultipleStores && normalizedStoreBranchIds.length !== 1) {
       throw new Error("Kỹ thuật viên cần chọn đúng 1 cửa hàng.");
     }
     if (!normalizedStoreBranchIds.every((branchId) => STORE_BRANCH_ID_SET.has(branchId))) {
       throw new Error("Danh sách cửa hàng không hợp lệ.");
     }
-    if (!normalizedStoreBranchIds.every((branchId) => STORE_BRANCHES.find((branch) => branch.id === branchId)?.city === normalizedStoreRegion)) {
+    if (!normalizedStoreBranchIds.every((branchId) => allowedStoreRegions.includes(STORE_BRANCHES.find((branch) => branch.id === branchId)?.city as StoreRegion))) {
       throw new Error("Cửa hàng không thuộc khu vực đã chọn.");
     }
   }

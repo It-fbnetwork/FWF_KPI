@@ -23,7 +23,13 @@ import { useDirectory } from "@/components/directory-provider"
 import { useWorkspace } from "@/components/workspace-context"
 import { isAdminLikeRole } from "@/lib/auth"
 import { findPersonForAuthUser, getTeamById } from "@/lib/people"
-import { STORE_BRANCHES_BY_REGION, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches"
+import {
+    STORE_BRANCHES_BY_REGION,
+    STORE_REGIONS,
+    getStoreBranchesByRegions,
+    getStoreRegionsForBranchIds,
+    type StoreRegion,
+} from "@/lib/store-branches"
 import {
     Plus,
     Bell,
@@ -60,6 +66,7 @@ type ProfileFormState = {
     email: string
     imageURL: string
     storeRegion: StoreRegion
+    storeRegions: StoreRegion[]
     storeBranchIds: number[]
     start: string
     end: string
@@ -187,24 +194,40 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         }
     const currentStoreRegion = ((currentUser.storeRegion ?? user?.storeRegion ?? "Hồ Chí Minh") as StoreRegion)
     const currentStoreBranchIds = currentUser.storeBranchIds ?? user?.storeBranchIds ?? []
+    const currentStoreRegions = getStoreRegionsForBranchIds(currentStoreBranchIds)
+    const initialStoreRegions = currentStoreRegions.length > 0 ? currentStoreRegions.slice(0, 2) : [currentStoreRegion]
     const [profileForm, setProfileForm] = useState<ProfileFormState>({
         name: currentUser.name,
         email: currentUser.email,
         imageURL: currentUser.imageURL === "/placeholder.svg" ? "" : currentUser.imageURL,
         storeRegion: currentStoreRegion,
+        storeRegions: initialStoreRegions,
         storeBranchIds: currentStoreBranchIds,
         start: currentUser.workingHours.start,
         end: currentUser.workingHours.end,
         timezone: currentUser.workingHours.timezone,
     })
+    const [profileStoreBranchSearchQuery, setProfileStoreBranchSearchQuery] = useState("")
     const canUpdateOwnStoreLocation =
-        user?.department === "Cửa hàng" && (user?.role === "store_technician" || user?.role === "store_manager")
+        user?.department === "Cửa hàng" &&
+        (user?.role === "store_technician" || user?.role === "store_manager" || user?.role === "store_lead")
     const isProfileStoreManager = user?.department === "Cửa hàng" && user?.role === "store_manager"
-    const profileStoreBranchSelectionLimit = isProfileStoreManager ? 5 : 1
+    const isProfileStoreLead = user?.department === "Cửa hàng" && user?.role === "store_lead"
+    const canProfileSelectMultipleStores = isProfileStoreManager || isProfileStoreLead
+    const profileStoreBranchSelectionLimit = canProfileSelectMultipleStores ? 5 : 1
     const profileRegionBranches = useMemo(
-        () => STORE_BRANCHES_BY_REGION[profileForm.storeRegion] ?? [],
-        [profileForm.storeRegion],
+        () => isProfileStoreManager
+            ? getStoreBranchesByRegions(profileForm.storeRegions)
+            : STORE_BRANCHES_BY_REGION[profileForm.storeRegion] ?? [],
+        [isProfileStoreManager, profileForm.storeRegion, profileForm.storeRegions],
     )
+    const filteredProfileRegionBranches = useMemo(() => {
+        const normalizedQuery = profileStoreBranchSearchQuery.trim().toLowerCase()
+        if (!normalizedQuery) return profileRegionBranches
+        return profileRegionBranches.filter((branch) =>
+            `${branch.name} ${branch.address}`.toLowerCase().includes(normalizedQuery)
+        )
+    }, [profileRegionBranches, profileStoreBranchSearchQuery])
 
     const canAccessELearning =
         user?.department === "Cửa hàng" || user?.role === "admin" || user?.role === "ceo"
@@ -487,12 +510,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
 
     const openProfileDialog = () => {
+        const nextStoreRegion = ((currentUser.storeRegion ?? user?.storeRegion ?? "Hồ Chí Minh") as StoreRegion)
+        const nextStoreBranchIds = currentUser.storeBranchIds ?? user?.storeBranchIds ?? []
+        const nextStoreRegions = getStoreRegionsForBranchIds(nextStoreBranchIds)
+        setProfileStoreBranchSearchQuery("")
         setProfileForm({
             name: currentUser.name,
             email: currentUser.email,
             imageURL: currentUser.imageURL === "/placeholder.svg" ? "" : currentUser.imageURL,
-            storeRegion: ((currentUser.storeRegion ?? user?.storeRegion ?? "Hồ Chí Minh") as StoreRegion),
-            storeBranchIds: currentUser.storeBranchIds ?? user?.storeBranchIds ?? [],
+            storeRegion: nextStoreRegion,
+            storeRegions: nextStoreRegions.length > 0 ? nextStoreRegions.slice(0, 2) : [nextStoreRegion],
+            storeBranchIds: nextStoreBranchIds,
             start: currentUser.workingHours.start,
             end: currentUser.workingHours.end,
             timezone: currentUser.workingHours.timezone,
@@ -514,15 +542,23 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             return
         }
         if (canUpdateOwnStoreLocation) {
-            if (isProfileStoreManager && (profileForm.storeBranchIds.length === 0 || profileForm.storeBranchIds.length > 5)) {
+            if (isProfileStoreManager && (profileForm.storeRegions.length === 0 || profileForm.storeRegions.length > 2)) {
                 toast({
-                    title: "Thiếu cửa hàng",
-                    description: "Quản lí khu vực cần chọn từ 1 đến 5 cửa hàng đang phụ trách.",
+                    title: "Thiếu khu vực",
+                    description: "Quản lí khu vực cần chọn từ 1 đến 2 khu vực.",
                     variant: "destructive",
                 })
                 return
             }
-            if (!isProfileStoreManager && profileForm.storeBranchIds.length !== 1) {
+            if (canProfileSelectMultipleStores && (profileForm.storeBranchIds.length === 0 || profileForm.storeBranchIds.length > 5)) {
+                toast({
+                    title: "Thiếu cửa hàng",
+                    description: "Vai trò này cần chọn từ 1 đến 5 cửa hàng đang phụ trách.",
+                    variant: "destructive",
+                })
+                return
+            }
+            if (!canProfileSelectMultipleStores && profileForm.storeBranchIds.length !== 1) {
                 toast({
                     title: "Thiếu cửa hàng",
                     description: "Kỹ thuật viên cần chọn đúng 1 cửa hàng đang phụ trách.",
@@ -543,7 +579,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     name: profileForm.name,
                     email: profileForm.email,
                     imageURL: profileForm.imageURL,
-                    storeRegion: canUpdateOwnStoreLocation ? profileForm.storeRegion : undefined,
+                    storeRegion: canUpdateOwnStoreLocation
+                        ? isProfileStoreManager
+                            ? profileForm.storeRegions[0]
+                            : profileForm.storeRegion
+                        : undefined,
+                    storeRegions: canUpdateOwnStoreLocation && isProfileStoreManager ? profileForm.storeRegions : undefined,
                     storeBranchIds: canUpdateOwnStoreLocation ? profileForm.storeBranchIds : undefined,
                     workingHours: {
                         start: profileForm.start,
@@ -1189,27 +1230,89 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         {canUpdateOwnStoreLocation ? (
                             <div className="grid gap-4 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
                                 <div className="grid gap-2">
-                                    <Label htmlFor="profile-store-region">Khu vực</Label>
-                                    <select
-                                        id="profile-store-region"
-                                        value={profileForm.storeRegion}
-                                        onChange={(event) => {
-                                            updateProfileForm("storeRegion", event.target.value as StoreRegion)
-                                            updateProfileForm("storeBranchIds", [])
-                                        }}
-                                        className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-gray-900 ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 dark:text-white"
-                                    >
-                                        {STORE_REGIONS.map((region) => (
-                                            <option key={region} value={region}>
-                                                {region}
-                                            </option>
-                                        ))}
-                                    </select>
+                                    {isProfileStoreManager ? (
+                                        <>
+                                            <Label>Khu vực quản lí (chọn tối đa 2)</Label>
+                                            <div className="grid grid-cols-1 gap-2 rounded-md border border-gray-200 p-2 dark:border-gray-700 sm:grid-cols-2">
+                                                {STORE_REGIONS.map((region) => {
+                                                    const checked = profileForm.storeRegions.includes(region)
+                                                    const disabled = !checked && profileForm.storeRegions.length >= 2
+                                                    return (
+                                                        <label
+                                                            key={region}
+                                                            className={`flex cursor-pointer items-center gap-2 rounded-md p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-700/50 ${disabled ? "opacity-50" : ""}`}
+                                                        >
+                                                            <Checkbox
+                                                                checked={checked}
+                                                                disabled={disabled}
+                                                                onCheckedChange={(nextChecked) => {
+                                                                    setProfileStoreBranchSearchQuery("")
+                                                                    setProfileForm((prev) => {
+                                                                        const nextRegions = nextChecked === true
+                                                                            ? prev.storeRegions.includes(region) || prev.storeRegions.length >= 2
+                                                                                ? prev.storeRegions
+                                                                                : [...prev.storeRegions, region]
+                                                                            : prev.storeRegions.filter((item) => item !== region)
+                                                                        const allowedBranchIds = new Set(getStoreBranchesByRegions(nextRegions).map((branch) => branch.id))
+                                                                        return {
+                                                                            ...prev,
+                                                                            storeRegion: nextRegions[0] ?? prev.storeRegion,
+                                                                            storeRegions: nextRegions,
+                                                                            storeBranchIds: prev.storeBranchIds.filter((branchId) => allowedBranchIds.has(branchId)),
+                                                                        }
+                                                                    })
+                                                                }}
+                                                            />
+                                                            <span>{region}</span>
+                                                        </label>
+                                                    )
+                                                })}
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Label htmlFor="profile-store-region">Khu vực</Label>
+                                            <select
+                                                id="profile-store-region"
+                                                value={profileForm.storeRegion}
+                                                onChange={(event) => {
+                                                    setProfileStoreBranchSearchQuery("")
+                                                    updateProfileForm("storeRegion", event.target.value as StoreRegion)
+                                                    updateProfileForm("storeBranchIds", [])
+                                                }}
+                                                className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-gray-900 ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 dark:text-white"
+                                            >
+                                                {STORE_REGIONS.map((region) => (
+                                                    <option key={region} value={region}>
+                                                        {region}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </>
+                                    )}
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label>{isProfileStoreManager ? "Cửa hàng quản lí (chọn tối đa 5)" : "Cửa hàng phụ trách"}</Label>
+                                    <div className="flex items-center justify-between gap-3">
+                                        <Label>{canProfileSelectMultipleStores ? "Cửa hàng phụ trách (chọn tối đa 5)" : "Cửa hàng phụ trách"}</Label>
+                                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                                            Đã chọn {profileForm.storeBranchIds.length}/{profileStoreBranchSelectionLimit}
+                                        </span>
+                                    </div>
+                                    <Input
+                                        value={profileStoreBranchSearchQuery}
+                                        onChange={(event) => setProfileStoreBranchSearchQuery(event.target.value)}
+                                        placeholder="Tìm theo tên cửa hàng..."
+                                    />
                                     <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border border-gray-200 p-2 dark:border-gray-700">
-                                        {profileRegionBranches.map((branch) => {
+                                        {profileRegionBranches.length === 0 ? (
+                                            <p className="px-2 py-3 text-sm text-gray-500 dark:text-gray-400">
+                                                Không có cửa hàng khả dụng trong khu vực này.
+                                            </p>
+                                        ) : filteredProfileRegionBranches.length === 0 ? (
+                                            <p className="px-2 py-3 text-sm text-gray-500 dark:text-gray-400">
+                                                Không tìm thấy cửa hàng phù hợp.
+                                            </p>
+                                        ) : filteredProfileRegionBranches.map((branch) => {
                                             const checked = profileForm.storeBranchIds.includes(branch.id)
                                             const disabled = !checked && profileForm.storeBranchIds.length >= profileStoreBranchSelectionLimit
                                             return (
@@ -1224,7 +1327,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                                             updateProfileForm(
                                                                 "storeBranchIds",
                                                                 nextChecked === true
-                                                                    ? isProfileStoreManager
+                                                                    ? canProfileSelectMultipleStores
                                                                         ? profileForm.storeBranchIds.includes(branch.id) || profileForm.storeBranchIds.length >= profileStoreBranchSelectionLimit
                                                                             ? profileForm.storeBranchIds
                                                                             : [...profileForm.storeBranchIds, branch.id]
