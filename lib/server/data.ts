@@ -16,6 +16,7 @@ import {
 import { STORE_BRANCHES, STORE_BRANCH_ID_SET, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches";
 import type { Document, Folder } from "@/lib/documents";
 import { personDisplayRoles, teams as companyTeams, type Person } from "@/lib/people";
+import { getManagedPersonIdsFromPeople } from "@/lib/store-hierarchy";
 import type { Project, Task, TaskAttachment, TaskGroups, TimePeriod } from "@/components/workspace-context";
 import {
   isOtpEmailConfigured,
@@ -351,85 +352,8 @@ function getManagedPersonIdsByHierarchy(
   allPeople: Person[],
   userByPersonId: Map<string, UserAccount>
 ) {
-  const managed = new Set<string>();
-  managed.add(actorPerson.id);
-
-  if (isAdminLikeRole(actorUser.role)) {
-    allPeople.forEach((person) => managed.add(person.id));
-    return managed;
-  }
-
-  const actorRole = actorUser.role;
-  const actorIsStoreRole = isStoreRole(actorRole);
-  const actorBranches = new Set(actorUser.storeBranchIds ?? []);
-  const userById = new Map(Array.from(userByPersonId.values()).map((user) => [user.id, user]));
-  const sharesActorBranch = (user: UserAccount | undefined) =>
-    Boolean(user && actorBranches.size > 0 && (user.storeBranchIds ?? []).some((branchId) => actorBranches.has(branchId)));
-  const sharesActorRegion = (user: UserAccount | undefined) =>
-    Boolean(user && actorUser.storeRegion && user.storeRegion === actorUser.storeRegion);
-  const isInActorStoreScope = (user: UserAccount | undefined) => {
-    if (!user) return false;
-    if (actorBranches.size > 0) return sharesActorBranch(user);
-    if (actorUser.storeRegion) return sharesActorRegion(user);
-    return actorRole === "store_trainer";
-  };
-  const isStoreLeadManagedByActor = (user: UserAccount | undefined) => {
-    if (!user || user.role !== "store_lead" || user.department !== "Cửa hàng") return false;
-    return isInActorStoreScope(user);
-  };
-
-  for (const candidate of allPeople) {
-    const candidateUser = userByPersonId.get(candidate.id);
-    if (!candidateUser) continue;
-    if (candidate.id === actorPerson.id) continue;
-
-    if (actorUser.role === "leader") {
-      if (candidate.team === actorPerson.team) managed.add(candidate.id);
-      if (actorPerson.team === "product" && candidate.team === "store") managed.add(candidate.id);
-      continue;
-    }
-
-    if (!actorIsStoreRole) {
-      if (candidate.team === actorPerson.team) managed.add(candidate.id);
-      continue;
-    }
-
-    if (candidateUser.department !== "Cửa hàng") continue;
-    if (!isStoreRole(candidateUser.role)) continue;
-
-    if (!canManageStoreRole(actorRole, candidateUser.role)) continue;
-
-    if (actorRole === "store_trainer") {
-      if (isInActorStoreScope(candidateUser)) managed.add(candidate.id);
-      continue;
-    }
-
-    if (actorRole === "store_manager") {
-      if (isInActorStoreScope(candidateUser) || isStoreLeadManagedByActor(candidateUser)) {
-        managed.add(candidate.id);
-        continue;
-      }
-
-      if (
-        candidateUser.role === "store_technician" &&
-        isStoreLeadManagedByActor(candidateUser.storeLeadUserId ? userById.get(candidateUser.storeLeadUserId) : undefined)
-      ) {
-        managed.add(candidate.id);
-      }
-      continue;
-    }
-
-    if (actorRole === "store_lead") {
-      if (
-        candidateUser.role === "store_technician" &&
-        (candidateUser.storeLeadUserId === actorUser.id || sharesActorBranch(candidateUser))
-      ) {
-        managed.add(candidate.id);
-      }
-    }
-  }
-
-  return managed;
+  const enrichedPeople = attachUserProfileToPeople(allPeople, Array.from(userByPersonId.values()));
+  return getManagedPersonIdsFromPeople(actorUser, actorPerson, enrichedPeople);
 }
 
 export type CompanyTeamRecord = {

@@ -707,7 +707,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const mobileBottomNavItems = sidebarItems.slice(0, 5)
 
     return (
-        <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
+        <div className="flex h-dvh bg-gray-50 dark:bg-gray-900">
             {/* Mobile overlay */}
             {isSidebarOpen && (
                 <div
@@ -891,12 +891,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             {/* Main Content */}
             <div className="flex flex-1 flex-col overflow-hidden">
                 {/* Header */}
-                <header className="app-shell-header bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-3 py-3 md:px-6 md:py-4">
+                <header className="app-shell-header shrink-0 border-b border-gray-200 bg-white px-3 pb-3 pt-[max(3.75rem,calc(env(safe-area-inset-top,0px)+0.75rem))] dark:border-gray-700 dark:bg-gray-800 md:px-6 md:py-4 md:pt-4">
                     <div className="flex items-center justify-between gap-2">
                         {/* Left: hamburger (mobile) + date (desktop) */}
-                        <div className="flex items-center gap-3">
+                        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
                             <button
-                                className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700 md:hidden"
+                                className="shrink-0 rounded-lg p-2 text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700 md:hidden"
                                 onClick={() => setIsSidebarOpen(true)}
                             >
                                 <Menu className="h-5 w-5" />
@@ -906,10 +906,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                 <p className="text-base font-semibold text-gray-900 dark:text-white">{todayLabel}</p>
                             </div>
                             {/* App name on mobile */}
-                            <span className="text-base font-bold text-orange-500 md:hidden">Face Wash Fox</span>
+                            <span className="truncate text-sm font-bold text-orange-500 sm:text-base md:hidden">Face Wash Fox</span>
                         </div>
 
-                        <div className="flex items-center gap-2 md:gap-4">
+                        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2 md:gap-4">
                             {/* New Team button - desktop only */}
                             <div className="hidden items-center md:flex">
                                 <Button
@@ -1147,7 +1147,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 </header>
 
                 {/* Page Content */}
-                <div className="app-page-content flex-1 overflow-auto bg-gray-50 pb-16 dark:bg-gray-900 md:pb-0">{children}</div>
+                <div className="app-page-content flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 pb-[calc(5rem+env(safe-area-inset-bottom))] dark:bg-gray-900 md:pb-0">
+                    {children}
+                </div>
             </div>
 
             {/* Mobile Bottom Navigation */}

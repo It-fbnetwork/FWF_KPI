@@ -494,22 +494,22 @@ export default function DashboardPage() {
     )
 
     return (
-        <div className="min-h-full bg-gray-100/80 p-3 sm:p-4 lg:p-6 dark:bg-gray-950">
-            <div className="mx-auto max-w-7xl space-y-5">
+        <div className="min-h-full overflow-x-hidden bg-gray-100/80 p-3 sm:p-4 lg:p-6 dark:bg-gray-950">
+            <div className="mx-auto max-w-7xl space-y-4 sm:space-y-5">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
+                    <h1 className="text-xl font-bold leading-tight tracking-tight text-gray-900 dark:text-white sm:text-2xl lg:text-3xl">
                         Báo cáo tình hình thực hiện mục tiêu/chỉ tiêu
                     </h1>
                 </div>
 
                 {!isStoreDashboardUser && (
                 <>
-                <Card className="border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
-                    <CardContent className="flex flex-col gap-4 p-3 sm:p-4 lg:flex-row lg:items-center lg:justify-between lg:p-5">
-                        <div className="flex flex-wrap items-center gap-6">
-                            <div className="flex items-center gap-3">
-                                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Xem theo</span>
-                                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <Card className="overflow-hidden border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                    <CardContent className="grid gap-4 p-3 sm:p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] lg:items-end lg:p-5">
+                        <div className="grid min-w-0 gap-4">
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+                                <span className="shrink-0 text-sm font-medium text-gray-700 dark:text-gray-300">Xem theo</span>
+                                <label className="flex shrink-0 items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                                     <input
                                         type="radio"
                                         checked={viewMode === "project"}
@@ -517,7 +517,7 @@ export default function DashboardPage() {
                                     />
                                     Dự án
                                 </label>
-                                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                <label className="flex shrink-0 items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                                     <input
                                         type="radio"
                                         checked={viewMode === "employee"}
@@ -527,12 +527,12 @@ export default function DashboardPage() {
                                 </label>
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-3">
+                            <div className="grid min-w-0 gap-2">
                                 <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
                                     {viewMode === "employee" ? "Nhân viên" : "Mục tiêu/Chỉ tiêu"}
                                 </span>
                                 <Select value={selectedEntityId} onValueChange={setSelectedEntityId}>
-                                    <SelectTrigger className="w-full sm:w-[190px] bg-white dark:bg-gray-900">
+                                    <SelectTrigger className="w-full min-w-0 bg-white dark:bg-gray-900">
                                         <SelectValue placeholder="Tất cả" />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -553,8 +553,9 @@ export default function DashboardPage() {
                             </div>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-3">
-                            <div className="relative w-full min-w-0 flex-1 sm:w-[280px]">
+                        <div className="grid min-w-0 gap-3">
+                            <div className="relative min-w-0 w-full">
+                                <span className="sr-only">Tìm kiếm</span>
                                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                                 <Input
                                     value={searchQuery}
@@ -564,41 +565,47 @@ export default function DashboardPage() {
                                 />
                             </div>
 
-                            <div className="flex items-center gap-3">
-                                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Kỳ thực hiện</span>
-                                <Select value={selectedPeriod} onValueChange={(value: PeriodFilter) => setSelectedPeriod(value)}>
-                                    <SelectTrigger className="w-full sm:w-[170px] bg-white dark:bg-gray-900">
-                                        <SelectValue placeholder="Tất cả" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="all">Tất cả</SelectItem>
-                                        <SelectItem value="This Week">Tuần này</SelectItem>
-                                        <SelectItem value="Last Week">Tuần trước</SelectItem>
-                                        <SelectItem value="This Month">Tháng này</SelectItem>
-                                    </SelectContent>
-                                </Select>
+                            <div className="grid min-w-0 gap-2">
+                                <span className="whitespace-nowrap text-sm font-medium text-gray-700 dark:text-gray-300">
+                                    Kỳ thực hiện
+                                </span>
+                                <div className="flex min-w-0 items-center gap-2">
+                                    <Select value={selectedPeriod} onValueChange={(value: PeriodFilter) => setSelectedPeriod(value)}>
+                                        <SelectTrigger className="min-w-0 flex-1 bg-white dark:bg-gray-900">
+                                            <SelectValue placeholder="Tất cả" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">Tất cả</SelectItem>
+                                            <SelectItem value="This Week">Tuần này</SelectItem>
+                                            <SelectItem value="Last Week">Tuần trước</SelectItem>
+                                            <SelectItem value="This Month">Tháng này</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <button
+                                        type="button"
+                                        className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 shadow-sm dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+                                    >
+                                        <CalendarDays className="h-4 w-4" />
+                                    </button>
+                                </div>
                             </div>
-
-                            <button className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 shadow-sm dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
-                                <CalendarDays className="h-4 w-4" />
-                            </button>
                         </div>
                     </CardContent>
                 </Card>
 
                 <div className="grid gap-5 xl:grid-cols-[2fr_1fr]">
-                    <Card className="border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                    <Card className="overflow-hidden border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
                         <CardHeader className="pb-2">
-                            <CardTitle className="text-xl text-gray-900 dark:text-white">
+                            <CardTitle className="text-base leading-snug text-gray-900 dark:text-white sm:text-xl">
                                 Biểu đồ báo cáo tình hình thực hiện mục tiêu theo {viewMode === "employee" ? "nhân viên" : "dự án"}
                             </CardTitle>
                         </CardHeader>
-                        <CardContent className="flex h-[90%] justify-center ">
-                            <div className="grid h-full justify-center gap-6 xl:grid-cols-[0.7fr_1.3fr] xl:items-center xl:gap-8">
+                        <CardContent className="flex justify-center overflow-visible pb-6">
+                            <div className="grid w-full min-w-0 justify-center gap-6 xl:grid-cols-[0.7fr_1.3fr] xl:items-center xl:gap-8">
                                 <div className="flex items-center justify-center">
                                     <ChartContainer
                                         config={chartConfig}
-                                        className="mx-auto h-[220px] w-full max-w-[280px]"
+                                        className="mx-auto h-[200px] w-full max-w-[260px] sm:h-[220px] sm:max-w-[280px]"
                                     >
                                         <PieChart>
                                             <ChartTooltip content={(props) => <ChartTooltipContent {...(props as any)} hideLabel />} />
@@ -632,7 +639,7 @@ export default function DashboardPage() {
                                     </ChartContainer>
                                 </div>
 
-                                <div className="grid items-center justify-center gap-4 sm:grid-cols-2">
+                                <div className="grid w-full min-w-0 grid-cols-1 items-stretch gap-3 sm:grid-cols-2">
                                     {chartData.map((item) => {
                                         const percentage = totalTasks === 0 ? 0 : Math.round((item.value / totalTasks) * 100)
 
@@ -643,7 +650,7 @@ export default function DashboardPage() {
                                                         className="h-3 w-3 shrink-0 rounded-full"
                                                         style={{ backgroundColor: item.fill }}
                                                     />
-                                                    <span className="text-[14px] font-semibold leading-7 text-gray-700 dark:text-gray-200 text-100">
+                                                    <span className="truncate text-[14px] font-semibold leading-7 text-gray-700 dark:text-gray-200">
                                                         {item.label}
                                                     </span>
                                                 </div>

@@ -483,6 +483,9 @@ const groupByLabels: Record<GroupBy, string> = {
     folder: "Thư mục",
 }
 
+/** Tạm ẩn tìm kiếm + bộ lọc trên tab Tài liệu (bật lại khi cần). */
+const SHOW_DOCUMENT_SEARCH_AND_FILTERS = false
+
 type DocumentPatch = Omit<Partial<Document>, "folder" | "folderId"> & {
     folder?: string | null
     folderId?: string | null
@@ -6703,21 +6706,23 @@ export default function DocumentsPage() {
             {activeTab === "all" && <>
 
             {/* Top controls */}
-            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <div className="flex-1">
-                    <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
-                        <Input
-                            placeholder="Tìm kiếm folder, tài liệu, tags..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="pl-10 bg-white dark:bg-gray-700"
-                        />
+            <div className={`mb-5 flex flex-col gap-3 ${SHOW_DOCUMENT_SEARCH_AND_FILTERS ? "sm:flex-row sm:items-center" : ""}`}>
+                {SHOW_DOCUMENT_SEARCH_AND_FILTERS && (
+                    <div className="flex-1">
+                        <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+                            <Input
+                                placeholder="Tìm kiếm folder, tài liệu, tags..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="pl-10 bg-white dark:bg-gray-700"
+                            />
+                        </div>
                     </div>
-                </div>
+                )}
 
                 <div className="flex flex-wrap items-center gap-2">
-                    {shouldShowDocumentList && (
+                    {SHOW_DOCUMENT_SEARCH_AND_FILTERS && shouldShowDocumentList && (
                         <>
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>

@@ -9,7 +9,7 @@ export type UserRole =
   | "store_lead"
   | "store_technician";
 
-export type StoreRole = "store_trainer" | "store_manager" | "store_lead" | "store_technician";
+export type StoreRole = "store_trainer" | "store_manager" | "store_lead" | "store_technician" | "store_staff";
 
 export type Department =
   | "Hành chính - Nhân sự"
@@ -71,11 +71,18 @@ const storeRoleRank: Record<StoreRole, number> = {
   store_trainer: 4,
   store_manager: 3,
   store_lead: 2,
-  store_technician: 1
+  store_technician: 1,
+  store_staff: 1,
 };
 
 export function isStoreRole(role: UserRole | null | undefined): role is StoreRole {
-  return role === "store_trainer" || role === "store_manager" || role === "store_lead" || role === "store_technician";
+  return (
+    role === "store_trainer" ||
+    role === "store_manager" ||
+    role === "store_lead" ||
+    role === "store_technician" ||
+    role === "store_staff"
+  );
 }
 
 export function canManageStoreRole(managerRole: UserRole | null | undefined, targetRole: UserRole | null | undefined) {
