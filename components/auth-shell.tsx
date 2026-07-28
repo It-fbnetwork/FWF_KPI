@@ -12,6 +12,7 @@ import {
   STORE_BRANCHES_BY_REGION,
   STORE_REGIONS,
   getStoreBranchesByRegions,
+  getStoreRegionsForBranchIds,
   type StoreRegion
 } from "@/lib/store-branches";
 
@@ -178,7 +179,14 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
     () => users.filter((user) => user.department === "Cửa hàng" && user.role === "store_lead" && user.verified),
     [users]
   );
-  const managerOptionsForTechnician = storeLeadOptions;
+  const managerOptionsForTechnician = useMemo(
+    () =>
+      storeLeadOptions.filter((lead) => {
+        const leadRegions = getStoreRegionsForBranchIds(lead.storeBranchIds)
+        return selectedStoreRegions.some((region) => leadRegions.includes(region))
+      }),
+    [selectedStoreRegions, storeLeadOptions]
+  )
   const technicianManagerDisplay = useMemo(() => {
     if (!storeLeadUserId) {
       return "Không có";

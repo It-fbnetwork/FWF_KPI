@@ -570,6 +570,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         setIsProfileSubmitting(true)
 
+        const profileStoreRegionsFromBranches = getStoreRegionsForBranchIds(profileForm.storeBranchIds)
+
         try {
             const response = await fetch("/api/profile", {
                 method: "PATCH",
@@ -580,9 +582,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     email: profileForm.email,
                     imageURL: profileForm.imageURL,
                     storeRegion: canUpdateOwnStoreLocation
-                        ? isProfileStoreManager
-                            ? profileForm.storeRegions[0]
-                            : profileForm.storeRegion
+                        ? profileStoreRegionsFromBranches[0]
+                            ?? (isProfileStoreManager ? profileForm.storeRegions[0] : profileForm.storeRegion)
                         : undefined,
                     storeRegions: canUpdateOwnStoreLocation && isProfileStoreManager ? profileForm.storeRegions : undefined,
                     storeBranchIds: canUpdateOwnStoreLocation ? profileForm.storeBranchIds : undefined,

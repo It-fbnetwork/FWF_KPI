@@ -20,7 +20,7 @@ export const STORE_BRANCHES: StoreBranch[] = [
   { id: 8, name: "Vincom Phạm Ngọc Thạch", city: "Hà Nội", address: "L4-04, Tầng 04, Vincom Center Phạm Ngọc Thạch, 02 Phạm Ngọc Thạch, P Kim Liên, Quận Đống Đa" },
   { id: 9, name: "Face Wash Fox - Starlake", city: "Hà Nội", address: "Shophouse 903B - TM1 - 3, tầng 1, Tòa nhà 903, lô H9-CT1, Khu trung tâm Khu đô thị Tây Hồ Tây, Phường Xuân Đỉnh Hà Nội, Khu đô thị Tây Hồ Tây, Hanoi City, Hà Nội 100000" },
   { id: 10, name: "Vinhome Green Bay - Đại Lộ Thăng Long", city: "Hà Nội", address: "Số 7 Đại Lộ Thăng Long, Hà Nội" },
-  { id: 11, name: "Hanoi Tower", city: "Hà Nội", address: "69 Thợ Nhuộm - Hanoi Centre - 175 Nguyễn Thái Học ( Tiến bộ Plaza)" },
+  { id: 11, name: "Hanoi Tower - 69 Thợ Nhuộm", city: "Hà Nội", address: "69 Thợ Nhuộm - Hanoi Centre - 175 Nguyễn Thái Học ( Tiến bộ Plaza)" },
   { id: 48, name: "Times City", city: "Hà Nội", address: "Vinhomes Park Hill Times City - 458 Phố Minh Khai, Phường Vĩnh Tuy Ha Noi, Hanoi City, 100000, Việt Nam" },
   { id: 49, name: "Lotte Liễu Giai", city: "Hà Nội", address: "Tầng 2, Lotte Department Store, Tòa nhà Lotte Center, 54 Liễu Giai, quận Ba Đình, Hà Nội, Việt Nam" },
   { id: 50, name: "Vincom Plaza Bắc Từ Liêm", city: "Hà Nội", address: "Gian hàng B1-08, tầng B1, số 234 Phạm Văn Đồng, P. Phú Diễn" },
@@ -62,6 +62,7 @@ export const STORE_BRANCHES: StoreBranch[] = [
   { id: 41, name: "177 Trần Phú", city: "Đà Nẵng", address: "177 Trần Phú, P. Hải Châu, TP. Đà Nẵng" },
   { id: 56, name: "Aeon Đà Nẵng", city: "Đà Nẵng", address: "46 Điện Biên Phủ, Thanh Khê, Đà Nẵng 550000, Việt Nam" },
   { id: 42, name: "Joi Boutique Bãi Trước", city: "Vũng Tàu", address: "Số 04 Thống Nhất, Phường 1, TP Vũng Tàu" },
+  { id: 43, name: "Hạ Long, Vũng Tàu", city: "Vũng Tàu", address: "Số 136 Hạ Long, Phường 2, TP Vũng Tàu" },
   { id: 44, name: "Gold Coast Nha Trang", city: "Nha Trang", address: "Tầng 04, Số 01 Trần Hưng Đạo, P. Lộc Thọ, TP Nha Trang, Khánh Hòa" },
   { id: 52, name: "Aeon Mall Hải Phòng", city: "Hải Phòng", address: "Glam Beautique - Tầng 1 10 Võ Nguyên Giáp, Phường, Lê Chân, Hải Phòng Hải Phòng, Haiphong City, 04067" },
   { id: 53, name: "Vincom Imperia Hải Phòng", city: "Hải Phòng", address: "1 Bạch Đằng, Phường, Hồng Bàng, Hải Phòng 04067, Vietnam" }

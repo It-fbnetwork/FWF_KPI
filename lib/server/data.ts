@@ -13,7 +13,13 @@ import {
   type UserAccount,
   type UserRole
 } from "@/lib/auth";
-import { STORE_BRANCHES, STORE_BRANCH_ID_SET, STORE_REGIONS, type StoreRegion } from "@/lib/store-branches";
+import {
+  STORE_BRANCHES,
+  STORE_BRANCH_ID_SET,
+  STORE_REGIONS,
+  getStoreRegionsForBranchIds,
+  type StoreRegion
+} from "@/lib/store-branches";
 import type { Document, Folder } from "@/lib/documents";
 import { personDisplayRoles, teams as companyTeams, type Person } from "@/lib/people";
 import { getManagedPersonIdsFromPeople } from "@/lib/store-hierarchy";
@@ -3657,8 +3663,15 @@ function normalizeStoreLocationInput(
     throw new Error("Chi nhánh không thuộc khu vực đã chọn.");
   }
 
-  if (isStoreManagerActor(actor) && !branchIds.every((id) => (actor.user.storeBranchIds ?? []).includes(id))) {
-    throw new Error(`Bạn không có quyền gán ${options.label} cho chi nhánh này.`);
+  if (isStoreManagerActor(actor)) {
+    const actorRegions = new Set(getStoreRegionsForBranchIds(actor.user.storeBranchIds));
+    const canAssignBranches = branchIds.every((id) => {
+      const branch = STORE_BRANCHES.find((item) => item.id === id);
+      return Boolean(branch && actorRegions.has(branch.city as StoreRegion));
+    });
+    if (!canAssignBranches) {
+      throw new Error(`Bạn không có quyền gán ${options.label} cho chi nhánh này.`);
+    }
   }
 
   return { storeRegion: allowedRegions[0] ?? region, storeBranchIds: branchIds };
@@ -4389,6 +4402,11 @@ export async function updateOwnProfile(
     }
   }
 
+  const resolvedStoreRegion =
+    canUpdateOwnStoreLocation && normalizedStoreBranchIds.length > 0
+      ? getStoreRegionsForBranchIds(normalizedStoreBranchIds)[0] ?? normalizedStoreRegion
+      : normalizedStoreRegion;
+
   if (shouldUseSupabasePhaseA()) {
     const normalizedEmail = normalizeEmail(updates.email);
     const duplicateRes = await pgQuery("select id from people where email = $1 and id <> $2 limit 1", [
@@ -4433,7 +4451,7 @@ export async function updateOwnProfile(
         now,
         actor.user.id,
         canUpdateOwnStoreLocation,
-        normalizedStoreRegion ?? null,
+        resolvedStoreRegion ?? null,
         JSON.stringify(normalizedStoreBranchIds)
       ]
     );
@@ -4480,7 +4498,7 @@ export async function updateOwnProfile(
         email: normalizedEmail,
         ...(canUpdateOwnStoreLocation
           ? {
-              storeRegion: normalizedStoreRegion,
+              storeRegion: resolvedStoreRegion,
               storeBranchIds: normalizedStoreBranchIds,
             }
           : {}),

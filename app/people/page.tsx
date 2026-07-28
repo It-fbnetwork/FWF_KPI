@@ -171,7 +171,10 @@ export default function PeoplePage() {
         () => new Set(actorUserProfile?.storeBranchIds ?? currentUser?.storeBranchIds ?? []),
         [actorUserProfile?.storeBranchIds, currentUser?.storeBranchIds]
     )
-    const managerBranchIds = actorBranchIds
+    const actorManagedRegions = useMemo(
+        () => getStoreRegionsForBranchIds([...actorBranchIds]),
+        [actorBranchIds]
+    )
     const isManagedStoreLeadPerson = (person: Person) =>
         isStoreManager &&
         person.authRole === "store_lead" &&
@@ -229,13 +232,19 @@ export default function PeoplePage() {
     const shouldEditStoreLocation = shouldEditStoreLeadLocation || shouldEditTechnicianLocation || shouldEditStoreManagerLocation
     const canEditMultipleStoreBranches = shouldEditStoreManagerLocation || shouldEditStoreLeadLocation
     const storeLocationBranchSelectionLimit = canEditMultipleStoreBranches ? 5 : 1
+    const selectableStoreRegions = useMemo(() => {
+        if (!isStoreManager || shouldEditStoreManagerLocation) return [...STORE_REGIONS]
+        if (actorManagedRegions.length === 0) return [...STORE_REGIONS]
+        return STORE_REGIONS.filter((region) => actorManagedRegions.includes(region))
+    }, [actorManagedRegions, isStoreManager, shouldEditStoreManagerLocation])
     const regionBranches = useMemo(() => {
         const branches = shouldEditStoreManagerLocation
             ? getStoreBranchesByRegions(personForm.storeRegions)
             : STORE_BRANCHES_BY_REGION[personForm.storeRegion] ?? []
-        if (!isStoreManager) return branches
-        return branches.filter((branch) => managerBranchIds.has(branch.id))
-    }, [isStoreManager, managerBranchIds, personForm.storeRegion, personForm.storeRegions, shouldEditStoreManagerLocation])
+        if (!isStoreManager || shouldEditStoreManagerLocation) return branches
+        const allowedRegions = new Set(actorManagedRegions)
+        return branches.filter((branch) => allowedRegions.has(branch.city as StoreRegion))
+    }, [actorManagedRegions, isStoreManager, personForm.storeRegion, personForm.storeRegions, shouldEditStoreManagerLocation])
     const filteredRegionBranches = useMemo(() => {
         const normalizedQuery = storeBranchSearchQuery.trim().toLowerCase()
         if (!normalizedQuery) return regionBranches
@@ -1274,7 +1283,7 @@ export default function PeoplePage() {
                                                     <SelectValue placeholder="Chọn khu vực" />
                                                 </SelectTrigger>
                                                 <SelectContent>
-                                                    {STORE_REGIONS.map((region) => (
+                                                    {selectableStoreRegions.map((region) => (
                                                         <SelectItem key={region} value={region}>
                                                             {region}
                                                         </SelectItem>

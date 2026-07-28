@@ -1,6 +1,5 @@
 import { canManageStoreRole, isAdminLikeRole, isStoreRole, type UserAccount } from "@/lib/auth";
 import type { Person } from "@/lib/people";
-import { getStoreRegionsForBranchIds, type StoreRegion } from "@/lib/store-branches";
 
 type ActorUser = Pick<UserAccount, "id" | "role" | "department" | "storeRegion" | "storeBranchIds">;
 
@@ -12,23 +11,6 @@ function sharesBranch(actorBranches: Set<number>, person: Person) {
   return Boolean(
     actorBranches.size > 0 && (person.storeBranchIds ?? []).some((branchId) => actorBranches.has(branchId))
   );
-}
-
-function sharesRegion(actorRegion: string | undefined, person: Person) {
-  if (!actorRegion) return false;
-  if (person.storeRegion === actorRegion) return true;
-  const branchRegions = getStoreRegionsForBranchIds(person.storeBranchIds);
-  return branchRegions.includes(actorRegion as StoreRegion);
-}
-
-function isInActorStoreScope(actorUser: ActorUser, actorBranches: Set<number>, person: Person) {
-  if (!person.authRole || !isStoreTeamPerson(person)) return false;
-  if (actorBranches.size > 0) return sharesBranch(actorBranches, person);
-  // Chỉ trainer được xem theo khu vực khi chưa gán chi nhánh cụ thể.
-  if (actorUser.role === "store_trainer" && actorUser.storeRegion) {
-    return sharesRegion(actorUser.storeRegion, person);
-  }
-  return false;
 }
 
 /**
@@ -72,7 +54,8 @@ export function getManagedPersonIdsFromPeople(
     if (!canManageStoreRole(actorRole, candidate.authRole)) continue;
 
     if (actorRole === "store_trainer") {
-      if (isInActorStoreScope(actorUser, actorBranches, candidate)) managed.add(candidate.id);
+      // Trainer không gán chi nhánh/khu vực — phạm vi toàn hệ thống cửa hàng.
+      managed.add(candidate.id);
       continue;
     }
 
