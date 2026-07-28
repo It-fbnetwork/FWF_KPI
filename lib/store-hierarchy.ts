@@ -24,13 +24,11 @@ function sharesRegion(actorRegion: string | undefined, person: Person) {
 function isInActorStoreScope(actorUser: ActorUser, actorBranches: Set<number>, person: Person) {
   if (!person.authRole || !isStoreTeamPerson(person)) return false;
   if (actorBranches.size > 0) return sharesBranch(actorBranches, person);
-  if (actorUser.storeRegion) return sharesRegion(actorUser.storeRegion, person);
-  return actorUser.role === "store_trainer";
-}
-
-function isStoreLeadManagedByActor(actorUser: ActorUser, actorBranches: Set<number>, person: Person) {
-  if (person.authRole !== "store_lead" || !isStoreTeamPerson(person)) return false;
-  return isInActorStoreScope(actorUser, actorBranches, person);
+  // Chỉ trainer được xem theo khu vực khi chưa gán chi nhánh cụ thể.
+  if (actorUser.role === "store_trainer" && actorUser.storeRegion) {
+    return sharesRegion(actorUser.storeRegion, person);
+  }
+  return false;
 }
 
 /**
@@ -53,12 +51,6 @@ export function getManagedPersonIdsFromPeople(
   const actorRole = actorUser.role;
   const actorIsStoreRole = isStoreRole(actorRole);
   const actorBranches = new Set(actorUser.storeBranchIds ?? actorPerson.storeBranchIds ?? []);
-
-  const userByUserId = new Map(
-    allPeople
-      .filter((person) => Boolean(person.userId))
-      .map((person) => [person.userId as string, person])
-  );
 
   for (const candidate of allPeople) {
     if (!candidate.authRole || !candidate.userId) continue;
@@ -85,23 +77,24 @@ export function getManagedPersonIdsFromPeople(
     }
 
     if (actorRole === "store_manager") {
-      if (isInActorStoreScope(actorUser, actorBranches, candidate) || isStoreLeadManagedByActor(actorUser, actorBranches, candidate)) {
-        managed.add(candidate.id);
-        continue;
-      }
-
-      const leadPerson = candidate.storeLeadUserId ? userByUserId.get(candidate.storeLeadUserId) : undefined;
-      if (candidate.authRole === "store_technician" && leadPerson && isStoreLeadManagedByActor(actorUser, actorBranches, leadPerson)) {
-        managed.add(candidate.id);
-      }
+      // Quản lí khu vực chỉ thấy CHT + KTV thuộc đúng các cửa hàng đã chọn (storeBranchIds).
+      if (actorBranches.size === 0) continue;
+      const isManagedStoreRole =
+        candidate.authRole === "store_lead" ||
+        candidate.authRole === "store_technician" ||
+        candidate.authRole === "store_staff";
+      if (!isManagedStoreRole) continue;
+      if (!sharesBranch(actorBranches, candidate)) continue;
+      managed.add(candidate.id);
       continue;
     }
 
     if (actorRole === "store_lead") {
-      if (
-        (candidate.authRole === "store_technician" || candidate.authRole === "store_staff") &&
-        (candidate.storeLeadUserId === actorUser.id || sharesBranch(actorBranches, candidate) || sharesRegion(actorUser.storeRegion, candidate))
-      ) {
+      if (candidate.authRole !== "store_technician" && candidate.authRole !== "store_staff") continue;
+      if (!sharesBranch(actorBranches, candidate)) continue;
+      // CHT chỉ thấy KTV cùng chi nhánh và thuộc quyền quản lý trực tiếp (hoặc chưa gán CHT).
+      const reportsToActor = !candidate.storeLeadUserId || candidate.storeLeadUserId === actorUser.id;
+      if (reportsToActor) {
         managed.add(candidate.id);
       }
     }
