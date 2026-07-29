@@ -136,6 +136,73 @@ const chartConfig = {
 
 const QUIZ_PASS_SCORE = 90
 
+function getTestReportRank(row: TestReportRow) {
+    if (row.testTotal === 0) {
+        return {
+            label: "Không có bài thi",
+            colorClass: "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300",
+        }
+    }
+
+    if (row.testBlockedViolation > 0) {
+        return {
+            label: "Bị khóa do vi phạm",
+            colorClass: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300",
+        }
+    }
+
+    const allTestsSubmitted = row.testSubmitted >= row.testTotal
+    const allTestsPassed = row.passCount >= row.testTotal
+    const hasFailedLatestScore = row.testSubmitted > row.passCount
+
+    if (allTestsSubmitted && allTestsPassed) {
+        return {
+            label: "Đã hoàn thành",
+            colorClass: "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300",
+        }
+    }
+
+    if (row.passCount > 0 && row.passCount === row.testSubmitted) {
+        return {
+            label: "Đạt",
+            colorClass: "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300",
+        }
+    }
+
+    if (hasFailedLatestScore) {
+        return {
+            label: "Cần làm lại",
+            colorClass: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300",
+        }
+    }
+
+    if (row.testInProgress > 0) {
+        return {
+            label: "Đang thi",
+            colorClass: "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300",
+        }
+    }
+
+    if (row.testEndedByUser > 0) {
+        return {
+            label: "Tự kết thúc bài",
+            colorClass: "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300",
+        }
+    }
+
+    if (row.totalAttempts > 0) {
+        return {
+            label: "Cần làm lại",
+            colorClass: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300",
+        }
+    }
+
+    return {
+        label: "Chưa thi",
+        colorClass: "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300",
+    }
+}
+
 function getProgressLabel(progress: number) {
     if (progress <= 20) {
         return "Cần xem lại"
@@ -1112,7 +1179,7 @@ export default function DashboardPage() {
                                 row.teamName.toLowerCase().includes(testSearchQuery.trim().toLowerCase())
                             )
                             const assignedPeople = filtered.filter((row) => row.testTotal > 0)
-                            const completedPeople = filtered.filter((row) => row.testTotal > 0 && row.testSubmitted >= row.testTotal)
+                            const completedPeople = filtered.filter((row) => row.testTotal > 0 && row.passCount >= row.testTotal && row.testSubmitted >= row.testTotal)
                             const inProgressPeople = filtered.filter((row) => row.testInProgress > 0)
                             const blockedViolationPeople = filtered.filter((row) => row.testBlockedViolation > 0)
                             const endedByUserPeople = filtered.filter((row) => row.testEndedByUser > 0)
@@ -1195,32 +1262,9 @@ export default function DashboardPage() {
                                                             : row.averageScore >= 50
                                                                 ? "text-amber-600 dark:text-amber-400"
                                                                 : "text-red-500 dark:text-red-400"
-                                                        const rank = row.testTotal === 0
-                                                            ? "Không có bài thi"
-                                                            : row.testBlockedViolation > 0
-                                                                ? "Bị khóa do vi phạm"
-                                                            : row.testEndedByUser > 0
-                                                                ? "Tự kết thúc bài"
-                                                            : row.highestScore >= QUIZ_PASS_SCORE && row.testSubmitted >= row.testTotal
-                                                                ? "Đã hoàn thành"
-                                                                : row.totalAttempts > 0
-                                                                    ? "Cần làm lại"
-                                                                    : row.testInProgress > 0
-                                                                        ? "Đang thi"
-                                                                        : "Chưa thi"
-                                                        const rankColor = row.testTotal === 0
-                                                            ? "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
-                                                            : row.testBlockedViolation > 0
-                                                                ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
-                                                            : row.testEndedByUser > 0
-                                                                ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
-                                                            : row.highestScore >= QUIZ_PASS_SCORE && row.testSubmitted >= row.testTotal
-                                                                ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
-                                                                : row.totalAttempts > 0
-                                                                    ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
-                                                                    : row.testInProgress > 0
-                                                                        ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                                                                        : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+                                                        const rankMeta = getTestReportRank(row)
+                                                        const rank = rankMeta.label
+                                                        const rankColor = rankMeta.colorClass
 
                                                         return (
                                                             <Fragment key={row.personId}>
@@ -1238,7 +1282,7 @@ export default function DashboardPage() {
                                                                     </td>
                                                                     <td className="px-5 py-4 font-medium text-gray-900 dark:text-white">
                                                                         <div className="flex items-center gap-2.5">
-                                                                            <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold text-white ${row.testBlockedViolation > 0 ? "bg-red-600" : row.testEndedByUser > 0 ? "bg-amber-500" : row.highestScore >= QUIZ_PASS_SCORE ? "bg-green-500" : row.testInProgress > 0 ? "bg-blue-500" : row.totalAttempts > 0 ? "bg-red-500" : "bg-gray-500"}`}>
+                                                                            <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold text-white ${row.testBlockedViolation > 0 ? "bg-red-600" : row.testEndedByUser > 0 && row.passCount === 0 ? "bg-amber-500" : row.passCount >= row.testTotal && row.testTotal > 0 ? "bg-green-500" : row.passCount > 0 ? "bg-amber-500" : row.testInProgress > 0 ? "bg-blue-500" : row.totalAttempts > 0 ? "bg-red-500" : "bg-gray-500"}`}>
                                                                                 {row.personName.split(" ").slice(-1)[0]?.[0] ?? "?"}
                                                                             </div>
                                                                             {row.personName}

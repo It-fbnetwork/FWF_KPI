@@ -2582,9 +2582,12 @@ function canActorViewTest(actor: SessionActor, test: DbTest) {
   return Boolean(test.targetRoles?.includes(actor.user.role));
 }
 
-function personMatchesTestTargetRoles(person: { role?: string }, targetRoles?: UserRole[]) {
-  if (!targetRoles || targetRoles.length === 0) return true;
-  const mappedRole = mapStoreDisplayRoleToAuthRole(person.role ?? "");
+function personMatchesTestTargetRoles(
+  person: { role?: string; authRole?: UserRole },
+  targetRoles?: UserRole[]
+) {
+  if (!targetRoles || targetRoles.length === 0) return false;
+  const mappedRole = person.authRole ?? mapStoreDisplayRoleToAuthRole(person.role ?? "");
   return mappedRole ? targetRoles.includes(mappedRole) : false;
 }
 
@@ -9339,31 +9342,39 @@ export async function getTestReport(
 
   if (shouldUseSupabasePhaseA()) {
     await ensureTestSubmissionSchemaReady();
-    const [testsRes, submissionRes, sessionRes, peopleRes, teamsRes] = await Promise.all([
+    const [testsRes, submissionRes, sessionRes, peopleRes, teamsRes, usersRes] = await Promise.all([
       pgQuery("select * from tests order by created_at desc nulls last"),
       pgQuery("select * from test_submissions order by submitted_at desc nulls last"),
       pgQuery("select * from test_sessions"),
       pgQuery("select * from people"),
       pgQuery("select id,name from company_teams"),
+      pgQuery("select id, person_id, role, department, store_region, store_branch_ids, store_lead_user_id from users where person_id is not null"),
     ]);
     const tests = testsRes.rows.map((row) => mapPgTestRow(row));
     const submissions = submissionRes.rows.map((row) => mapPgTestSubmissionRow(row));
     const sessions = sessionRes.rows.map((row) => mapPgTestSessionRow(row));
-    const mappedPeople = peopleRes.rows.map((row) => mapDbPerson(mapPgPersonRow(row)));
+    const mappedPeople = attachUserProfileToPeople(
+      peopleRes.rows.map((row) => mapDbPerson(mapPgPersonRow(row))),
+      usersRes.rows.map((row) => mapDbUser(mapPgUserRow(row)))
+    );
     const teamNameMap = new Map(teamsRes.rows.map((team) => [String(team.id), String(team.name)]));
     const targetPeople = actor.isAdmin ? mappedPeople : actor.isLeader ? actor.teamMembers : [actor.person];
     return buildTestReportRows(targetPeople, tests, submissions, sessions, teamNameMap);
   }
 
   const db = await getMongoDb();
-  const [tests, submissions, sessions, people, companyTeams] = await Promise.all([
+  const [tests, submissions, sessions, people, companyTeams, users] = await Promise.all([
     db.collection<DbTest>("tests").find({}, { sort: { createdAt: -1 } }).toArray(),
     db.collection<DbTestSubmission>("test_submissions").find({}, { sort: { submittedAt: -1 } }).toArray(),
     db.collection<DbTestSession>("test_sessions").find({}).toArray(),
     db.collection<DbPerson>("people").find({}).toArray(),
     db.collection<DbCompanyTeam>("company_teams").find({}).toArray(),
+    db.collection<DbUser>("users").find({ personId: { $exists: true } }).toArray(),
   ]);
-  const mappedPeople = people.map(mapDbPerson);
+  const mappedPeople = attachUserProfileToPeople(
+    people.map(mapDbPerson),
+    users.map(mapDbUser)
+  );
   const teamNameMap = new Map(companyTeams.map((team) => [team._id, team.name]));
   const targetPeople = actor.isAdmin ? mappedPeople : actor.isLeader ? actor.teamMembers : [actor.person];
   return buildTestReportRows(targetPeople, tests, submissions, sessions, teamNameMap);
@@ -9395,7 +9406,13 @@ function buildTestReportRows(
       const testById = new Map(assignedTests.map((test) => [test._id, test]));
       const latestSubmissionByTestId = new Map<string, DbTestSubmission>();
       for (const submission of personAssignedSubmissions) {
-        if (!latestSubmissionByTestId.has(submission.testId)) latestSubmissionByTestId.set(submission.testId, submission);
+        const existing = latestSubmissionByTestId.get(submission.testId);
+        if (
+          !existing ||
+          new Date(submission.submittedAt).getTime() > new Date(existing.submittedAt).getTime()
+        ) {
+          latestSubmissionByTestId.set(submission.testId, submission);
+        }
       }
 
       let testSubmitted = 0;

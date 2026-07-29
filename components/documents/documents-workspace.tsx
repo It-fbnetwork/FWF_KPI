@@ -2018,18 +2018,51 @@ export default function DocumentsPage() {
         return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`
     }
 
+    const fetchTestProgressSnapshot = useCallback(async (test: TestRecord) => {
+        const res = await fetch(`/api/tests/${test.id}/progress`, { credentials: "include", cache: "no-store" })
+        const data = (await res.json()) as { ok: boolean; submissions?: TestSubmissionRecord[]; statuses?: TestProgressRow[]; message?: string }
+        if (!res.ok || !data.ok) throw new Error(data.message || "Không thể tải tiến độ")
+        return {
+            submissions: data.submissions ?? [],
+            statuses: data.statuses ?? [],
+        }
+    }, [])
+
+    const refreshOpenTestProgress = useCallback(async () => {
+        const test = testProgressModal.test
+        if (!testProgressModal.open || !test) return
+        const snapshot = await fetchTestProgressSnapshot(test)
+        setTestProgressModal((current) => {
+            if (!current.open || current.test?.id !== test.id) return current
+            return {
+                ...current,
+                isLoading: false,
+                submissions: snapshot.submissions,
+                statuses: snapshot.statuses,
+            }
+        })
+    }, [fetchTestProgressSnapshot, testProgressModal.open, testProgressModal.test])
+
     const handleTrackTestProgress = async (test: TestRecord) => {
         setTestProgressModal({ open: true, isLoading: true, test, submissions: [], statuses: [] })
         try {
-            const res = await fetch(`/api/tests/${test.id}/progress`, { credentials: "include", cache: "no-store" })
-            const data = (await res.json()) as { ok: boolean; submissions?: TestSubmissionRecord[]; statuses?: TestProgressRow[]; message?: string }
-            if (!res.ok || !data.ok) throw new Error(data.message || "Không thể tải tiến độ")
-            setTestProgressModal({ open: true, isLoading: false, test, submissions: data.submissions ?? [], statuses: data.statuses ?? [] })
+            const snapshot = await fetchTestProgressSnapshot(test)
+            setTestProgressModal({ open: true, isLoading: false, test, submissions: snapshot.submissions, statuses: snapshot.statuses })
         } catch (error) {
             setTestProgressModal({ open: true, isLoading: false, test, submissions: [], statuses: [] })
             toast({ title: error instanceof Error ? error.message : "Không thể tải tiến độ", variant: "destructive" })
         }
     }
+
+    useEffect(() => {
+        if (!testProgressModal.open || !testProgressModal.test) return
+        const interval = window.setInterval(() => {
+            void refreshOpenTestProgress().catch(() => {
+                // Keep the last loaded snapshot if the realtime refresh is interrupted.
+            })
+        }, 5000)
+        return () => window.clearInterval(interval)
+    }, [refreshOpenTestProgress, testProgressModal.open, testProgressModal.test])
 
     const handleToggleTestLock = async (test: TestRecord) => {
         if (!canToggleTestLock) return
@@ -6011,12 +6044,15 @@ export default function DocumentsPage() {
                                         const latestSubmission = testSubmissionHistory[test.id]?.[0]
                                         const latestResult = getTestSubmissionResult(test, latestSubmission)
                                         const submitted = Boolean(latestSubmission)
-                                        const lockedForEmployee = !canToggleTestLock && test.isLocked
+                                        const blockedByViolation = blockedTestIdsByViolation.has(test.id)
+                                        const endedByUser = endedTestIdsByUser.has(test.id)
+                                        const lockedForTaking = test.isLocked === true || blockedByViolation || endedByUser
+                                        const lockedForEmployee = !canToggleTestLock && lockedForTaking
 
                                         return (
                                             <div
                                                 key={test.id}
-                                                className={`flex items-start gap-2 border-b border-gray-100 py-3.5 transition-colors dark:border-gray-800/60 ${
+                                                className={`flex flex-wrap items-start gap-2 border-b border-gray-100 py-3.5 transition-colors dark:border-gray-800/60 ${
                                                     selected
                                                         ? "bg-violet-50 dark:bg-violet-900/20 border-l-[3px] border-l-violet-500 pl-[13px] pr-3"
                                                         : "px-4 hover:bg-gray-50 dark:hover:bg-gray-800/60"
@@ -6076,6 +6112,31 @@ export default function DocumentsPage() {
                                                         )}
                                                     </div>
                                                 </button>
+                                                {isMobile && selected && !canManageTests && !submitted && (
+                                                    <div className="basis-full pl-8 pr-2">
+                                                        {lockedForTaking ? (
+                                                            <div className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                                                {blockedByViolation
+                                                                    ? "Bài thi đã bị khóa do vi phạm."
+                                                                    : endedByUser
+                                                                        ? "Bài thi đã tự kết thúc."
+                                                                        : "Bài thi đang bị khóa."}
+                                                            </div>
+                                                        ) : (
+                                                            <Button
+                                                                type="button"
+                                                                onClick={(event) => {
+                                                                    event.stopPropagation()
+                                                                    void handleBeginTest(test.id)
+                                                                }}
+                                                                className="mt-1 h-10 w-full bg-blue-700 text-sm font-semibold text-white hover:bg-blue-800"
+                                                            >
+                                                                <ClipboardCheck className="mr-2 h-4 w-4" />
+                                                                Bắt đầu thi
+                                                            </Button>
+                                                        )}
+                                                    </div>
+                                                )}
                                                 {canToggleTestLock ? (
                                                     <button
                                                         type="button"
