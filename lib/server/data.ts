@@ -2555,8 +2555,7 @@ function canManageTests(actor: SessionActor) {
 }
 
 function canToggleTestLock(actor: SessionActor) {
-  if (canManageTests(actor)) return true;
-  return actor.user.department === "Cửa hàng" && (actor.user.role === "store_manager" || actor.user.role === "store_lead");
+  return canManageTests(actor);
 }
 
 function isTestLockOnlyUpdate(input: Record<string, unknown>) {

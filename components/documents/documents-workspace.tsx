@@ -642,9 +642,7 @@ export default function DocumentsPage() {
         isAdminLikeRole(user?.role) ||
         (user?.role === "leader" && user?.department === "Vận hành") ||
         (user?.role === "store_trainer" && user?.department === "Cửa hàng")
-    const canToggleTestLock =
-        canManageTests ||
-        (user?.department === "Cửa hàng" && (user?.role === "store_manager" || user?.role === "store_lead"))
+    const canToggleTestLock = canManageTests
     const canUploadDocuments = isLeaderOrAdmin || user?.department === "Cửa hàng"
     const isStoreVideoOnlyUploader = !isLeaderOrAdmin && user?.department === "Cửa hàng"
 
