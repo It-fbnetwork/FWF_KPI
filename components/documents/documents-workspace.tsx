@@ -2303,6 +2303,57 @@ export default function DocumentsPage() {
                 formatDateTime(submission.submittedAt),
             ]
         })
+        const storeBranchNameById = new Map(STORE_BRANCHES.map((branch) => [branch.id, branch.name]))
+        const entriesByStore = new Map<string, Array<{ row: TestProgressRow; score: number; storeName: string }>>()
+        completedTests.forEach((row) => {
+            const person = people.find((item) => item.id === row.personId)
+            const score = resultByPersonId.get(row.personId)?.score ?? 0
+            const branchTargets = (person?.storeBranchIds ?? []).length > 0
+                ? (person?.storeBranchIds ?? []).map((id) => ({
+                    key: String(id),
+                    name: storeBranchNameById.get(id) ?? `Cửa hàng #${id}`,
+                }))
+                : [{ key: "unassigned", name: "Chưa gán cửa hàng" }]
+            branchTargets.forEach(({ key, name }) => {
+                const list = entriesByStore.get(key) ?? []
+                list.push({ row, score, storeName: name })
+                entriesByStore.set(key, list)
+            })
+        })
+        const topPerStoreEntries: Array<{ storeName: string; row: TestProgressRow; score: number }> = []
+        entriesByStore.forEach((entries) => {
+            const maxScore = Math.max(...entries.map((entry) => entry.score))
+            const seenPersonIds = new Set<string>()
+            entries
+                .filter((entry) => entry.score === maxScore)
+                .forEach((entry) => {
+                    if (seenPersonIds.has(entry.row.personId)) return
+                    seenPersonIds.add(entry.row.personId)
+                    topPerStoreEntries.push({ storeName: entry.storeName, row: entry.row, score: entry.score })
+                })
+        })
+        topPerStoreEntries.sort((a, b) => {
+            const storeCompare = a.storeName.localeCompare(b.storeName, "vi")
+            if (storeCompare !== 0) return storeCompare
+            return b.score - a.score || a.row.personName.localeCompare(b.row.personName, "vi")
+        })
+        const topStoreHeader = ["Cửa hàng", "Khu vực", "Email", "Điểm", "Nhân viên", "Vai trò", "Người phụ trách", "Kết quả", "Số câu đúng", "Nộp lúc"]
+        const topStoreRows = topPerStoreEntries.map(({ storeName, row }) => {
+            const detail = getTestStatusPersonDetail(row)
+            const result = resultByPersonId.get(row.personId)
+            return [
+                storeName,
+                detail.storeRegion,
+                detail.email,
+                result?.score ?? "",
+                row.personName,
+                detail.role,
+                detail.supervisorName,
+                result ? (result.didPass ? "Đạt" : "Chưa đạt") : "",
+                result ? `${result.correctAnswers}/${result.totalQuestions}` : "",
+                formatDateTime(row.submittedAt),
+            ]
+        })
         const filename = `${sanitizeFilenamePart(test.title)}-tien-do-bai-thi-${new Date().toISOString().slice(0, 10)}.xls`
         const progressHeader = ["Email", "Điểm", "Nhân viên", "Vai trò", "Khu vực", "Cửa hàng", "Người phụ trách", "Trạng thái thi", "Số câu đúng", "Kết quả", "Số lần làm lại", "Bắt đầu lúc", "Nộp lúc", "Bị khóa lúc", "Lý do vi phạm", "Kết thúc lúc", "Lý do kết thúc"]
 
@@ -2388,6 +2439,15 @@ export default function DocumentsPage() {
                 ],
             },
             {
+                name: "Top diem tung CH",
+                filter: true,
+                widths: [240, 130, 210, 70, 190, 130, 170, 110, 100, 150],
+                rows: [
+                    topStoreHeader,
+                    ...topStoreRows,
+                ],
+            },
+            {
                 name: "Ket qua bai thi",
                 filter: true,
                 rows: [
@@ -2396,7 +2456,7 @@ export default function DocumentsPage() {
                 ],
             },
         ])
-    }, [getTestStatusPersonDetail, getTestSubmissionResult, testProgressModal.isLoading, testProgressModal.statuses, testProgressModal.submissions, testProgressModal.test])
+    }, [getTestStatusPersonDetail, getTestSubmissionResult, people, testProgressModal.isLoading, testProgressModal.statuses, testProgressModal.submissions, testProgressModal.test])
 
     const inferDocumentType = (fileName: string): Document["type"] => {
         const ext = fileName.split(".").pop()?.toLowerCase()
