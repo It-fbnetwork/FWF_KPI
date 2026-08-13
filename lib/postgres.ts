@@ -21,14 +21,10 @@ function normalizeConnectionString(input?: string) {
   if (!url.searchParams.get("uselibpqcompat")) {
     url.searchParams.set("uselibpqcompat", "true");
   }
-  const host = url.hostname.toLowerCase();
-  if (host.includes("pooler.supabase.com") && url.port !== "6543") {
-    url.port = "6543";
-  }
   return url.toString();
 }
 
-const connectionString = normalizeConnectionString(process.env.SUPABASE_DB_URL);
+const connectionString = normalizeConnectionString(process.env.DATABASE_URL);
 
 declare global {
   // eslint-disable-next-line no-var
@@ -39,14 +35,15 @@ declare global {
 
 function getPool() {
   if (!connectionString) {
-    throw new Error("Missing SUPABASE_DB_URL environment variable.");
+    throw new Error("Missing DATABASE_URL environment variable.");
   }
 
   if (!globalThis.__fwfPgPool__ || globalThis.__fwfPgPoolConnectionString__ !== connectionString) {
+    const poolMax = Number(process.env.DB_POOL_MAX ?? "3");
     globalThis.__fwfPgPool__ = new Pool({
       connectionString,
       ssl: { rejectUnauthorized: false },
-      max: 3,
+      max: Number.isFinite(poolMax) && poolMax > 0 ? poolMax : 3,
       min: 0,
       idleTimeoutMillis: 10000,
       connectionTimeoutMillis: 10000,
@@ -70,10 +67,11 @@ export async function pgOne<T extends QueryResultRow = QueryResultRow>(text: str
   return result.rows[0] ?? null;
 }
 
-export function shouldUseSupabasePhaseA() {
-  return true;
+export function shouldUsePostgresDataProvider() {
+  return (process.env.DATA_PROVIDER ?? "postgres").trim().toLowerCase() !== "mongodb";
 }
 
-export function isSupabaseOnlyMode() {
-  return true;
+export function isPostgresOnlyMode() {
+  const provider = (process.env.DATA_PROVIDER ?? "postgres").trim().toLowerCase();
+  return provider === "postgres" || provider === "railway";
 }

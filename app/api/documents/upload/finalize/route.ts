@@ -10,7 +10,14 @@ import { XMLParser } from "fast-xml-parser";
 import { getSessionUserId } from "@/lib/server/session";
 import type { LearningPlan, LearningStepMedia } from "@/lib/documents";
 import { countPdfPages } from "@/lib/server/pdf-text";
-import { getSupabaseStorageConfig, saveFileBuffer, saveSupabaseStorageReference, type SupabaseStorageRef } from "@/lib/server/file-storage";
+import {
+  downloadStorageBuffer,
+  saveFileBuffer,
+  saveStorageReference,
+  verifyUploadedStorageObject,
+  type StorageProvider,
+  type StorageRef
+} from "@/lib/server/file-storage";
 
 export const maxDuration = 180;
 const execFileAsync = promisify(execFile);
@@ -169,32 +176,6 @@ async function extractPptxSlideText(zip: JSZip, parser: XMLParser, slidePath: st
   const textNodes: string[] = [];
   collectSlideTextNodes(parsed, textNodes);
   return textNodes.join("\n");
-}
-
-async function downloadStorageObject(storage: SupabaseStorageRef) {
-  const config = getSupabaseStorageConfig();
-  if (!config) throw new Error("Supabase Storage chưa được cấu hình");
-
-  const objectPathEncoded = storage.path
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
-  const readUrl = `${config.baseUrl}/storage/v1/object/${encodeURIComponent(storage.bucket)}/${objectPathEncoded}`;
-  const readResponse = await fetch(readUrl, {
-    headers: {
-      Authorization: `Bearer ${config.serviceRoleKey}`,
-      apikey: config.serviceRoleKey,
-    },
-    cache: "no-store",
-  });
-
-  if (!readResponse.ok) {
-    const detail = await readResponse.text().catch(() => "");
-    throw new Error(`Không thể đọc file vừa upload (${readResponse.status}): ${detail || readResponse.statusText}`);
-  }
-
-  const bytes = await readResponse.arrayBuffer();
-  return Buffer.from(bytes);
 }
 
 function buildPdfLearningPlan(buffer: Buffer): LearningPlan {
@@ -371,12 +352,15 @@ export async function POST(request: Request) {
       size?: number;
       bucket?: string;
       objectPath?: string;
+      provider?: StorageProvider;
     };
 
     const fileId = (body.fileId ?? "").trim();
     const filename = (body.filename ?? "").trim();
     const bucket = (body.bucket ?? "").trim();
     const objectPath = (body.objectPath ?? "").trim();
+    const requestedProvider = (body.provider ?? "").trim();
+    const provider: StorageProvider = requestedProvider === "volume" ? "volume" : "r2";
     const contentType = (body.contentType ?? "").trim() || inferMimeType(filename);
     const size = Number(body.size ?? 0);
 
@@ -384,13 +368,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, message: "Thiếu thông tin finalize upload" }, { status: 400 });
     }
 
-    const storage: SupabaseStorageRef = {
-      provider: "supabase-storage",
+    const storage: StorageRef = {
+      provider,
       bucket,
       path: objectPath,
     };
 
-    await saveSupabaseStorageReference({
+    await verifyUploadedStorageObject({
+      storage,
+      expectedSize: size,
+      expectedContentType: contentType,
+    });
+
+    await saveStorageReference({
       fileId,
       filename,
       contentType,
@@ -406,7 +396,10 @@ export async function POST(request: Request) {
     let learningPlan: LearningPlan | undefined;
     const warnings: string[] = [];
     if (filename.toLowerCase().endsWith(".pdf") || filename.toLowerCase().endsWith(".pptx")) {
-      const buffer = await downloadStorageObject(storage);
+      const buffer = await downloadStorageBuffer(storage);
+      if (!buffer) {
+        throw new Error("Không thể đọc file vừa upload từ object storage");
+      }
       if (filename.toLowerCase().endsWith(".pdf")) {
         learningPlan = buildPdfLearningPlan(buffer);
       } else {

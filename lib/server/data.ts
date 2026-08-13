@@ -3,11 +3,13 @@ import "server-only";
 import { randomInt } from "node:crypto";
 import { ObjectId } from "mongodb";
 import { getMongoDb } from "@/lib/mongodb";
-import { pgQuery, shouldUseSupabasePhaseA } from "@/lib/postgres";
+import { pgQuery, shouldUsePostgresDataProvider } from "@/lib/postgres";
 import {
   canManageStoreRole,
+  canUserViewTest,
   isAdminLikeRole,
   isStoreRole,
+  normalizeTestViewerRole,
   requiresApprovalRole,
   type Department,
   type UserAccount,
@@ -607,7 +609,7 @@ declare global {
 }
 
 async function ensureQuizAttemptResetSchemaReady() {
-  if (!shouldUseSupabasePhaseA()) return;
+  if (!shouldUsePostgresDataProvider()) return;
   const state = globalThis.__fwfQuizAttemptResetSchemaReady__;
   if (state && Date.now() - state.checkedAt < 5 * 60 * 1000) return;
 
@@ -626,7 +628,7 @@ async function ensureQuizAttemptResetSchemaReady() {
 }
 
 async function ensureTestSubmissionSchemaReady() {
-  if (!shouldUseSupabasePhaseA()) return;
+  if (!shouldUsePostgresDataProvider()) return;
   const state = globalThis.__fwfTestSubmissionSchemaReady__;
   if (state && Date.now() - state.checkedAt < 5 * 60 * 1000) return;
 
@@ -1765,7 +1767,7 @@ export async function canAccessFileById(
   const actor = await getSessionActor(sessionUserId);
   if (!actor) return false;
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [docsRes, peopleRes, usersRes] = await Promise.all([
       pgQuery("select * from documents"),
       pgQuery("select id, team_id from people"),
@@ -2073,7 +2075,7 @@ function createEmptyTaskGroups(): TaskGroups {
 }
 
 export async function getAuthState(userId?: string | null) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [usersResult, userResult] = await Promise.all([
       pgQuery("select * from users order by created_at asc nulls last"),
       userId ? pgQuery("select * from users where id = $1 limit 1", [userId]) : Promise.resolve({ rows: [] }),
@@ -2099,7 +2101,7 @@ export async function getAuthState(userId?: string | null) {
 }
 
 export async function getAllRealtimePersonIds() {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const users = await pgQuery("select person_id from users where person_id is not null and person_id <> ''");
     return Array.from(new Set(users.rows.map((user) => String(user.person_id)).filter(Boolean)));
   }
@@ -2116,7 +2118,7 @@ export async function getAllRealtimePersonIds() {
 }
 
 export async function getAdminRealtimePersonIds() {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const users = await pgQuery("select person_id, role from users where person_id is not null and person_id <> ''");
     return Array.from(
       new Set(
@@ -2145,7 +2147,7 @@ export async function getAdminRealtimePersonIds() {
 }
 
 export async function getWorkspaceRealtimePersonIds(projectId: string) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [projectRes, adminPersonIds] = await Promise.all([
       pgQuery("select member_ids from workspace_teams where id = $1 limit 1", [projectId]),
       getAdminRealtimePersonIds()
@@ -2164,7 +2166,7 @@ export async function getWorkspaceRealtimePersonIds(projectId: string) {
 }
 
 export async function getDocumentRealtimeAudience(documentId: string) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [documentRes, peopleRes, usersRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [documentId]),
       pgQuery("select id, team_id, role, name, email, image_url, working_hours from people"),
@@ -2305,7 +2307,7 @@ export async function getStoreLearningAnnouncementTargets(
     return { personIds: [] as string[], emailTargets: [] as Array<{ email: string; name: string }>, documentName: "" };
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [documentRes, peopleRes, usersRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [documentId]),
       pgQuery("select * from people"),
@@ -2402,7 +2404,7 @@ async function getSessionActor(sessionUserId?: string | null): Promise<SessionAc
     return null;
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [userRows, peopleRows, allUserRows] = await Promise.all([
       pgQuery("select * from users where id = $1 limit 1", [sessionUserId]),
       pgQuery("select * from people"),
@@ -2578,7 +2580,7 @@ function normalizeTestTargetRoles(value: unknown): UserRole[] {
 
 function canActorViewTest(actor: SessionActor, test: DbTest) {
   if (canManageTests(actor)) return true;
-  return Boolean(test.targetRoles?.includes(actor.user.role));
+  return canUserViewTest(actor.user.role, test.targetRoles);
 }
 
 function personMatchesTestTargetRoles(
@@ -2586,8 +2588,11 @@ function personMatchesTestTargetRoles(
   targetRoles?: UserRole[]
 ) {
   if (!targetRoles || targetRoles.length === 0) return false;
-  const mappedRole = person.authRole ?? mapStoreDisplayRoleToAuthRole(person.role ?? "");
-  return mappedRole ? targetRoles.includes(mappedRole) : false;
+  const mappedRole =
+    normalizeTestViewerRole(person.authRole) ??
+    normalizeTestViewerRole(mapStoreDisplayRoleToAuthRole(person.role ?? "") ?? undefined);
+  if (!mappedRole) return false;
+  return targetRoles.some((role) => normalizeTestViewerRole(role) === mappedRole);
 }
 
 function canManageLearningContent(actor: SessionActor) {
@@ -2695,7 +2700,7 @@ function canViewSchedule(actor: SessionActor, schedule: DbSchedule) {
 }
 
 export async function createLoginOtp(email: string) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const normalizedEmail = normalizeEmail(email);
 
     const userRes = await pgQuery("select * from users where email = $1 limit 1", [normalizedEmail]);
@@ -2841,7 +2846,7 @@ export async function createRegistrationOtp(input: {
   storeBranchIds?: number[];
   storeLeadUserId?: string;
 }) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const normalizedEmail = normalizeEmail(input.email);
 
     const existingUserRes = await pgQuery("select id from users where email = $1 limit 1", [normalizedEmail]);
@@ -3140,7 +3145,7 @@ export async function createRegistrationOtp(input: {
 }
 
 export async function verifyRegistrationOtp(email: string, otp: string) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const normalizedEmail = normalizeEmail(email);
     const pendingRes = await pgQuery("select * from pending_registrations where id = $1 limit 1", [normalizedEmail]);
     const pendingRow = pendingRes.rows[0];
@@ -3439,7 +3444,7 @@ export async function verifyRegistrationOtp(email: string, otp: string) {
 }
 
 export async function verifyLoginOtp(email: string, otp: string) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const normalizedEmail = normalizeEmail(email);
     const pendingRes = await pgQuery("select * from pending_login_otps where id = $1 limit 1", [normalizedEmail]);
     const pendingRow = pendingRes.rows[0];
@@ -3507,7 +3512,7 @@ export async function verifyLoginOtp(email: string, otp: string) {
 }
 
 export async function getDirectory() {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [peopleRows, teamsRows, userRows] = await Promise.all([
       pgQuery("select * from people order by name asc"),
       pgQuery("select * from company_teams where id = any($1::text[]) order by name asc", [supportedTeamIds]),
@@ -3697,7 +3702,7 @@ export async function createPersonRecord(
 ) {
   const actor = await requirePeopleManagerActor(sessionUserId);
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const normalizedEmail = normalizeEmail(input.email);
     const normalizedRole = normalizePersonDisplayRole(input.role);
 
@@ -3870,7 +3875,7 @@ export async function updatePersonRecord(
 ) {
   const actor = await requirePeopleManagerActor(sessionUserId);
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from people where id = $1 limit 1", [personId]);
     const existingRow = existingRes.rows[0];
     if (!existingRow) return null;
@@ -4409,7 +4414,7 @@ export async function updateOwnProfile(
       ? getStoreRegionsForBranchIds(normalizedStoreBranchIds)[0] ?? normalizedStoreRegion
       : normalizedStoreRegion;
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const normalizedEmail = normalizeEmail(updates.email);
     const duplicateRes = await pgQuery("select id from people where email = $1 and id <> $2 limit 1", [
       normalizedEmail,
@@ -4514,7 +4519,7 @@ export async function updateOwnProfile(
 }
 
 export async function getPendingRoleApprovalRequests(sessionUserId: string | null | undefined) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const rootApproverRes = await pgQuery(
       `select id from users
        where verified = true and role in ('admin', 'ceo', 'boss')
@@ -4568,7 +4573,7 @@ export async function getPendingRoleApprovalRequests(sessionUserId: string | nul
 export async function getRoleApprovalHistory(sessionUserId: string | null | undefined) {
   await requireAdminActor(sessionUserId);
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [requestsRes, pendingRes] = await Promise.all([
       pgQuery(
         "select * from role_approval_requests where status in ('pending', 'approved', 'rejected') order by updated_at desc nulls last, created_at desc nulls last"
@@ -4646,7 +4651,7 @@ export async function getUserNotifications(
 
   const limit = Math.min(100, Math.max(1, options?.limit ?? 30));
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const conditions: string[] = ["person_id = $1"];
     const values: unknown[] = [actor.person.id];
     let idx = 2;
@@ -4748,7 +4753,7 @@ export async function markUserNotificationsAsRead(
     throw new Error("Unauthorized");
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const now = new Date().toISOString();
     if (!notificationIds || notificationIds.length === 0) {
       const result = await pgQuery(
@@ -4807,7 +4812,7 @@ export async function markUserNotificationsAsRead(
 }
 
 export async function approveRoleApprovalRequest(sessionUserId: string | null | undefined, requestId: string) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const rootApproverRes = await pgQuery(
       `select id from users
        where verified = true and role in ('admin', 'ceo', 'boss')
@@ -4998,7 +5003,7 @@ export async function approveRoleApprovalRequest(sessionUserId: string | null | 
 }
 
 export async function rejectRoleApprovalRequest(sessionUserId: string | null | undefined, requestId: string) {
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const rootApproverRes = await pgQuery(
       `select id from users
        where verified = true and role in ('admin', 'ceo', 'boss')
@@ -5115,7 +5120,7 @@ export async function deletePersonRecord(
 ) {
   const actor = await requirePeopleManagerActor(sessionUserId);
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from people where id = $1 limit 1", [personId]);
     const existingRow = existingRes.rows[0];
     if (!existingRow) return false;
@@ -5219,7 +5224,7 @@ export async function deletePersonRecord(
 export async function getWorkspaceData(sessionUserId?: string | null) {
   const actor = await getSessionActor(sessionUserId);
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [projectsRes, tasksRes] = await Promise.all([
       pgQuery("select * from workspace_teams order by created_at asc nulls last"),
       pgQuery("select * from tasks order by task_number asc nulls last")
@@ -5310,7 +5315,7 @@ export async function createWorkspaceTeam(sessionUserId: string | null | undefin
     updatedAt: now
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await pgQuery(
       `insert into workspace_teams (id,name,slug,color,member_ids,owner_id,visibility,created_at,updated_at,raw_json)
        values ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::timestamptz,$9::timestamptz,$10::jsonb)`,
@@ -5359,7 +5364,7 @@ export async function createWorkspaceTask(sessionUserId: string | null | undefin
   }
 
   let project: DbWorkspaceTeam | null = null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const projectRes = await pgQuery("select * from workspace_teams where id = $1 limit 1", [input.projectId]);
     project = projectRes.rows[0] ? mapPgWorkspaceTeamRow(projectRes.rows[0]) : null;
   } else {
@@ -5379,7 +5384,7 @@ export async function createWorkspaceTask(sessionUserId: string | null | undefin
   }
 
   let nextTaskNumber = 1;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const maxTaskRes = await pgQuery("select coalesce(max(task_number), 0) as max_task_number from tasks");
     nextTaskNumber = Number(maxTaskRes.rows[0]?.max_task_number ?? 0) + 1;
   } else {
@@ -5415,7 +5420,7 @@ export async function createWorkspaceTask(sessionUserId: string | null | undefin
     updatedAt: now
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await pgQuery(
       `insert into tasks (id,task_number,workspace_team_id,time_period,name,comments,likes,assignee_id,status,status_color,execution_period,audience,weight,result_method,target,progress,kpis,child_goal,parent_goal,description,attachments,created_at,updated_at,raw_json)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20,$21::jsonb,$22::timestamptz,$23::timestamptz,$24::jsonb)`,
@@ -5465,7 +5470,7 @@ export async function updateWorkspaceTask(
   }
 
   let existingTask: DbTask | null = null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from tasks where task_number = $1 limit 1", [taskNumber]);
     existingTask = existingRes.rows[0] ? mapPgTaskRow(existingRes.rows[0]) : null;
   } else {
@@ -5510,7 +5515,7 @@ export async function updateWorkspaceTask(
 
   updatePayload.updatedAt = new Date().toISOString();
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const mergedTask: DbTask = {
       ...existingTask,
       ...updatePayload,
@@ -5566,7 +5571,7 @@ export async function getScheduleData(
 
   const normalizedProjectId = projectId?.trim() || "general";
   let schedules: DbSchedule[] = [];
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const schedulesRes = await pgQuery(
       "select * from schedules where workspace_team_id = $1 order by date_key asc, start_time asc, created_at asc",
       [normalizedProjectId]
@@ -5612,7 +5617,7 @@ export async function createScheduleRecord(
   const normalizedProjectId = input.projectId?.trim() || "general";
   if (normalizedProjectId !== "general") {
     let resolvedProject: DbWorkspaceTeam | null = null;
-    if (shouldUseSupabasePhaseA()) {
+    if (shouldUsePostgresDataProvider()) {
       const projectRes = await pgQuery("select * from workspace_teams where id = $1 limit 1", [normalizedProjectId]);
       resolvedProject = projectRes.rows[0] ? mapPgWorkspaceTeamRow(projectRes.rows[0]) : null;
     } else {
@@ -5640,7 +5645,7 @@ export async function createScheduleRecord(
     updatedAt: now
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await pgQuery(
       `insert into schedules (id,workspace_team_id,date_key,title,description,start_time,end_time,attendee_ids,created_by_person_id,created_at,updated_at,raw_json)
        values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::timestamptz,$11::timestamptz,$12::jsonb)`,
@@ -5689,7 +5694,7 @@ export async function updateScheduleRecord(
   }
 
   let existing: DbSchedule | null = null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from schedules where id = $1 limit 1", [scheduleId]);
     existing = existingRes.rows[0] ? mapPgScheduleRow(existingRes.rows[0]) : null;
   } else {
@@ -5716,7 +5721,7 @@ export async function updateScheduleRecord(
     updatedAt: new Date().toISOString(),
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await pgQuery(
       `update schedules
        set date_key=$1,title=$2,description=$3,start_time=$4,end_time=$5,attendee_ids=$6::jsonb,updated_at=$7::timestamptz,raw_json=$8::jsonb
@@ -5766,7 +5771,7 @@ export async function getScheduleRealtimeRecipients(
   }
 
   let existing: DbSchedule | null = null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from schedules where id = $1 limit 1", [scheduleId]);
     existing = existingRes.rows[0] ? mapPgScheduleRow(existingRes.rows[0]) : null;
   } else {
@@ -5799,7 +5804,7 @@ export async function deleteScheduleRecord(
   }
 
   let existing: DbSchedule | null = null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from schedules where id = $1 limit 1", [scheduleId]);
     existing = existingRes.rows[0] ? mapPgScheduleRow(existingRes.rows[0]) : null;
   } else {
@@ -5810,7 +5815,7 @@ export async function deleteScheduleRecord(
     throw new Error("Forbidden");
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await pgQuery("delete from schedules where id = $1", [scheduleId]);
     return true;
   }
@@ -5830,7 +5835,7 @@ export async function getTestsData(sessionUserId: string | null | undefined) {
     throw new Error("Forbidden");
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const recordsRes = await pgQuery("select * from tests order by created_at desc nulls last");
     return recordsRes.rows
       .map((row) => mapPgTestRow(row))
@@ -5854,7 +5859,7 @@ export async function getMyTestSubmissionsData(sessionUserId: string | null | un
 
   if (canManageTests(actor)) return [];
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     const submissionRes = await pgQuery(
       "select * from test_submissions where person_id = $1 order by submitted_at desc",
@@ -5876,7 +5881,7 @@ export async function getMyTestSessionsData(sessionUserId: string | null | undef
   if (!canViewTests(actor)) throw new Error("Forbidden");
   if (canManageTests(actor)) return [];
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     const sessionRes = await pgQuery(
       "select * from test_sessions where person_id = $1",
@@ -5967,7 +5972,7 @@ export async function createTestRecord(
     updatedAt: now
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await pgQuery(
       `insert into tests (id,title,description,questions,duration_minutes,created_by_person_id,created_at,updated_at,raw_json)
        values ($1,$2,$3,$4::jsonb,$5,$6,$7::timestamptz,$8::timestamptz,$9::jsonb)`,
@@ -6012,7 +6017,7 @@ export async function updateTestRecord(
   if (!canManageTests(actor) && !(isLockOnlyUpdate && canToggleTestLock(actor))) throw new Error("Forbidden");
 
   let existing: DbTest | null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
     existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
   } else {
@@ -6064,7 +6069,7 @@ export async function updateTestRecord(
     updatedAt: new Date().toISOString(),
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await pgQuery(
       `update tests set title=$2,description=$3,questions=$4::jsonb,duration_minutes=$5,updated_at=$6::timestamptz,raw_json=$7::jsonb where id=$1`,
       [testId, updated.title, updated.description, JSON.stringify(updated.questions), updated.durationMinutes, updated.updatedAt, JSON.stringify(updated)]
@@ -6083,7 +6088,7 @@ export async function deleteTestRecord(sessionUserId: string | null | undefined,
   if (!canManageTests(actor)) throw new Error("Forbidden");
 
   let existing: DbTest | null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
     existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
   } else {
@@ -6091,7 +6096,7 @@ export async function deleteTestRecord(sessionUserId: string | null | undefined,
   }
   if (!existing) throw new Error("Không tìm thấy bài thi.");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     await Promise.all([
       pgQuery("delete from test_submissions where test_id = $1", [testId]),
@@ -6120,7 +6125,7 @@ export async function resetTestForPerson(
   if (!canManageTests(actor)) throw new Error("Forbidden");
 
   let existing: DbTest | null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
     existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
   } else {
@@ -6130,7 +6135,7 @@ export async function resetTestForPerson(
 
   let targetPerson = actor.teamMembers.find((person) => person.id === personId);
   if (!targetPerson && actor.isAdmin) {
-    if (shouldUseSupabasePhaseA()) {
+    if (shouldUsePostgresDataProvider()) {
       const personRes = await pgQuery("select * from people where id = $1 limit 1", [personId]);
       targetPerson = personRes.rows[0] ? mapDbPerson(mapPgPersonRow(personRes.rows[0])) : undefined;
     } else {
@@ -6145,7 +6150,7 @@ export async function resetTestForPerson(
     throw new Error("Nhân viên này không thuộc nhóm được giao bài thi.");
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     const [submissionResult, sessionResult] = await Promise.all([
       pgQuery("delete from test_submissions where test_id = $1 and person_id = $2", [testId, personId]),
@@ -6178,7 +6183,7 @@ export async function submitTestRecord(
   if (canManageTests(actor)) throw new Error("Forbidden");
 
   let existing: DbTest | null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
     existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
   } else {
@@ -6187,7 +6192,7 @@ export async function submitTestRecord(
   if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
   if (existing.isLocked) throw new Error("Bài thi đang bị khóa.");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     const existingSubmissionRes = await pgQuery(
       "select id from test_submissions where test_id = $1 and person_id = $2 limit 1",
@@ -6220,7 +6225,7 @@ export async function submitTestRecord(
     submittedAt: now,
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await pgQuery(
       `insert into test_submissions (id,test_id,person_id,answers,text_answers,submitted_at,raw_json)
        values ($1,$2,$3,$4::jsonb,$5::jsonb,$6::timestamptz,$7::jsonb)`,
@@ -6293,7 +6298,7 @@ export async function startTestRecord(sessionUserId: string | null | undefined, 
   if (canManageTests(actor)) throw new Error("Forbidden");
 
   let existing: DbTest | null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
     existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
   } else {
@@ -6302,7 +6307,7 @@ export async function startTestRecord(sessionUserId: string | null | undefined, 
   if (!existing || !canActorViewTest(actor, existing)) throw new Error("Forbidden");
   if (existing.isLocked) throw new Error("Bài thi đang bị khóa.");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     const existingSubmissionRes = await pgQuery(
       "select id from test_submissions where test_id = $1 and person_id = $2 limit 1",
@@ -6329,7 +6334,7 @@ export async function startTestRecord(sessionUserId: string | null | undefined, 
     updatedAt: now,
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await pgQuery(
       `insert into test_sessions (id,test_id,person_id,status,started_at,updated_at,raw_json)
        values ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb)
@@ -6392,7 +6397,7 @@ export async function blockTestRecordForViolation(
   if (canManageTests(actor)) throw new Error("Forbidden");
 
   let existing: DbTest | null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
     existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
   } else {
@@ -6415,7 +6420,7 @@ export async function blockTestRecordForViolation(
     violationReason: reason || "Vi phạm quy định bảo vệ bài thi.",
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     await pgQuery(
       `insert into test_sessions (id,test_id,person_id,status,started_at,updated_at,raw_json)
@@ -6477,7 +6482,7 @@ export async function endTestRecordByUser(sessionUserId: string | null | undefin
   if (canManageTests(actor)) throw new Error("Forbidden");
 
   let existing: DbTest | null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
     existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
   } else {
@@ -6497,7 +6502,7 @@ export async function endTestRecordByUser(sessionUserId: string | null | undefin
     endReason: "Nhân viên xác nhận kết thúc bài làm trước khi nộp.",
   };
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     await pgQuery(
       `insert into test_sessions (id,test_id,person_id,status,started_at,updated_at,raw_json)
@@ -6558,7 +6563,7 @@ export async function getTestProgressData(sessionUserId: string | null | undefin
   if (!canManageTests(actor)) throw new Error("Forbidden");
 
   let existing: DbTest | null;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from tests where id = $1 limit 1", [testId]);
     existing = existingRes.rows[0] ? mapPgTestRow(existingRes.rows[0]) : null;
   } else {
@@ -6572,7 +6577,7 @@ export async function getTestProgressData(sessionUserId: string | null | undefin
     .filter((person) => personMatchesTestTargetRoles(person, existing.targetRoles))
     .sort((a, b) => a.name.localeCompare(b.name, "vi"));
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     const [submissionRes, sessionRes, peopleRes] = await Promise.all([
       pgQuery("select * from test_submissions where test_id = $1 order by submitted_at desc", [testId]),
@@ -6654,7 +6659,7 @@ export async function getDocumentsData(sessionUserId?: string | null, folderId?:
   const actor = await getSessionActor(sessionUserId);
   if (!actor) return [];
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [docsResult, peopleResult, usersResult] = await Promise.all([
       folderId === undefined
         ? pgQuery("select * from documents order by modified_at desc nulls last")
@@ -6759,7 +6764,7 @@ export async function createDocumentRecord(
   }
   const isAdminActor = actor.user.role === "admin" || actor.user.role === "ceo";
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     let normalizedVisibility: Document["visibility"] = input.visibility ?? "team";
     let normalizedVisibleToPersonIds: string[] = input.visibleToPersonIds ?? [];
 
@@ -6871,7 +6876,7 @@ export async function updateDocumentRecord(
   if (!actor) throw new Error("Unauthorized");
   const isAdminActor = actor.user.role === "admin" || actor.user.role === "ceo";
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select * from documents where id = $1 limit 1", [documentId]);
     const existingRow = existingRes.rows[0];
     if (!existingRow) return null;
@@ -7007,7 +7012,7 @@ export async function deleteDocumentRecord(sessionUserId: string | null | undefi
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existingRes = await pgQuery("select owner_id from documents where id = $1 limit 1", [documentId]);
     const row = existingRes.rows[0];
     if (!row) return false;
@@ -7031,7 +7036,7 @@ export async function getFoldersData(sessionUserId?: string | null) {
   const actor = await getSessionActor(sessionUserId);
   if (!actor) return [];
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const query = actor.isAdmin
       ? "select * from document_folders order by created_at desc nulls last"
       : "select * from document_folders where team_id = $1 order by created_at desc nulls last";
@@ -7060,7 +7065,7 @@ export async function createFolderRecord(
 
   if (!folderName) throw new Error("Folder name is required");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     if (parentId) {
       const parentRes = await pgQuery("select * from document_folders where id = $1 limit 1", [parentId]);
       const parentRow = parentRes.rows[0];
@@ -7126,7 +7131,7 @@ export async function updateFolderRecord(
   if (!actor) throw new Error("Unauthorized");
   if (!canCreateDocuments(actor)) throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const hasMissingParentIdColumn = (error: unknown) =>
       (error instanceof Error ? error.message : String(error)).toLowerCase().includes("parent_id");
     const folderRes = await pgQuery("select * from document_folders where id = $1 limit 1", [folderId]);
@@ -7254,7 +7259,7 @@ export async function deleteFolderRecord(sessionUserId: string | null | undefine
   if (!actor) throw new Error("Unauthorized");
   if (!canCreateDocuments(actor)) throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const folderRes = await pgQuery("select * from document_folders where id = $1 limit 1", [folderId]);
     const row = folderRes.rows[0];
     if (!row) return false;
@@ -7318,7 +7323,7 @@ export async function getChatsForPerson(sessionUserId: string | null | undefined
   }
 
   const personId = actor.person.id;
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const rawThreadsRes = await pgQuery(
       "select * from chat_threads where coalesce(participant_ids,'[]'::jsonb) @> to_jsonb(array[$1]::text[]) order by updated_at desc nulls last",
       [personId]
@@ -7408,7 +7413,7 @@ export async function sendChatMessage({
     throw new Error("Unauthorized");
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const threadRes = await pgQuery("select * from chat_threads where id = $1 limit 1", [threadId]);
     const row = threadRes.rows[0];
     const thread = row ? mapPgChatThreadRow(row) : null;
@@ -7511,7 +7516,7 @@ export async function markChatThreadAsRead(sessionUserId: string | null | undefi
     throw new Error("Unauthorized");
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const threadRes = await pgQuery("select * from chat_threads where id = $1 limit 1", [threadId]);
     const row = threadRes.rows[0];
     const thread = row ? mapPgChatThreadRow(row) : null;
@@ -7545,7 +7550,7 @@ export async function createOrGetChatThread(sessionUserId: string | null | undef
     throw new Error("Forbidden");
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const participantIds = [actor.person.id, teammateId].sort();
     const threadId = participantIds.join("__");
     const now = new Date().toISOString();
@@ -7602,7 +7607,7 @@ export async function getChatThreadParticipantIds(sessionUserId: string | null |
     throw new Error("Unauthorized");
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const threadRes = await pgQuery("select * from chat_threads where id = $1 limit 1", [threadId]);
     const row = threadRes.rows[0];
     const thread = row ? mapPgChatThreadRow(row) : null;
@@ -7628,7 +7633,7 @@ export async function getLearningQuiz(
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const result = await pgQuery("select * from learning_quizzes where document_id = $1 limit 1", [documentId]);
     const row = result.rows[0];
     if (!row) return null;
@@ -7661,7 +7666,7 @@ export async function createLearningQuiz(
   if (!actor) throw new Error("Unauthorized");
   if (!canManageLearningContent(actor)) throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const existing = await pgQuery("select id from learning_quizzes where document_id = $1 limit 1", [input.documentId]);
     if (existing.rows[0]) throw new Error("Quiz đã tồn tại cho tài liệu này.");
 
@@ -7745,7 +7750,7 @@ export async function updateLearningQuiz(
   if (!actor) throw new Error("Unauthorized");
   if (!canManageLearningContent(actor)) throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const currentRes = await pgQuery("select * from learning_quizzes where id = $1 limit 1", [quizId]);
     const row = currentRes.rows[0];
     if (!row) return null;
@@ -7810,7 +7815,7 @@ export async function deleteLearningQuiz(
   if (!actor) throw new Error("Unauthorized");
   if (!canManageLearningContent(actor)) throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const result = await pgQuery("delete from learning_quizzes where id = $1", [quizId]);
     return (result.rowCount ?? 0) > 0;
   }
@@ -7831,7 +7836,7 @@ export async function submitQuizAttempt(
   if (!actor) throw new Error("Unauthorized");
   if (actor.user.role === "store_trainer") throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureQuizAttemptResetSchemaReady();
 
     const [latestAttemptRes, latestResetRes] = await Promise.all([
@@ -7952,7 +7957,7 @@ export async function getMyQuizAttempt(
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureQuizAttemptResetSchemaReady();
     const [result, latestResetRes] = await Promise.all([
       pgQuery(
@@ -8004,7 +8009,7 @@ export async function getTeamQuizAttempts(
   if (!actor) throw new Error("Unauthorized");
   if (!canViewTeamLearningReports(actor)) throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureQuizAttemptResetSchemaReady();
     const [documentRes, attemptsRes, peopleRes, resetRes, quizRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [documentId]),
@@ -8169,7 +8174,7 @@ export async function getTeamQuizAttemptResets(
   if (!actor) throw new Error("Unauthorized");
   if (!canViewTeamLearningReports(actor)) throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureQuizAttemptResetSchemaReady();
     const [documentRes, resetRes, peopleRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [documentId]),
@@ -8268,7 +8273,7 @@ export async function resetQuizAttemptForPerson(
   if (!actor) throw new Error("Unauthorized");
   if (!actor.isAdmin && actor.user.role !== "store_trainer") throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureQuizAttemptResetSchemaReady();
     const [personRes, documentRes] = await Promise.all([
       pgQuery("select id,name from people where id = $1 limit 1", [input.personId]),
@@ -8343,7 +8348,7 @@ export async function resetLearningProgressForPerson(
   if (!actor) throw new Error("Unauthorized");
   if (!actor.isAdmin && actor.user.role !== "store_trainer") throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureQuizAttemptResetSchemaReady();
     const [personRes, documentRes, peopleRes, usersRes] = await Promise.all([
       pgQuery("select * from people where id = $1 limit 1", [input.personId]),
@@ -8450,7 +8455,7 @@ export async function getMyLearningProgress(
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const result = await pgQuery(
       "select * from learning_progress where person_id = $1 order by updated_at desc nulls last",
       [actor.person.id]
@@ -8476,7 +8481,7 @@ export async function maybeCreateLearningDeadlineReminders(sessionUserId: string
   const reminderWindowMs = 24 * 60 * 60 * 1000;
   const dedupeWindowIso = new Date(nowMs - 6 * 60 * 60 * 1000).toISOString();
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const documents = await getDocumentsData(sessionUserId);
     const learningDocs = documents.filter((doc) => {
       if (!doc.isLearningMaterial || !doc.deadlineAt) return false;
@@ -8644,7 +8649,7 @@ export async function upsertMyLearningProgress(
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [documentRes, peopleRes, usersRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [input.documentId]),
       pgQuery("select id,team_id from people"),
@@ -8796,7 +8801,7 @@ export async function getTeamLearningStatusesForDocument(
   if (!actor) throw new Error("Unauthorized");
   if (!canViewTeamLearningReports(actor)) throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureQuizAttemptResetSchemaReady();
     const [documentRes, peopleRes, usersRes, progressesRes, attemptsRes, resetRes] = await Promise.all([
       pgQuery("select * from documents where id = $1 limit 1", [documentId]),
@@ -9058,7 +9063,7 @@ export async function getQuizReport(
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const [attemptRows, quizzesRes, docsRes, peopleRes, teamsRes, progressRes, usersRes] = await Promise.all([
       pgQuery("select * from quiz_attempts order by submitted_at desc nulls last"),
       pgQuery("select id,title from learning_quizzes"),
@@ -9339,7 +9344,7 @@ export async function getTestReport(
   if (!actor) throw new Error("Unauthorized");
   if (!canViewTests(actor)) throw new Error("Forbidden");
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     await ensureTestSubmissionSchemaReady();
     const [testsRes, submissionRes, sessionRes, peopleRes, teamsRes, usersRes] = await Promise.all([
       pgQuery("select * from tests order by created_at desc nulls last"),
@@ -9503,7 +9508,7 @@ export async function deleteChatMessage(sessionUserId: string | null | undefined
     throw new Error("Unauthorized");
   }
 
-  if (shouldUseSupabasePhaseA()) {
+  if (shouldUsePostgresDataProvider()) {
     const messageRes = await pgQuery("select * from chat_messages where id = $1 and thread_id = $2 limit 1", [messageId, threadId]);
     const row = messageRes.rows[0];
     const message = row ? mapPgChatMessageRow(row) : null;

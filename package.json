@@ -10,7 +10,8 @@
     "cap:ios": "cap open ios",
     "cap:android": "cap open android",
     "lint": "next lint",
-    "migrate:gridfs:to:supabase": "node ./scripts/migration/migrate-gridfs-to-supabase.js"
+    "migrate:gridfs:to-postgres": "node ./scripts/migration/migrate-gridfs-to-postgres.js",
+    "migrate:storage:r2-metadata": "node ./scripts/migration/apply-r2-storage-metadata.js"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.0",

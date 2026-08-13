@@ -85,6 +85,21 @@ export function isStoreRole(role: UserRole | null | undefined): role is StoreRol
   );
 }
 
+export function normalizeTestViewerRole(role: UserRole | string | null | undefined): UserRole | null {
+  if (!role) return null;
+  if (role === "store_staff") return "store_technician";
+  return role as UserRole;
+}
+
+export function canUserViewTest(
+  userRole: UserRole | string | null | undefined,
+  targetRoles?: Array<UserRole | string> | null
+) {
+  const viewerRole = normalizeTestViewerRole(userRole);
+  if (!viewerRole || !targetRoles?.length) return false;
+  return targetRoles.some((role) => normalizeTestViewerRole(role) === viewerRole);
+}
+
 export function canManageStoreRole(managerRole: UserRole | null | undefined, targetRole: UserRole | null | undefined) {
   if (!isStoreRole(managerRole) || !isStoreRole(targetRole)) {
     return false;

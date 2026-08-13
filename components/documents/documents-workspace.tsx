@@ -18,7 +18,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { documentTypes, formatFileSize, formatDate, type Document, type Folder } from "@/lib/documents"
-import { isAdminLikeRole, type UserAccount } from "@/lib/auth"
+import { canUserViewTest, isAdminLikeRole, type UserAccount } from "@/lib/auth"
 import { STORE_BRANCHES } from "@/lib/store-branches"
 import { useIsMobile } from "@/components/hooks/use-mobile"
 import { useExamSecureMode } from "@/components/hooks/use-exam-secure-mode"
@@ -1501,7 +1501,7 @@ export default function DocumentsPage() {
             ))
             const nextVisibleTests = canManageTests
                 ? payload.tests
-                : payload.tests.filter((test) => Boolean(user?.role && test.targetRoles?.includes(user.role)))
+                : payload.tests.filter((test) => canUserViewTest(user?.role, test.targetRoles))
             setSelectedTestId((prev) => prev && nextVisibleTests.some((test) => test.id === prev) ? prev : (nextVisibleTests[0]?.id ?? null))
         } catch {
             // keep the rest of the workspace usable
@@ -2602,7 +2602,7 @@ export default function DocumentsPage() {
                     ? "specific"
                     : visibility
 
-            // Direct upload to Supabase Storage (signed URL) to speed up large files.
+            // Direct upload to object storage (signed URL) to speed up large files.
             let uploadedFileUrl: string | undefined
             let generatedLearningPlan: Document["learningPlan"] | undefined
             const inferredDocType = inferDocumentType(file.name)
@@ -2629,6 +2629,7 @@ export default function DocumentsPage() {
                 ok: boolean
                 message?: string
                 fileId: string
+                provider: "r2" | "volume"
                 bucket: string
                 objectPath: string
                 uploadUrl: string
@@ -2640,7 +2641,7 @@ export default function DocumentsPage() {
                 method: "PUT",
                 headers: {
                     "content-type": presignData.contentType || contentType,
-                    "x-upsert": "true",
+                    "x-fwf-filename": file.name,
                 },
                 body: file,
             })
@@ -2655,6 +2656,7 @@ export default function DocumentsPage() {
                     filename: file.name,
                     contentType: presignData.contentType || contentType,
                     size: file.size,
+                    provider: presignData.provider,
                     bucket: presignData.bucket,
                     objectPath: presignData.objectPath,
                 }),
@@ -3532,7 +3534,7 @@ export default function DocumentsPage() {
         !test.isLocked &&
         !blockedTestIdsByViolation.has(test.id) &&
         !endedTestIdsByUser.has(test.id) &&
-        Boolean(user?.role && test.targetRoles?.includes(user.role))
+        canUserViewTest(user?.role, test.targetRoles)
     )
     const isExamSecureActive =
         hasOpenTakingTest || (quizTakeModal.open && !quizTakeModal.isSubmitted)
@@ -4973,7 +4975,7 @@ export default function DocumentsPage() {
     const canAutoGenerateByFormat = quizCreateDocType === "pdf" || quizCreateDocType === "pptx"
     const visibleTests = canManageTests
         ? tests
-        : tests.filter((test) => Boolean(user?.role && test.targetRoles?.includes(user.role)))
+        : tests.filter((test) => canUserViewTest(user?.role, test.targetRoles))
     const activeTakingTest = visibleTests.find((test) =>
         takingTestIds.has(test.id) &&
         !submittedTestIds.has(test.id) &&

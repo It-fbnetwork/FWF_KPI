@@ -1,4 +1,4 @@
-import { getFileByIdWithFallback } from "@/lib/server/file-storage";
+import { createStorageDownloadUrl, getFileById, getFileRecordById } from "@/lib/server/file-storage";
 import { canAccessFileById } from "@/lib/server/data";
 import { getSessionUserId } from "@/lib/server/session";
 
@@ -27,80 +27,71 @@ export async function GET(
     if (!canAccess) {
       return new Response("Forbidden", { status: 403 });
     }
-    const file = await getFileByIdWithFallback(fileId);
+
+    const file = await getFileRecordById(fileId);
     if (!file) {
       return new Response("File not found", { status: 404 });
     }
-    const contentType = file.contentType;
-    const fileSize = file.size;
-    const fileBuffer = file.buffer;
+    if (!file.storage) {
+      return new Response("File has not been migrated to external storage", { status: 409 });
+    }
 
-    const rangeHeader = request.headers.get("range");
-
-    if (rangeHeader) {
-      // Parse Range: bytes=start-end
-      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-      if (!match) {
-        return new Response("Invalid range", { status: 416 });
+    if (file.storage.provider === "volume") {
+      const loadedFile = await getFileById(fileId);
+      if (!loadedFile) {
+        return new Response("File not found on volume", { status: 404 });
       }
-      const start = parseInt(match[1]!, 10);
-      const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
-      if (start >= fileSize || start < 0) {
-        return new Response("Requested range not satisfiable", {
-          status: 416,
-          headers: { "Content-Range": `bytes */${fileSize}` },
+
+      const rangeHeader = request.headers.get("range");
+      const safeAsciiName = toAsciiFilename(loadedFile.filename);
+      const encodedUnicodeName = encodeRfc5987ValueChars(loadedFile.filename);
+      const baseHeaders = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": loadedFile.contentType,
+        "Cache-Control": "private, max-age=300",
+        "Content-Disposition": `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUnicodeName}`,
+      };
+
+      if (rangeHeader) {
+        const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+        if (!match) {
+          return new Response("Invalid range", { status: 416 });
+        }
+        const start = Number.parseInt(match[1]!, 10);
+        const end = match[2] ? Number.parseInt(match[2], 10) : loadedFile.size - 1;
+        if (start >= loadedFile.size || start < 0) {
+          return new Response("Requested range not satisfiable", {
+            status: 416,
+            headers: { "Content-Range": `bytes */${loadedFile.size}` },
+          });
+        }
+        const clampedEnd = Math.min(end, loadedFile.size - 1);
+        const chunkBuffer = loadedFile.buffer.subarray(start, clampedEnd + 1);
+        return new Response(chunkBuffer, {
+          status: 206,
+          headers: {
+            ...baseHeaders,
+            "Content-Range": `bytes ${start}-${clampedEnd}/${loadedFile.size}`,
+            "Content-Length": String(chunkBuffer.length),
+          },
         });
       }
-      const clampedEnd = Math.min(end, fileSize - 1);
-      if (clampedEnd < start) {
-        return new Response("Requested range not satisfiable", {
-          status: 416,
-          headers: { "Content-Range": `bytes */${fileSize}` },
-        });
-      }
-      const chunkSize = clampedEnd - start + 1;
 
-      const chunkBuffer = fileBuffer.subarray(start, clampedEnd + 1);
-
-      const readable = new ReadableStream({
-        start(controller) {
-          controller.enqueue(chunkBuffer);
-          controller.close();
-        },
-      });
-
-      return new Response(readable, {
-        status: 206,
+      return new Response(loadedFile.buffer, {
         headers: {
-          "Content-Range": `bytes ${start}-${clampedEnd}/${fileSize}`,
-          "Accept-Ranges": "bytes",
-          "Content-Length": chunkSize.toString(),
-          "Content-Type": contentType,
-          "Cache-Control": "public, max-age=31536000, immutable",
+          ...baseHeaders,
+          "Content-Length": String(loadedFile.size),
         },
       });
     }
 
-    // Full file response
-    const readable = new ReadableStream({
-      start(controller) {
-        controller.enqueue(fileBuffer);
-        controller.close();
-      },
+    const downloadUrl = createStorageDownloadUrl({
+      storage: file.storage,
+      filename: file.filename,
+      contentType: file.contentType,
+      expiresSeconds: 300,
     });
-
-    const safeAsciiName = toAsciiFilename(file.filename);
-    const encodedUnicodeName = encodeRfc5987ValueChars(file.filename);
-
-    return new Response(readable, {
-      headers: {
-        "Content-Type": contentType,
-        "Content-Length": fileSize.toString(),
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "public, max-age=31536000, immutable",
-        "Content-Disposition": `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUnicodeName}`,
-      },
-    });
+    return Response.redirect(downloadUrl, 302);
   } catch (error) {
     if (error instanceof Error && error.message === "Unauthorized") {
       return new Response("Unauthorized", { status: 401 });

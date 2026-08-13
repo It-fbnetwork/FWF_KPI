@@ -1,5 +1,5 @@
 import { MongoClient, type Db } from "mongodb";
-import { isSupabaseOnlyMode } from "@/lib/postgres";
+import { isPostgresOnlyMode } from "@/lib/postgres";
 
 const connectionUri = process.env.MONGODB_URI ?? process.env.MONGO_URI;
 const databaseName = process.env.MONGODB_DB ?? "fwf_kpi";
@@ -14,9 +14,9 @@ declare global {
 let clientPromise: Promise<MongoClient> | null = null;
 let mongoDisabledReason: string | null = null;
 
-if (isSupabaseOnlyMode()) {
+if (isPostgresOnlyMode()) {
   mongoDisabledReason =
-    "MongoDB is disabled in Supabase mode. Set DATA_PROVIDER=mongodb (or hybrid) if you need Mongo fallback.";
+    "MongoDB is disabled in Postgres mode. Set DATA_PROVIDER=mongodb (or hybrid) if you need Mongo fallback.";
 }
 
 export async function getMongoClient() {

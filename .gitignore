@@ -9,3 +9,6 @@ build
 .env*.local
 
 tsconfig.tsbuildinfo
+tmp/
+fwf-kpi@0.1.0
+next
