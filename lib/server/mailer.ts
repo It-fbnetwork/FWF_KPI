@@ -48,6 +48,23 @@ function getSmtpConfig() {
   };
 }
 
+function getEmailFromAddress() {
+  return (
+    getFirstEnv("RESEND_FROM", "SMTP_FROM", "EMAIL_FROM") ??
+    getFirstEnv("SMTP_USER", "EMAIL_USER") ??
+    getRequiredEnv("EMAIL_FROM")
+  );
+}
+
+function getResendConfig() {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    from: getEmailFromAddress(),
+  };
+}
+
 async function createSmtpTransporter() {
   const smtp = getSmtpConfig();
   let host = smtp.host;
@@ -83,11 +100,60 @@ async function createSmtpTransporter() {
 }
 
 export function isOtpEmailConfigured() {
+  if (process.env.RESEND_API_KEY?.trim() && getFirstEnv("RESEND_FROM", "EMAIL_FROM", "SMTP_FROM")) {
+    return true;
+  }
+
   return Boolean(
     getFirstEnv("SMTP_HOST", "EMAIL_HOST") &&
       getFirstEnv("SMTP_USER", "EMAIL_USER") &&
       getFirstEnv("SMTP_PASS", "EMAIL_PASSWORD")
   );
+}
+
+async function sendEmail({
+  to,
+  subject,
+  text,
+  html
+}: {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}) {
+  const resend = getResendConfig();
+  if (resend) {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resend.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: resend.from,
+        to: [to],
+        subject,
+        text,
+        html,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`Resend email failed (${response.status}): ${detail || response.statusText}`);
+    }
+    return;
+  }
+
+  const { from, transporter } = await createSmtpTransporter();
+  await transporter.sendMail({
+    from,
+    to,
+    subject,
+    text,
+    html
+  });
 }
 
 export async function sendOtpEmail({
@@ -99,10 +165,7 @@ export async function sendOtpEmail({
   name: string;
   otp: string;
 }) {
-  const { from, transporter } = await createSmtpTransporter();
-
-  await transporter.sendMail({
-    from,
+  await sendEmail({
     to: email,
     subject: "Mã OTP xác minh tài khoản Face Wash Fox",
     text: `Xin chào ${name}, mã OTP của bạn là ${otp}. Mã có hiệu lực trong 5 phút.`,
@@ -130,10 +193,7 @@ async function sendTransactionalEmail({
   text: string;
   html: string;
 }) {
-  const { from, transporter } = await createSmtpTransporter();
-
-  await transporter.sendMail({
-    from,
+  await sendEmail({
     to,
     subject,
     text,
