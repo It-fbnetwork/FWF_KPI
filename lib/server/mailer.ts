@@ -68,6 +68,7 @@ async function createSmtpTransporter() {
   if (smtp.family === 4) {
     const lookup = await dnsPromises.lookup(smtp.host, { family: 4 });
     host = lookup.address;
+    console.info(`[email:smtp] resolved ${smtp.host} to IPv4 ${host}`);
     transportOptions.host = host;
     transportOptions.tls = {
       ...(transportOptions.tls ?? {}),
