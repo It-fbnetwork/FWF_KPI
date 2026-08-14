@@ -1,11 +1,14 @@
 import "server-only";
 
+import dns from "node:dns";
 import nodemailer from "nodemailer";
 import type SMTPTransport from "nodemailer/lib/smtp-transport";
 
 type SmtpTransportOptionsWithSocketFamily = SMTPTransport.Options & {
   family?: number;
 };
+
+dns.setDefaultResultOrder("ipv4first");
 
 function getRequiredEnv(name: string) {
   const value = process.env[name];
