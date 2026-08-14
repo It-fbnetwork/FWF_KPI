@@ -54,6 +54,21 @@ type DbUser = {
 
 type StoredUserRole = UserRole | "boss" | "manager";
 
+function logEmailDeliveryError(context: string, error: unknown) {
+  const details =
+    error instanceof Error
+      ? {
+          name: error.name,
+          message: error.message,
+          code: (error as { code?: unknown }).code,
+          command: (error as { command?: unknown }).command,
+          responseCode: (error as { responseCode?: unknown }).responseCode,
+          response: (error as { response?: unknown }).response,
+        }
+      : { message: String(error) };
+  console.error(`[email:${context}] OTP email delivery failed`, details);
+}
+
 type DbPerson = {
   _id: string;
   name: string;
@@ -2772,7 +2787,8 @@ export async function createLoginOtp(email: string) {
       });
 
       return { ok: true, message: "OTP đăng nhập đã được gửi tới email công ty." };
-    } catch {
+    } catch (error) {
+      logEmailDeliveryError("postgres-login", error);
       await pgQuery("delete from pending_login_otps where id = $1", [normalizedEmail]);
       return { ok: false, message: "Không thể gửi OTP qua email. Vui lòng kiểm tra cấu hình SMTP." };
     }
@@ -2830,7 +2846,8 @@ export async function createLoginOtp(email: string) {
     });
 
     return { ok: true, message: "OTP đăng nhập đã được gửi tới email công ty." };
-  } catch {
+  } catch (error) {
+    logEmailDeliveryError("mongo-login", error);
     await db.collection<PendingLoginOtp>("pending_login_otps").deleteOne({ email: normalizedEmail });
     return { ok: false, message: "Không thể gửi OTP qua email. Vui lòng kiểm tra cấu hình SMTP." };
   }
@@ -3009,7 +3026,8 @@ export async function createRegistrationOtp(input: {
       });
 
       return { ok: true, message: "OTP đã được gửi tới email công ty." };
-    } catch {
+    } catch (error) {
+      logEmailDeliveryError("postgres-registration", error);
       await pgQuery("delete from pending_registrations where id = $1", [normalizedEmail]);
       return { ok: false, message: "Không thể gửi OTP qua email. Vui lòng kiểm tra cấu hình SMTP." };
     }
@@ -3138,7 +3156,8 @@ export async function createRegistrationOtp(input: {
     });
 
     return { ok: true, message: "OTP đã được gửi tới email công ty." };
-  } catch {
+  } catch (error) {
+    logEmailDeliveryError("mongo-registration", error);
     await db.collection<PendingRegistration>("pending_registrations").deleteOne({ email: normalizedEmail });
     return { ok: false, message: "Không thể gửi OTP qua email. Vui lòng kiểm tra cấu hình SMTP." };
   }
