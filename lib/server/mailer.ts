@@ -1,6 +1,7 @@
 import "server-only";
 
 import dns from "node:dns";
+import { promises as dnsPromises } from "node:dns";
 import nodemailer from "nodemailer";
 import type SMTPTransport from "nodemailer/lib/smtp-transport";
 
@@ -47,6 +48,39 @@ function getSmtpConfig() {
   };
 }
 
+async function createSmtpTransporter() {
+  const smtp = getSmtpConfig();
+  let host = smtp.host;
+  const transportOptions: SmtpTransportOptionsWithSocketFamily = {
+    host,
+    port: smtp.port,
+    secure: smtp.secure,
+    family: smtp.family,
+    connectionTimeout: smtp.connectionTimeout,
+    greetingTimeout: smtp.greetingTimeout,
+    socketTimeout: smtp.socketTimeout,
+    auth: {
+      user: smtp.user,
+      pass: smtp.pass
+    }
+  };
+
+  if (smtp.family === 4) {
+    const lookup = await dnsPromises.lookup(smtp.host, { family: 4 });
+    host = lookup.address;
+    transportOptions.host = host;
+    transportOptions.tls = {
+      ...(transportOptions.tls ?? {}),
+      servername: smtp.host
+    };
+  }
+
+  return {
+    from: smtp.from,
+    transporter: nodemailer.createTransport(transportOptions)
+  };
+}
+
 export function isOtpEmailConfigured() {
   return Boolean(
     getFirstEnv("SMTP_HOST", "EMAIL_HOST") &&
@@ -64,24 +98,10 @@ export async function sendOtpEmail({
   name: string;
   otp: string;
 }) {
-  const smtp = getSmtpConfig();
-  const transportOptions: SmtpTransportOptionsWithSocketFamily = {
-    host: smtp.host,
-    port: smtp.port,
-    secure: smtp.secure,
-    family: smtp.family,
-    connectionTimeout: smtp.connectionTimeout,
-    greetingTimeout: smtp.greetingTimeout,
-    socketTimeout: smtp.socketTimeout,
-    auth: {
-      user: smtp.user,
-      pass: smtp.pass
-    }
-  };
-  const transporter = nodemailer.createTransport(transportOptions);
+  const { from, transporter } = await createSmtpTransporter();
 
   await transporter.sendMail({
-    from: smtp.from,
+    from,
     to: email,
     subject: "Mã OTP xác minh tài khoản Face Wash Fox",
     text: `Xin chào ${name}, mã OTP của bạn là ${otp}. Mã có hiệu lực trong 5 phút.`,
@@ -109,24 +129,10 @@ async function sendTransactionalEmail({
   text: string;
   html: string;
 }) {
-  const smtp = getSmtpConfig();
-  const transportOptions: SmtpTransportOptionsWithSocketFamily = {
-    host: smtp.host,
-    port: smtp.port,
-    secure: smtp.secure,
-    family: smtp.family,
-    connectionTimeout: smtp.connectionTimeout,
-    greetingTimeout: smtp.greetingTimeout,
-    socketTimeout: smtp.socketTimeout,
-    auth: {
-      user: smtp.user,
-      pass: smtp.pass
-    }
-  };
-  const transporter = nodemailer.createTransport(transportOptions);
+  const { from, transporter } = await createSmtpTransporter();
 
   await transporter.sendMail({
-    from: smtp.from,
+    from,
     to,
     subject,
     text,
