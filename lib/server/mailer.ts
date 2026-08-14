@@ -1,6 +1,11 @@
 import "server-only";
 
 import nodemailer from "nodemailer";
+import type SMTPTransport from "nodemailer/lib/smtp-transport";
+
+type SmtpTransportOptionsWithSocketFamily = SMTPTransport.Options & {
+  family?: number;
+};
 
 function getRequiredEnv(name: string) {
   const value = process.env[name];
@@ -26,6 +31,10 @@ function getSmtpConfig() {
     host: getFirstEnv("SMTP_HOST", "EMAIL_HOST") ?? getRequiredEnv("SMTP_HOST"),
     port: Number(getFirstEnv("SMTP_PORT", "EMAIL_PORT") ?? "587"),
     secure: process.env.SMTP_SECURE === "true",
+    family: Number(process.env.SMTP_FAMILY ?? "4"),
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS ?? "15000"),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS ?? "15000"),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? "30000"),
     user: getFirstEnv("SMTP_USER", "EMAIL_USER") ?? getRequiredEnv("SMTP_USER"),
     pass: getFirstEnv("SMTP_PASS", "EMAIL_PASSWORD") ?? getRequiredEnv("SMTP_PASS"),
     from:
@@ -53,15 +62,20 @@ export async function sendOtpEmail({
   otp: string;
 }) {
   const smtp = getSmtpConfig();
-  const transporter = nodemailer.createTransport({
+  const transportOptions: SmtpTransportOptionsWithSocketFamily = {
     host: smtp.host,
     port: smtp.port,
     secure: smtp.secure,
+    family: smtp.family,
+    connectionTimeout: smtp.connectionTimeout,
+    greetingTimeout: smtp.greetingTimeout,
+    socketTimeout: smtp.socketTimeout,
     auth: {
       user: smtp.user,
       pass: smtp.pass
     }
-  });
+  };
+  const transporter = nodemailer.createTransport(transportOptions);
 
   await transporter.sendMail({
     from: smtp.from,
@@ -93,15 +107,20 @@ async function sendTransactionalEmail({
   html: string;
 }) {
   const smtp = getSmtpConfig();
-  const transporter = nodemailer.createTransport({
+  const transportOptions: SmtpTransportOptionsWithSocketFamily = {
     host: smtp.host,
     port: smtp.port,
     secure: smtp.secure,
+    family: smtp.family,
+    connectionTimeout: smtp.connectionTimeout,
+    greetingTimeout: smtp.greetingTimeout,
+    socketTimeout: smtp.socketTimeout,
     auth: {
       user: smtp.user,
       pass: smtp.pass
     }
-  });
+  };
+  const transporter = nodemailer.createTransport(transportOptions);
 
   await transporter.sendMail({
     from: smtp.from,
