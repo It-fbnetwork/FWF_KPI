@@ -7,7 +7,7 @@ export const maxDuration = 300;
 function normalizeSupabaseDbUrl(value: string) {
   const url = new URL(value);
   url.searchParams.delete("uselibpqcompat");
-  if (!url.searchParams.has("sslmode")) url.searchParams.set("sslmode", "require");
+  url.searchParams.delete("sslmode");
   return url.toString();
 }
 
