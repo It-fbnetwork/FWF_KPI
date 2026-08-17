@@ -370,15 +370,21 @@ export async function saveStorageReference(
     storage: input.storage,
     dbBlobStored: false,
   };
+  const result = await pgQuery(
+    `update uploads_blobs
+     set filename = $2,
+         content_type = $3,
+         size = $4,
+         data = $5,
+         metadata = $6::jsonb
+     where id = $1`,
+    [input.fileId, input.filename, input.contentType, input.size, Buffer.alloc(0), JSON.stringify(mergedMetadata)]
+  );
+  if (result.rowCount && result.rowCount > 0) return;
+
   await pgQuery(
     `insert into uploads_blobs (id, filename, content_type, size, data, metadata)
-     values ($1, $2, $3, $4, $5, $6::jsonb)
-     on conflict (id) do update set
-       filename = excluded.filename,
-       content_type = excluded.content_type,
-       size = excluded.size,
-       data = excluded.data,
-       metadata = excluded.metadata`,
+     values ($1, $2, $3, $4, $5, $6::jsonb)`,
     [input.fileId, input.filename, input.contentType, input.size, Buffer.alloc(0), JSON.stringify(mergedMetadata)]
   );
 }
