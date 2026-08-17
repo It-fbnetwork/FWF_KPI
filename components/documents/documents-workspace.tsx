@@ -773,6 +773,7 @@ export default function DocumentsPage() {
     const [failedCanvasPreviewKeys, setFailedCanvasPreviewKeys] = useState<Record<string, true>>({})
     const [learningPreviewErrorMessages, setLearningPreviewErrorMessages] = useState<Record<string, string>>({})
     const [loadedLearningPreviewKeys, setLoadedLearningPreviewKeys] = useState<Record<string, true>>({})
+    const [repairingPreviewDocId, setRepairingPreviewDocId] = useState<string | null>(null)
     const [learningProgress, setLearningProgress] = useState<LearningProgressState>({
         completedDocIds: [],
         startedAtByDocId: {},
@@ -2641,7 +2642,7 @@ export default function DocumentsPage() {
                 method: "PUT",
                 headers: {
                     "content-type": presignData.contentType || contentType,
-                    "x-fwf-filename": file.name,
+                    "x-fwf-filename": encodeURIComponent(file.name),
                 },
                 body: file,
             })
@@ -3820,6 +3821,36 @@ export default function DocumentsPage() {
             return { ...prev, [key]: true }
         })
     }, [])
+
+    const handleRepairLearningPreview = async (doc: Document) => {
+        if (repairingPreviewDocId) return
+        setRepairingPreviewDocId(doc.id)
+        try {
+            const res = await fetch(`/api/documents/${doc.id}/repair-preview`, {
+                method: "POST",
+                credentials: "include",
+                cache: "no-store",
+            })
+            const payload = (await res.json().catch(() => null)) as { ok?: boolean; message?: string; document?: Document } | null
+            if (!res.ok || !payload?.ok || !payload.document) {
+                throw new Error(payload?.message || "Không thể tạo lại preview")
+            }
+            setDocumentsData((prev) => prev.map((item) => (item.id === doc.id ? payload.document! : item)))
+            setSelectedLearningDoc((current) => (current?.id === doc.id ? payload.document! : current))
+            setFailedLearningPreviewKeys({})
+            setFailedCanvasPreviewKeys({})
+            setLoadedLearningPreviewKeys({})
+            setLearningPreviewErrorMessages({})
+            toast({ title: "Đã tạo lại preview tài liệu" })
+        } catch (error) {
+            toast({
+                title: error instanceof Error ? error.message : "Không thể tạo lại preview",
+                variant: "destructive",
+            })
+        } finally {
+            setRepairingPreviewDocId(null)
+        }
+    }
 
     const getIncorrectAttemptQuestions = (attempt: QuizAttemptRecord) => {
         const questions = attempt.reviewQuestions ?? []
@@ -5454,7 +5485,7 @@ export default function DocumentsPage() {
                                                         const canUsePdfPreview = Boolean(previewBaseUrl && activePlanStep.pageNumber)
                                                         const hasTriedAllPreviewSources = previewCandidates.length > 0 && failedPreviewKeys.length === previewCandidates.length
                                                         const isStepPreviewLoaded = Boolean(loadedLearningPreviewKeys[stepPreviewKey])
-                                                        const shouldUseCanvas = isMobile
+                                                        const shouldUseCanvas = true
                                                         const currentPage = activePlanStep.pageNumber ?? 1
                                                         const previewParams = "&view=Fit&zoom=page-fit&toolbar=0&navpanes=0&scrollbar=0&statusbar=0&messages=0"
 
@@ -5543,13 +5574,18 @@ export default function DocumentsPage() {
                                                                                 size="sm"
                                                                                 variant="outline"
                                                                                 className="bg-white/70 dark:bg-amber-950/20"
+                                                                                disabled={repairingPreviewDocId === doc.id}
                                                                                 onClick={() => {
+                                                                                    if (doc.type === "pptx" || doc.type === "pdf") {
+                                                                                        void handleRepairLearningPreview(doc)
+                                                                                        return
+                                                                                    }
                                                                                     clearLearningPreviewFailure(stepPreviewKey)
                                                                                     previewCandidates.forEach((url) => clearLearningPreviewFailure(previewKeyForUrl(url)))
                                                                                 }}
                                                                             >
-                                                                                <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-                                                                                Tải lại preview
+                                                                                <RotateCcw className={`mr-1.5 h-3.5 w-3.5 ${repairingPreviewDocId === doc.id ? "animate-spin" : ""}`} />
+                                                                                {repairingPreviewDocId === doc.id ? "Đang tạo preview..." : "Tạo lại preview"}
                                                                             </Button>
                                                                             {(doc.learningPlan?.previewUrl || doc.url) && (
                                                                                 <Button

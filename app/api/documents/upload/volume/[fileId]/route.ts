@@ -15,6 +15,16 @@ function inferMimeType(fileName: string) {
   return "application/octet-stream";
 }
 
+function decodeHeaderFilename(value: string | null) {
+  const raw = value?.trim();
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ fileId: string }> }
@@ -22,7 +32,7 @@ export async function PUT(
   try {
     await getSessionUserId();
     const { fileId } = await params;
-    const filename = request.headers.get("x-fwf-filename")?.trim() || fileId;
+    const filename = decodeHeaderFilename(request.headers.get("x-fwf-filename")) || fileId;
     const contentType = request.headers.get("content-type")?.trim() || inferMimeType(filename);
     const bytes = await request.arrayBuffer();
     const storage = await writeBufferToStorage(fileId, filename, Buffer.from(bytes), contentType);

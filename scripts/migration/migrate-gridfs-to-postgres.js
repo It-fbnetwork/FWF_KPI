@@ -49,10 +49,13 @@ async function readGridFsFileBuffer(bucket, objectId) {
 async function migrate() {
   const mongoUri = requireEnv("MONGODB_URI");
   const mongoDbName = process.env.MONGODB_DB || "fwf_kpi";
-  const supabaseDbUrl = requireEnv("SUPABASE_DB_URL");
+  const postgresDbUrl = process.env.DATABASE_URL || process.env.RAILWAY_DATABASE_URL || process.env.SUPABASE_DB_URL;
+  if (!postgresDbUrl) {
+    throw new Error("Missing DATABASE_URL, RAILWAY_DATABASE_URL, or SUPABASE_DB_URL env");
+  }
 
   const mongo = new MongoClient(mongoUri);
-  const pool = new Pool({ connectionString: supabaseDbUrl, ssl: { rejectUnauthorized: false } });
+  const pool = new Pool({ connectionString: postgresDbUrl, ssl: { rejectUnauthorized: false } });
 
   try {
     await mongo.connect();
@@ -108,12 +111,12 @@ async function migrate() {
     }
 
     const verifyCount = await pool.query("select count(*)::int as count from uploads_blobs");
-    console.log("GridFS -> Supabase uploads_blobs done.");
+    console.log("GridFS -> Postgres uploads_blobs done.");
     console.log(`Total scanned: ${total}`);
     console.log(`Inserted: ${inserted}`);
     console.log(`Updated: ${updated}`);
     console.log(`Skipped: ${skipped}`);
-    console.log(`Supabase uploads_blobs total rows: ${verifyCount.rows[0]?.count ?? 0}`);
+    console.log(`Postgres uploads_blobs total rows: ${verifyCount.rows[0]?.count ?? 0}`);
   } finally {
     await pool.end();
     await mongo.close();

@@ -1,4 +1,4 @@
-import { createStorageDownloadUrl, getFileById, getFileRecordById } from "@/lib/server/file-storage";
+import { createStorageDownloadUrl, getFileById, getFileByIdWithFallback, getFileRecordById } from "@/lib/server/file-storage";
 import { canAccessFileById } from "@/lib/server/data";
 import { getSessionUserId } from "@/lib/server/session";
 
@@ -30,10 +30,40 @@ export async function GET(
 
     const file = await getFileRecordById(fileId);
     if (!file) {
-      return new Response("File not found", { status: 404 });
+      const legacyFile = await getFileByIdWithFallback(fileId);
+      if (!legacyFile) {
+        return new Response("File not found", { status: 404 });
+      }
+
+      const safeAsciiName = toAsciiFilename(legacyFile.filename);
+      const encodedUnicodeName = encodeRfc5987ValueChars(legacyFile.filename);
+      return new Response(legacyFile.buffer, {
+        headers: {
+          "Accept-Ranges": "bytes",
+          "Content-Type": legacyFile.contentType,
+          "Cache-Control": "private, max-age=300",
+          "Content-Disposition": `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUnicodeName}`,
+          "Content-Length": String(legacyFile.size),
+        },
+      });
     }
     if (!file.storage) {
-      return new Response("File has not been migrated to external storage", { status: 409 });
+      const loadedFile = await getFileById(fileId);
+      if (!loadedFile) {
+        return new Response("File has not been migrated to external storage", { status: 409 });
+      }
+
+      const safeAsciiName = toAsciiFilename(loadedFile.filename);
+      const encodedUnicodeName = encodeRfc5987ValueChars(loadedFile.filename);
+      return new Response(loadedFile.buffer, {
+        headers: {
+          "Accept-Ranges": "bytes",
+          "Content-Type": loadedFile.contentType,
+          "Cache-Control": "private, max-age=300",
+          "Content-Disposition": `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUnicodeName}`,
+          "Content-Length": String(loadedFile.size),
+        },
+      });
     }
 
     if (file.storage.provider === "volume") {
