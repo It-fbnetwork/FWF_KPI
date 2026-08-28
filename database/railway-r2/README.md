@@ -24,6 +24,12 @@ OTP_MAX_ATTEMPTS=5
 
 Production runtime must not include `SUPABASE_DB_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, or `SUPABASE_STORAGE_BUCKET`.
 
+## R2 CORS (required for browser upload)
+
+The app uploads with a browser `PUT` to a presigned R2 URL. Without a bucket CORS policy, create-document fails with `Failed to fetch`.
+
+In the bucket: **Settings → CORS Policy**. Paste `database/railway-r2/cors.json`. Add the production origin before cutover.
+
 ## Database Migration
 
 Staging first:
@@ -90,7 +96,7 @@ The script creates and updates `storage_migration_log`, verifies each R2 object 
 
 ## File Serving
 
-`/api/files/[fileId]` authenticates and authorizes in the app, then redirects to a short-lived R2 signed GET URL. The backend no longer buffers large files/videos.
+`/api/files/[fileId]` authenticates and authorizes in the app, then streams the object from a short-lived R2 signed GET URL. The browser stays same-origin so PDF preview `fetch` (with session cookies) is not blocked by R2 CORS. Range headers are forwarded for video seek.
 
 ## Zero-Supabase Gate
 

@@ -102,8 +102,9 @@ function loadPdfBytes(src: string) {
         const timeout = window.setTimeout(() => controller.abort(), PDF_FETCH_TIMEOUT_MS)
         try {
             const response = await fetch(src, {
-                credentials: "include",
+                credentials: "same-origin",
                 cache: "no-store",
+                redirect: "follow",
                 signal: controller.signal,
             })
             if (response.status === 401) throw createPdfError("unauthorized", "Phiên đăng nhập đã hết hạn.", response.status)

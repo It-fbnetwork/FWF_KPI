@@ -216,19 +216,19 @@ export async function createStorageUploadUrl(input: {
 
 export function createStorageDownloadUrl(input: {
   storage: StorageRef;
-  filename: string;
-  contentType: string;
+  filename?: string;
+  contentType?: string;
   expiresSeconds?: number;
 }) {
   if (input.storage.provider !== "r2") {
     throw new Error("Railway Volume không hỗ trợ presigned download URL");
   }
 
-  const safeAsciiName = input.filename
+  const safeAsciiName = (input.filename ?? "file")
     .replace(/[^\x20-\x7E]+/g, "_")
     .replace(/["\\]/g, "_")
     .trim() || "file";
-  const encodedUnicodeName = encodeURIComponent(input.filename)
+  const encodedUnicodeName = encodeURIComponent(input.filename ?? "file")
     .replace(/['()]/g, escape)
     .replace(/\*/g, "%2A");
   return createR2PresignedUrl({
@@ -237,7 +237,9 @@ export function createStorageDownloadUrl(input: {
     objectPath: input.storage.path,
     expiresSeconds: input.expiresSeconds ?? 300,
     responseContentType: input.contentType,
-    responseContentDisposition: `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUnicodeName}`,
+    responseContentDisposition: input.filename
+      ? `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUnicodeName}`
+      : undefined,
   });
 }
 

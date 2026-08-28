@@ -117,11 +117,44 @@ export async function GET(
 
     const downloadUrl = createStorageDownloadUrl({
       storage: file.storage,
-      filename: file.filename,
-      contentType: file.contentType,
       expiresSeconds: 300,
     });
-    return Response.redirect(downloadUrl, 302);
+
+    const rangeHeader = request.headers.get("range");
+    const storageResponse = await fetch(downloadUrl, {
+      method: "GET",
+      headers: rangeHeader ? { Range: rangeHeader } : undefined,
+      cache: "no-store",
+    });
+    if (!storageResponse.ok && storageResponse.status !== 206) {
+      const detail = await storageResponse.text().catch(() => "");
+      console.error("[files] r2 fetch failed", storageResponse.status, detail.slice(0, 300));
+      return new Response("File not found on storage", {
+        status: storageResponse.status === 404 ? 404 : 502,
+      });
+    }
+
+    const headers = new Headers();
+    const contentType = storageResponse.headers.get("content-type") || file.contentType;
+    headers.set("Content-Type", contentType);
+    headers.set("Cache-Control", "private, max-age=300");
+    headers.set("Accept-Ranges", storageResponse.headers.get("accept-ranges") || "bytes");
+    const contentLength = storageResponse.headers.get("content-length");
+    if (contentLength) headers.set("Content-Length", contentLength);
+    const contentRange = storageResponse.headers.get("content-range");
+    if (contentRange) headers.set("Content-Range", contentRange);
+
+    const safeAsciiName = toAsciiFilename(file.filename);
+    const encodedUnicodeName = encodeRfc5987ValueChars(file.filename);
+    headers.set(
+      "Content-Disposition",
+      `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUnicodeName}`
+    );
+
+    return new Response(storageResponse.body, {
+      status: storageResponse.status,
+      headers,
+    });
   } catch (error) {
     if (error instanceof Error && error.message === "Unauthorized") {
       return new Response("Unauthorized", { status: 401 });

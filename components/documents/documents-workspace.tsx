@@ -2638,14 +2638,25 @@ export default function DocumentsPage() {
             }
             if (!presignData.ok) throw new Error(presignData.message || "Không thể khởi tạo upload file")
 
-            const directUploadRes = await fetch(presignData.uploadUrl, {
-                method: "PUT",
-                headers: {
-                    "content-type": presignData.contentType || contentType,
-                    "x-fwf-filename": encodeURIComponent(file.name),
-                },
-                body: file,
-            })
+            const uploadHeaders: Record<string, string> = {
+                "content-type": presignData.contentType || contentType,
+            }
+            if (presignData.provider === "volume") {
+                uploadHeaders["x-fwf-filename"] = encodeURIComponent(file.name)
+            }
+
+            let directUploadRes: Response
+            try {
+                directUploadRes = await fetch(presignData.uploadUrl, {
+                    method: "PUT",
+                    headers: uploadHeaders,
+                    body: file,
+                })
+            } catch {
+                throw new Error(
+                    "Không upload được lên R2. Cần cấu hình CORS trên bucket (Settings → CORS Policy)."
+                )
+            }
             if (!directUploadRes.ok) throw new Error("Upload file thất bại")
 
             const finalizeRes = await fetch("/api/documents/upload/finalize", {
