@@ -11,10 +11,12 @@ import { pgQuery } from "@/lib/postgres";
 type Params = { params: Promise<{ documentId: string }> };
 
 type GeneratedQuestion = {
+  type?: "mcq" | "essay";
   text: string;
-  options: string[];
-  correctIndex: number;
-  explanation: string;
+  options?: string[];
+  correctIndex?: number;
+  explanation?: string;
+  sampleAnswer?: string;
 };
 
 type GroqResponse = {
@@ -22,10 +24,12 @@ type GroqResponse = {
 };
 
 type NormalizedQuestion = {
+  type: "mcq" | "essay";
   text: string;
-  options: [string, string, string, string];
+  options: [string, string, string, string] | [];
   correctIndex: number;
   explanation: string;
+  sampleAnswer?: string;
 };
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
@@ -110,6 +114,7 @@ function buildFallbackQuestionsFromText(text: string, count: number): Normalized
     if (correctIndex < 0) continue;
 
     output.push({
+      type: "mcq",
       text: `Theo nội dung tài liệu, nhận định nào dưới đây xuất hiện trong bài học?`,
       options: options as [string, string, string, string],
       correctIndex,
@@ -133,12 +138,30 @@ function buildTitleBasedFallbackQuestions(title: string, count: number): Normali
     const wrong = baseFacts.filter((x) => x !== correct).slice(0, 3);
     const options = shuffle([correct, ...wrong]).slice(0, 4);
     return {
+      type: "mcq" as const,
       text: `Phát biểu nào đúng về tài liệu "${topic}"?`,
       options: options as [string, string, string, string],
       correctIndex: Math.max(options.indexOf(correct), 0),
       explanation: "Đây là bộ câu hỏi nháp do hệ thống tạo khi chưa trích xuất được đủ nội dung tài liệu.",
     };
   });
+}
+
+function buildFallbackEssayQuestions(title: string, count: number): NormalizedQuestion[] {
+  const topic = title.trim() || "tài liệu";
+  const prompts = [
+    `Tóm tắt 3 ý chính của tài liệu "${topic}".`,
+    `Giải thích vì sao nội dung trong tài liệu "${topic}" quan trọng với công việc thực tế.`,
+    `Nêu các bước/thực hành chính theo tài liệu "${topic}" và lý do cần tuân thủ.`,
+  ];
+  return Array.from({ length: count }, (_, i) => ({
+    type: "essay" as const,
+    text: prompts[i % prompts.length]!,
+    options: [],
+    correctIndex: -1,
+    explanation: "Câu tự luận nháp — trainer nên chỉnh theo nội dung tài liệu.",
+    sampleAnswer: `Trả lời bám sát nội dung chính của tài liệu ${topic}.`,
+  }));
 }
 
 export async function POST(request: Request, { params }: Params) {
@@ -154,8 +177,16 @@ export async function POST(request: Request, { params }: Params) {
       (user.role === "store_trainer" && user.department === "Cửa hàng");
     if (!canManage) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 });
 
-    const { questionCount } = (await request.json()) as { questionCount: number };
-    const count = Math.min(Math.max(Number(questionCount) || 5, 1), 30);
+    const body = (await request.json()) as { questionCount?: number; essayCount?: number };
+    const mcqCount = Math.min(
+      Math.max(body.questionCount === undefined || body.questionCount === null ? 5 : Number(body.questionCount) || 0, 0),
+      30
+    );
+    const essayCount = Math.min(Math.max(Number(body.essayCount) || 0, 0), 10);
+    if (mcqCount + essayCount <= 0) {
+      return NextResponse.json({ ok: false, message: "Cần ít nhất 1 câu hỏi." }, { status: 400 });
+    }
+    const count = Math.max(mcqCount, 1);
 
     type DocRecord = {
       _id: string;
@@ -223,17 +254,25 @@ export async function POST(request: Request, { params }: Params) {
     }
 
     let rawContent = "";
-    const baseSystemPrompt = `Bạn là chuyên gia tạo bài kiểm tra nội bộ doanh nghiệp. Luôn trả về JSON hợp lệ với key "questions" chứa array câu hỏi.`;
-    const baseUserPrompt = `Tạo đúng ${count} câu hỏi trắc nghiệm tiếng Việt từ nội dung tài liệu bên dưới.
+    const baseSystemPrompt = `Bạn là chuyên gia tạo bài kiểm tra nội bộ doanh nghiệp. Luôn trả về JSON hợp lệ với key "questions" là array câu hỏi.`;
+    const baseUserPrompt = `Tạo bài kiểm tra tiếng Việt từ nội dung tài liệu bên dưới:
+- Đúng ${mcqCount} câu trắc nghiệm (type="mcq")
+- Đúng ${essayCount} câu tự luận (type="essay")
 
-Quy tắc:
+Quy tắc trắc nghiệm (mcq):
 - Mỗi câu có đúng 4 đáp án, chỉ 1 đúng
 - "correctIndex" là số nguyên: 0=A, 1=B, 2=C, 3=D
-- Câu hỏi bám sát nội dung, rõ ràng, không mơ hồ
-- "explanation" giải thích ngắn 1–2 câu tại sao đáp án đó đúng
+- "explanation" giải thích ngắn 1-2 câu tại sao đáp án đó đúng
+
+Quy tắc tự luận (essay):
+- Câu hỏi mở, yêu cầu giải thích/áp dụng theo tài liệu
+- "sampleAnswer" là đáp án mẫu ngắn để trainer/AI chấm
+- options = [], correctIndex = -1
+
+Câu hỏi bám sát nội dung, rõ ràng, không mơ hồ.
 
 Trả về JSON theo đúng cấu trúc:
-{"questions":[{"text":"...","options":["A","B","C","D"],"correctIndex":0,"explanation":"..."}]}`;
+{"questions":[{"type":"mcq","text":"...","options":["A","B","C","D"],"correctIndex":0,"explanation":"..."},{"type":"essay","text":"...","options":[],"correctIndex":-1,"explanation":"...","sampleAnswer":"..."}]}`;
     let groqErrorSummary = "";
 
     // PDF pipeline: send original PDF bytes to Gemini first for better extraction quality.
@@ -262,7 +301,10 @@ Trả về JSON theo đúng cấu trúc:
     if (!textContent && !rawContent) {
       return NextResponse.json({
         ok: true,
-        questions: buildTitleBasedFallbackQuestions(doc.name, count),
+        questions: [
+          ...buildTitleBasedFallbackQuestions(doc.name, mcqCount),
+          ...buildFallbackEssayQuestions(doc.name, essayCount),
+        ],
         documentName: doc.name,
         fallback: true,
         warning:
@@ -362,11 +404,12 @@ CHỈ TRẢ VỀ JSON, KHÔNG GIẢI THÍCH THÊM.`;
     }
 
     if (!rawContent) {
-      const fallback = buildFallbackQuestionsFromText(textContent, count);
-      if (fallback.length > 0) {
+      const fallbackMcq = buildFallbackQuestionsFromText(textContent, mcqCount);
+      const fallbackEssay = buildFallbackEssayQuestions(doc.name, essayCount);
+      if (fallbackMcq.length > 0 || fallbackEssay.length > 0) {
         return NextResponse.json({
           ok: true,
-          questions: fallback,
+          questions: [...fallbackMcq, ...fallbackEssay],
           documentName: doc.name,
           fallback: true,
           warning: "AI tạm thời lỗi, hệ thống đã tạo bộ câu hỏi nháp để bạn chỉnh sửa nhanh.",
@@ -384,13 +427,15 @@ CHỈ TRẢ VỀ JSON, KHÔNG GIẢI THÍCH THÊM.`;
     }
 
     const questions = Array.isArray(parsed.questions) ? parsed.questions : [];
-    const validated = questions
+    const validatedMcq = questions
+      .filter((q) => (q.type ?? "mcq") !== "essay")
       .filter((q) => q.text && Array.isArray(q.options) && q.options.length === 4 && typeof q.correctIndex === "number")
-      .slice(0, count)
+      .slice(0, mcqCount)
       .map((q) => ({
+        type: "mcq" as const,
         text: q.text,
-        options: q.options.slice(0, 4) as [string, string, string, string],
-        correctIndex: Math.min(Math.max(Math.round(q.correctIndex), 0), 3),
+        options: (q.options ?? []).slice(0, 4) as [string, string, string, string],
+        correctIndex: Math.min(Math.max(Math.round(q.correctIndex ?? 0), 0), 3),
         explanation: q.explanation ?? "",
       }))
       .filter((q) => isReadableQuestionText(q.text))
@@ -400,12 +445,37 @@ CHỈ TRẢ VỀ JSON, KHÔNG GIẢI THÍCH THÊM.`;
         explanation: isReadableQuestionText(q.explanation) ? q.explanation : "Đáp án đúng dựa theo nội dung tài liệu.",
       }));
 
-    if (validated.length === 0) {
-      const fallback = buildFallbackQuestionsFromText(textContent, count);
-      if (fallback.length > 0) {
+    const validatedEssay = questions
+      .filter((q) => q.type === "essay")
+      .filter((q) => isReadableQuestionText(q.text ?? ""))
+      .slice(0, essayCount)
+      .map((q) => ({
+        type: "essay" as const,
+        text: q.text,
+        options: [] as [],
+        correctIndex: -1,
+        explanation: isReadableQuestionText(q.explanation ?? "")
+          ? (q.explanation ?? "")
+          : "Chấm theo mức độ đúng trọng tâm tài liệu.",
+        sampleAnswer: isReadableQuestionText(q.sampleAnswer ?? "")
+          ? (q.sampleAnswer ?? "")
+          : "Trả lời bám sát nội dung tài liệu.",
+      }));
+
+    const validated = [
+      ...validatedMcq,
+      ...(validatedEssay.length >= essayCount
+        ? validatedEssay
+        : [...validatedEssay, ...buildFallbackEssayQuestions(doc.name, essayCount - validatedEssay.length)]),
+    ];
+
+    if (validated.length === 0 || (mcqCount > 0 && validatedMcq.length === 0)) {
+      const fallbackMcq = buildFallbackQuestionsFromText(textContent, mcqCount);
+      const fallbackEssay = buildFallbackEssayQuestions(doc.name, essayCount);
+      if (fallbackMcq.length > 0 || fallbackEssay.length > 0) {
         return NextResponse.json({
           ok: true,
-          questions: fallback,
+          questions: [...fallbackMcq, ...fallbackEssay],
           documentName: doc.name,
           fallback: true,
           warning: "AI trả kết quả chưa hợp lệ, hệ thống đã tạo bộ câu hỏi nháp để bạn chỉnh sửa.",

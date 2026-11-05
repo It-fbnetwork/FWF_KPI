@@ -71,10 +71,20 @@ import {
 } from "lucide-react"
 
 type LearningQuizQuestion = {
+    type?: "mcq" | "essay"
     text: string
     options: string[]
     correctIndex?: number
     explanation?: string
+    sampleAnswer?: string
+}
+
+type EssayGradeRecord = {
+    score: number
+    feedback: string
+    gradedBy: "ai" | "trainer"
+    gradedAt: string
+    gradedByPersonId?: string
 }
 
 type TestRecord = {
@@ -186,6 +196,8 @@ type QuizAttemptRecord = {
     personName?: string
     personRole?: string
     answers: number[]
+    textAnswers?: string[]
+    essayGrades?: Array<EssayGradeRecord | null>
     score: number
     correctAnswers: number
     totalQuestions: number
@@ -262,16 +274,35 @@ const parseImportedMultipleChoiceQuestions = (text: string): QuizCreateQuestion[
             const options = ["A", "B", "C", "D"].map((letter) => optionMap.get(letter) ?? "") as [string, string, string, string]
             const correctIndex = ["A", "B", "C", "D"].indexOf(correctLetter)
             if (!questionText || options.some((option) => !option) || correctIndex < 0) return null
-            return { text: questionText, options, correctIndex, explanation }
+            const question: QuizCreateQuestion = {
+                type: "mcq",
+                text: questionText,
+                options,
+                correctIndex,
+                explanation,
+                sampleAnswer: "",
+            }
+            return question
         })
         .filter((question): question is QuizCreateQuestion => Boolean(question))
 }
 
 const createBlankExamQuestion = (): QuizCreateQuestion => ({
+    type: "mcq",
     text: "",
     options: ["", "", "", ""],
     correctIndex: 0,
     explanation: "",
+    sampleAnswer: "",
+})
+
+const createBlankEssayQuestion = (): QuizCreateQuestion => ({
+    type: "essay",
+    text: "",
+    options: ["", "", "", ""],
+    correctIndex: -1,
+    explanation: "",
+    sampleAnswer: "",
 })
 
 type QuizAttemptResetRecord = {
@@ -285,10 +316,12 @@ type QuizAttemptResetRecord = {
 }
 
 type QuizCreateQuestion = {
+    type: "mcq" | "essay"
     text: string
     options: [string, string, string, string]
     correctIndex: number
     explanation: string
+    sampleAnswer: string
 }
 
 interface QuizCreateState {
@@ -305,6 +338,7 @@ interface QuizCreateState {
     isNewDocument?: boolean
     isGenerating?: boolean
     autoQuestionCount?: string
+    autoEssayCount?: string
 }
 
 interface QuizTakeState {
@@ -312,6 +346,7 @@ interface QuizTakeState {
     quiz: LearningQuizRecord | null
     documentId: string
     answers: number[]
+    textAnswers: string[]
     currentQuestion: number
     startedAt: string
     timeLeftSeconds: number
@@ -739,11 +774,13 @@ export default function DocumentsPage() {
     const defaultQuizCreate = (): QuizCreateState => ({
         open: false, documentId: "", documentName: "", existingQuizId: null,
         title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30", deadlineAt: "",
-        questions: [{ text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
+        questions: [createBlankExamQuestion()],
         isNewDocument: false,
+        autoQuestionCount: "5",
+        autoEssayCount: "1",
     })
     const defaultQuizTake = (): QuizTakeState => ({
-        open: false, quiz: null, documentId: "", answers: [],
+        open: false, quiz: null, documentId: "", answers: [], textAnswers: [],
         currentQuestion: 0, startedAt: "", timeLeftSeconds: 0,
         questionTimeLimitSeconds: 0,
         expiredQuestionIndexes: [],
@@ -751,6 +788,8 @@ export default function DocumentsPage() {
         questionOrder: [],
         optionOrderByQuestion: [],
     })
+    const [essayRegradeDrafts, setEssayRegradeDrafts] = useState<Record<string, { score: string; feedback: string }>>({})
+    const [regradingEssayKey, setRegradingEssayKey] = useState<string | null>(null)
 
     const [quizCreateDialog, setQuizCreateDialog] = useState<QuizCreateState>(defaultQuizCreate())
     const [quizTakeModal, setQuizTakeModal] = useState<QuizTakeState>(defaultQuizTake())
@@ -1596,15 +1635,17 @@ export default function DocumentsPage() {
                 explanation: "",
             }))
         ).map((question) => ({
+            type: "mcq" as const,
             text: question.text,
             options: [
                 question.options[0] ?? "",
                 question.options[1] ?? "",
                 question.options[2] ?? "",
                 question.options[3] ?? "",
-            ],
+            ] as [string, string, string, string],
             correctIndex: question.correctIndex ?? 0,
             explanation: question.explanation ?? "",
+            sampleAnswer: "",
         }))
 
     const handleEditTest = (test: TestRecord) => {
@@ -3871,8 +3912,60 @@ export default function DocumentsPage() {
                 questionIndex: index,
                 selectedIndex: attempt.answers[index] ?? -1,
                 correctIndex: question.correctIndex ?? -1,
+                essayGrade: attempt.essayGrades?.[index] ?? null,
+                textAnswer: attempt.textAnswers?.[index] ?? "",
             }))
-            .filter((item) => item.correctIndex >= 0 && item.selectedIndex !== item.correctIndex)
+            .filter((item) => {
+                if (item.question.type === "essay") {
+                    return (item.essayGrade?.score ?? 0) < 70
+                }
+                return item.correctIndex >= 0 && item.selectedIndex !== item.correctIndex
+            })
+    }
+
+    const getEssayAttemptQuestions = (attempt: QuizAttemptRecord) => {
+        const questions = attempt.reviewQuestions ?? []
+        return questions
+            .map((question, index) => ({
+                question,
+                questionIndex: index,
+                textAnswer: attempt.textAnswers?.[index] ?? "",
+                essayGrade: attempt.essayGrades?.[index] ?? null,
+            }))
+            .filter((item) => item.question.type === "essay")
+    }
+
+    const handleRegradeEssay = async (attempt: QuizAttemptRecord, questionIndex: number) => {
+        const key = `${attempt.id}:${questionIndex}`
+        const draft = essayRegradeDrafts[key] ?? {
+            score: String(attempt.essayGrades?.[questionIndex]?.score ?? 0),
+            feedback: attempt.essayGrades?.[questionIndex]?.feedback ?? "",
+        }
+        const score = Math.min(100, Math.max(0, Math.round(Number(draft.score) || 0)))
+        setRegradingEssayKey(key)
+        try {
+            const res = await fetch(`/api/learning/quiz/attempts/${attempt.id}/regrade`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({
+                    questionIndex,
+                    score,
+                    feedback: draft.feedback.trim(),
+                }),
+            })
+            const data = (await res.json()) as { ok: boolean; result?: QuizAttemptRecord; message?: string }
+            if (!res.ok || !data.ok || !data.result) throw new Error(data.message ?? "Không thể chấm lại")
+            setQuizResultsModal((prev) => ({
+                ...prev,
+                attempts: prev.attempts.map((item) => (item.id === attempt.id ? { ...item, ...data.result! } : item)),
+            }))
+            toast({ title: "Đã chấm lại câu tự luận" })
+        } catch (err) {
+            toast({ title: err instanceof Error ? err.message : "Không thể chấm lại", variant: "destructive" })
+        } finally {
+            setRegradingEssayKey(null)
+        }
     }
 
     const toggleAttemptDetail = (attemptId: string) => {
@@ -3900,19 +3993,33 @@ export default function DocumentsPage() {
             timePerQuestionSeconds: String(existingQuiz?.timePerQuestionSeconds ?? 30),
             deadlineAt: toDatetimeLocalInputValue(existingQuiz?.deadlineAt),
             questions: existingQuiz?.questions.map((q) => ({
+                type: q.type === "essay" ? "essay" as const : "mcq" as const,
                 text: q.text,
-                options: (q.options as [string, string, string, string]) ?? ["", "", "", ""],
-                correctIndex: q.correctIndex ?? 0,
+                options: (q.options?.length === 4
+                    ? (q.options as [string, string, string, string])
+                    : ["", "", "", ""]) as [string, string, string, string],
+                correctIndex: q.type === "essay" ? -1 : (q.correctIndex ?? 0),
                 explanation: q.explanation ?? "",
-            })) ?? [{ text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
+                sampleAnswer: q.sampleAnswer ?? "",
+            })) ?? [createBlankExamQuestion()],
+            autoQuestionCount: String(
+                existingQuiz?.questions.filter((q) => q.type !== "essay").length
+                ?? 5
+            ),
+            autoEssayCount: String(
+                existingQuiz?.questions.filter((q) => q.type === "essay").length
+                ?? 1
+            ),
         })
     }
 
-    const handleAddQuizQuestion = () => {
-        setQuizCreateDialog((s) => ({
-            ...s,
-            questions: [...s.questions, { text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
-        }))
+    const buildBlankQuestionsFromCounts = (mcqCountRaw: string | undefined, essayCountRaw: string | undefined) => {
+        const mcqCount = Math.min(Math.max(Number(mcqCountRaw) || 0, 0), 30)
+        const essayCount = Math.min(Math.max(Number(essayCountRaw) || 0, 0), 10)
+        return [
+            ...Array.from({ length: mcqCount }, () => createBlankExamQuestion()),
+            ...Array.from({ length: essayCount }, () => createBlankEssayQuestion()),
+        ]
     }
 
     const handleRemoveQuizQuestion = (idx: number) => {
@@ -3923,8 +4030,12 @@ export default function DocumentsPage() {
         const { documentId: currentDocId, existingQuizId, title, description, durationMinutes, timePerQuestionSeconds, deadlineAt, questions, isNewDocument } = quizCreateDialog
         const normalizedTitle = title.trim()
         if (!normalizedTitle) { toast({ title: "Cần nhập tên bài kiểm tra", variant: "destructive" }); return }
-        if (questions.some((q) => !q.text.trim() || q.options.some((o) => !o.trim()))) {
-            toast({ title: "Cần nhập đầy đủ câu hỏi và 4 đáp án", variant: "destructive" }); return
+        if (questions.some((q) => {
+            if (!q.text.trim()) return true
+            if (q.type === "essay") return false
+            return q.options.some((o) => !o.trim())
+        })) {
+            toast({ title: "Cần nhập đầy đủ câu hỏi (và 4 đáp án với trắc nghiệm)", variant: "destructive" }); return
         }
         setIsSubmitting(true)
         try {
@@ -3986,7 +4097,7 @@ export default function DocumentsPage() {
     }
 
     const handleAutoGenerateQuiz = async () => {
-        const { documentId, autoQuestionCount } = quizCreateDialog
+        const { documentId, autoQuestionCount, autoEssayCount } = quizCreateDialog
         const targetDoc = documentsData.find((doc) => doc.id === documentId)
         const isAutoSupportedFormat = targetDoc?.type === "pdf" || targetDoc?.type === "pptx"
         if (!targetDoc || !isAutoSupportedFormat) {
@@ -3996,33 +4107,57 @@ export default function DocumentsPage() {
             })
             return
         }
-        const count = Math.min(Math.max(Number(autoQuestionCount) || 5, 1), 30)
+        const count = Math.min(Math.max(Number(autoQuestionCount) || 0, 0), 30)
+        const essayCount = Math.min(Math.max(Number(autoEssayCount) || 0, 0), 10)
+        if (count + essayCount <= 0) {
+            toast({ title: "Hãy chọn số câu trắc nghiệm / tự luận trước khi tạo", variant: "destructive" })
+            return
+        }
         setQuizCreateDialog((s) => ({ ...s, isGenerating: true }))
         try {
             const res = await fetch(`/api/learning/quiz/${documentId}/generate`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: "include",
-                body: JSON.stringify({ questionCount: count }),
+                body: JSON.stringify({ questionCount: count, essayCount }),
             })
             const data = (await res.json()) as {
                 ok: boolean
-                questions?: QuizCreateQuestion[]
+                questions?: Array<Partial<QuizCreateQuestion> & { text: string }>
                 documentName?: string
                 message?: string
                 fallback?: boolean
                 warning?: string
             }
             if (!res.ok || !data.ok) throw new Error(data.message ?? "Lỗi tạo câu hỏi")
+            const normalizedQuestions: QuizCreateQuestion[] = (data.questions ?? []).map((q) =>
+                q.type === "essay"
+                    ? {
+                        type: "essay",
+                        text: q.text,
+                        options: ["", "", "", ""],
+                        correctIndex: -1,
+                        explanation: q.explanation ?? "",
+                        sampleAnswer: q.sampleAnswer ?? "",
+                    }
+                    : {
+                        type: "mcq",
+                        text: q.text,
+                        options: (q.options as [string, string, string, string]) ?? ["", "", "", ""],
+                        correctIndex: q.correctIndex ?? 0,
+                        explanation: q.explanation ?? "",
+                        sampleAnswer: "",
+                    }
+            )
             setQuizCreateDialog((s) => ({
                 ...s,
-                questions: data.questions!,
+                questions: normalizedQuestions,
                 ...(s.title === "" && data.documentName ? { title: `Kiểm tra: ${data.documentName}` } : {}),
             }))
             toast({
                 title: data.fallback
-                    ? `Đã tạo ${data.questions!.length} câu hỏi nháp`
-                    : `Đã tạo ${data.questions!.length} câu hỏi tự động`,
+                    ? `Đã tạo ${normalizedQuestions.length} câu hỏi nháp`
+                    : `Đã tạo ${normalizedQuestions.length} câu hỏi tự động`,
                 description: data.warning,
             })
         } catch (err) {
@@ -4083,7 +4218,9 @@ export default function DocumentsPage() {
             void syncLearningProgressToServer(doc.id, nextLearningProgress, learningPlanProgress)
         }
         const questionOrder = shuffleIndices(quiz.questions.length)
-        const optionOrderByQuestion = quiz.questions.map((question) => shuffleIndices(question.options.length))
+        const optionOrderByQuestion = quiz.questions.map((question) =>
+            question.type === "essay" ? [] : shuffleIndices(Math.max(question.options.length, 4))
+        )
         const startedAt = new Date().toISOString()
         const questionTimeLimitSeconds = quiz.timePerQuestionSeconds
             ? Math.max(5, quiz.timePerQuestionSeconds)
@@ -4093,6 +4230,7 @@ export default function DocumentsPage() {
             quiz,
             documentId: doc.id,
             answers: Array(quiz.questions.length).fill(-1) as number[],
+            textAnswers: Array(quiz.questions.length).fill("") as string[],
             currentQuestion: 0,
             startedAt,
             timeLeftSeconds: questionTimeLimitSeconds,
@@ -4149,12 +4287,12 @@ export default function DocumentsPage() {
         if (quizTimerRef.current) clearInterval(quizTimerRef.current)
         setQuizTakeModal((prev) => ({ ...prev, isSubmitting: true }))
         try {
-            const { documentId, answers, startedAt } = quizTakeModalRef.current
+            const { documentId, answers, textAnswers, startedAt } = quizTakeModalRef.current
             const res = await fetch(`/api/learning/quiz/${documentId}/submit`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: "include",
-                body: JSON.stringify({ answers, startedAt }),
+                body: JSON.stringify({ answers, textAnswers, startedAt }),
             })
             const data = (await res.json()) as { ok: boolean; result?: QuizAttemptRecord; message?: string }
             if (!res.ok || !data.ok) throw new Error(data.message ?? "Lỗi nộp bài")
@@ -4176,21 +4314,29 @@ export default function DocumentsPage() {
         }
     }
 
+    const isQuizQuestionAnswered = useCallback((state: QuizTakeState, originalIndex: number) => {
+        const question = state.quiz?.questions[originalIndex]
+        if (question?.type === "essay") {
+            return (state.textAnswers[originalIndex] ?? "").trim().length > 0
+        }
+        return state.answers[originalIndex] !== -1
+    }, [])
+
     const canNavigateToQuestion = useCallback((targetIndex: number, state: QuizTakeState) => {
         if (targetIndex < 0) return false
         if (targetIndex >= (state.quiz?.questions.length ?? 0)) return false
         if (targetIndex === state.currentQuestion) return true
         const currentOriginalIndex = state.questionOrder[state.currentQuestion] ?? state.currentQuestion
-        const hasCurrentAnswer = state.answers[currentOriginalIndex] !== -1
+        const hasCurrentAnswer = isQuizQuestionAnswered(state, currentOriginalIndex)
         if (targetIndex === state.currentQuestion + 1) {
             return hasCurrentAnswer
         }
         if (targetIndex < state.currentQuestion) {
             const targetOriginalIndex = state.questionOrder[targetIndex] ?? targetIndex
-            return state.answers[targetOriginalIndex] !== -1 && !state.expiredQuestionIndexes.includes(targetIndex)
+            return isQuizQuestionAnswered(state, targetOriginalIndex) && !state.expiredQuestionIndexes.includes(targetIndex)
         }
         return false
-    }, [])
+    }, [isQuizQuestionAnswered])
 
     const moveToQuizQuestion = useCallback((targetIndex: number) => {
         setQuizTakeModal((prev) => {
@@ -5158,7 +5304,7 @@ export default function DocumentsPage() {
                                                 onClick={() => setQuizCreateDialog({
                                                     open: true, documentId: "", documentName: "", existingQuizId: null,
                                                     title: "", description: "", durationMinutes: "15", timePerQuestionSeconds: "30", deadlineAt: "",
-                                                    questions: [{ text: "", options: ["", "", "", ""], correctIndex: 0, explanation: "" }],
+                                                    questions: [createBlankExamQuestion()],
                                                     isNewDocument: true,
                                                 })}>
                                                 <Plus className="w-3 h-3 mr-1" />Thêm
@@ -8756,7 +8902,7 @@ export default function DocumentsPage() {
                                         <p className="text-sm font-semibold text-violet-800 dark:text-violet-300">Tạo câu hỏi tự động bằng AI</p>
                                     </div>
                                     <p className="text-xs text-violet-600 dark:text-violet-400">
-                                        AI sẽ đọc nội dung tài liệu và tự động sinh câu hỏi trắc nghiệm. Bạn có thể chỉnh sửa sau khi tạo.
+                                        Chọn số câu trắc nghiệm / tự luận rồi bấm tạo — AI sinh đúng bộ câu đó theo tài liệu.
                                     </p>
                                     <div
                                         className={`rounded-lg border px-3 py-2 text-xs ${
@@ -8773,21 +8919,33 @@ export default function DocumentsPage() {
                                         ) : (
                                             <>
                                                 Định dạng hiện tại <strong>{quizCreateDocType?.toUpperCase() ?? "không xác định"}</strong> chưa hỗ trợ tạo tự động.
-                                                Vui lòng dùng <strong>Thêm câu hỏi thủ công</strong>.
+                                                Vui lòng điền số câu và soạn thủ công bên dưới.
                                             </>
                                         )}
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                        <Input
-                                            type="number"
-                                            min={1}
-                                            max={30}
-                                            placeholder="Số câu"
-                                            className="w-28 h-8 text-sm"
-                                            value={quizCreateDialog.autoQuestionCount ?? ""}
-                                            onChange={(e) => setQuizCreateDialog((s) => ({ ...s, autoQuestionCount: e.target.value }))}
-                                        />
-                                        <span className="text-xs text-violet-600 dark:text-violet-400">câu hỏi (tối đa 30)</span>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <label className="flex items-center gap-1.5 text-xs text-violet-700 dark:text-violet-300">
+                                            <span>Trắc nghiệm</span>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                max={30}
+                                                className="h-8 w-20 text-sm bg-white dark:bg-gray-900"
+                                                value={quizCreateDialog.autoQuestionCount ?? ""}
+                                                onChange={(e) => setQuizCreateDialog((s) => ({ ...s, autoQuestionCount: e.target.value }))}
+                                            />
+                                        </label>
+                                        <label className="flex items-center gap-1.5 text-xs text-violet-700 dark:text-violet-300">
+                                            <span>Tự luận</span>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                max={10}
+                                                className="h-8 w-20 text-sm bg-white dark:bg-gray-900"
+                                                value={quizCreateDialog.autoEssayCount ?? ""}
+                                                onChange={(e) => setQuizCreateDialog((s) => ({ ...s, autoEssayCount: e.target.value }))}
+                                            />
+                                        </label>
                                         <Button
                                             size="sm"
                                             disabled={quizCreateDialog.isGenerating || !canAutoGenerateByFormat}
@@ -8805,23 +8963,64 @@ export default function DocumentsPage() {
                             )}
 
                             <div className="space-y-4">
-                                <div className="flex items-center justify-between">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
                                     <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Câu hỏi ({quizCreateDialog.questions.length})</p>
-                                    <Button size="sm" variant="outline" className="bg-transparent text-xs h-8"
-                                        onClick={handleAddQuizQuestion}>
-                                        <Plus className="w-3.5 h-3.5 mr-1" />Thêm câu hỏi thủ công
-                                    </Button>
+                                    {quizCreateDialog.isNewDocument && (
+                                        <div className="flex flex-wrap items-center gap-3">
+                                            <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                                                <span>Số câu trắc nghiệm</span>
+                                                <Input
+                                                    type="number"
+                                                    min={0}
+                                                    max={30}
+                                                    className="h-8 w-20 text-sm"
+                                                    value={quizCreateDialog.autoQuestionCount ?? ""}
+                                                    onChange={(e) => {
+                                                        const autoQuestionCount = e.target.value
+                                                        setQuizCreateDialog((s) => ({
+                                                            ...s,
+                                                            autoQuestionCount,
+                                                            questions: buildBlankQuestionsFromCounts(autoQuestionCount, s.autoEssayCount),
+                                                        }))
+                                                    }}
+                                                />
+                                            </label>
+                                            <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                                                <span>Số câu tự luận</span>
+                                                <Input
+                                                    type="number"
+                                                    min={0}
+                                                    max={10}
+                                                    className="h-8 w-20 text-sm"
+                                                    value={quizCreateDialog.autoEssayCount ?? ""}
+                                                    onChange={(e) => {
+                                                        const autoEssayCount = e.target.value
+                                                        setQuizCreateDialog((s) => ({
+                                                            ...s,
+                                                            autoEssayCount,
+                                                            questions: buildBlankQuestionsFromCounts(s.autoQuestionCount, autoEssayCount),
+                                                        }))
+                                                    }}
+                                                />
+                                            </label>
+                                        </div>
+                                    )}
                                 </div>
                                 {quizCreateDialog.questions.map((q, qi) => (
                                     <div key={qi} className="border border-gray-200 dark:border-gray-700 rounded-xl p-4 space-y-3 bg-gray-50 dark:bg-gray-900/30">
                                         <div className="flex items-start gap-2">
                                             <span className="text-xs font-bold text-gray-400 mt-2.5 w-5 flex-shrink-0">Q{qi + 1}</span>
-                                            <Input placeholder="Nội dung câu hỏi" value={q.text}
-                                                onChange={(e) => setQuizCreateDialog((s) => {
-                                                    const questions = [...s.questions]
-                                                    questions[qi] = { ...questions[qi]!, text: e.target.value }
-                                                    return { ...s, questions }
-                                                })} />
+                                            <div className="flex-1 space-y-2">
+                                                <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ${q.type === "essay" ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"}`}>
+                                                    {q.type === "essay" ? "Tự luận" : "Trắc nghiệm"}
+                                                </span>
+                                                <Input placeholder="Nội dung câu hỏi" value={q.text}
+                                                    onChange={(e) => setQuizCreateDialog((s) => {
+                                                        const questions = [...s.questions]
+                                                        questions[qi] = { ...questions[qi]!, text: e.target.value }
+                                                        return { ...s, questions }
+                                                    })} />
+                                            </div>
                                             {quizCreateDialog.questions.length > 1 && (
                                                 <button onClick={() => handleRemoveQuizQuestion(qi)}
                                                     className="text-red-400 hover:text-red-600 mt-2 flex-shrink-0">
@@ -8829,36 +9028,60 @@ export default function DocumentsPage() {
                                                 </button>
                                             )}
                                         </div>
-                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                            {q.options.map((opt, oi) => (
-                                                <div key={oi} className={`flex items-center gap-2 p-2 rounded-lg border ${q.correctIndex === oi ? "border-green-500 bg-green-50 dark:bg-green-900/20" : "border-gray-200 dark:border-gray-700"}`}>
-                                                    <button onClick={() => setQuizCreateDialog((s) => {
+                                        {q.type === "essay" ? (
+                                            <>
+                                                <textarea
+                                                    placeholder="Đáp án mẫu / gợi ý chấm (AI dùng để chấm sơ bộ)"
+                                                    className="min-h-[88px] w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                                                    value={q.sampleAnswer}
+                                                    onChange={(e) => setQuizCreateDialog((s) => {
                                                         const questions = [...s.questions]
-                                                        questions[qi] = { ...questions[qi]!, correctIndex: oi }
+                                                        questions[qi] = { ...questions[qi]!, sampleAnswer: e.target.value }
                                                         return { ...s, questions }
-                                                    })} className={`w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${q.correctIndex === oi ? "border-green-500 bg-green-500" : "border-gray-300"}`}>
-                                                        {q.correctIndex === oi && <span className="text-white text-xs">✓</span>}
-                                                    </button>
-                                                    <span className="text-xs font-bold text-gray-400 flex-shrink-0">{["A","B","C","D"][oi]}</span>
-                                                    <input className="flex-1 text-sm bg-transparent outline-none text-gray-900 dark:text-white"
-                                                        placeholder={`Đáp án ${["A","B","C","D"][oi]}`} value={opt}
-                                                        onChange={(e) => setQuizCreateDialog((s) => {
-                                                            const questions = [...s.questions]
-                                                            const options = [...questions[qi]!.options] as [string,string,string,string]
-                                                            options[oi] = e.target.value
-                                                            questions[qi] = { ...questions[qi]!, options }
-                                                            return { ...s, questions }
-                                                        })} />
+                                                    })}
+                                                />
+                                                <Input placeholder="Ghi chú chấm (tuỳ chọn)" className="text-xs"
+                                                    value={q.explanation}
+                                                    onChange={(e) => setQuizCreateDialog((s) => {
+                                                        const questions = [...s.questions]
+                                                        questions[qi] = { ...questions[qi]!, explanation: e.target.value }
+                                                        return { ...s, questions }
+                                                    })} />
+                                            </>
+                                        ) : (
+                                            <>
+                                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                                    {q.options.map((opt, oi) => (
+                                                        <div key={oi} className={`flex items-center gap-2 p-2 rounded-lg border ${q.correctIndex === oi ? "border-green-500 bg-green-50 dark:bg-green-900/20" : "border-gray-200 dark:border-gray-700"}`}>
+                                                            <button onClick={() => setQuizCreateDialog((s) => {
+                                                                const questions = [...s.questions]
+                                                                questions[qi] = { ...questions[qi]!, correctIndex: oi }
+                                                                return { ...s, questions }
+                                                            })} className={`w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${q.correctIndex === oi ? "border-green-500 bg-green-500" : "border-gray-300"}`}>
+                                                                {q.correctIndex === oi && <span className="text-white text-xs">✓</span>}
+                                                            </button>
+                                                            <span className="text-xs font-bold text-gray-400 flex-shrink-0">{["A","B","C","D"][oi]}</span>
+                                                            <input className="flex-1 text-sm bg-transparent outline-none text-gray-900 dark:text-white"
+                                                                placeholder={`Đáp án ${["A","B","C","D"][oi]}`} value={opt}
+                                                                onChange={(e) => setQuizCreateDialog((s) => {
+                                                                    const questions = [...s.questions]
+                                                                    const options = [...questions[qi]!.options] as [string,string,string,string]
+                                                                    options[oi] = e.target.value
+                                                                    questions[qi] = { ...questions[qi]!, options }
+                                                                    return { ...s, questions }
+                                                                })} />
+                                                        </div>
+                                                    ))}
                                                 </div>
-                                            ))}
-                                        </div>
-                                        <Input placeholder="Giải thích đáp án (tuỳ chọn)" className="text-xs"
-                                            value={q.explanation}
-                                            onChange={(e) => setQuizCreateDialog((s) => {
-                                                const questions = [...s.questions]
-                                                questions[qi] = { ...questions[qi]!, explanation: e.target.value }
-                                                return { ...s, questions }
-                                            })} />
+                                                <Input placeholder="Giải thích đáp án (tuỳ chọn)" className="text-xs"
+                                                    value={q.explanation}
+                                                    onChange={(e) => setQuizCreateDialog((s) => {
+                                                        const questions = [...s.questions]
+                                                        questions[qi] = { ...questions[qi]!, explanation: e.target.value }
+                                                        return { ...s, questions }
+                                                    })} />
+                                            </>
+                                        )}
                                     </div>
                                 ))}
                             </div>
@@ -8909,31 +9132,49 @@ export default function DocumentsPage() {
                                         const optionOrder = quizTakeModal.optionOrderByQuestion[originalQuestionIndex] ?? [0, 1, 2, 3]
                                         return (
                                             <div className="space-y-4">
+                                                <div className="flex items-center gap-2">
+                                                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${q.type === "essay" ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"}`}>
+                                                        {q.type === "essay" ? "Tự luận" : "Trắc nghiệm"}
+                                                    </span>
+                                                </div>
                                                 <p
                                                     className="exam-reveal-text text-base font-medium text-gray-900 dark:text-white"
                                                     tabIndex={0}
                                                 >
                                                     {q.text}
                                                 </p>
-                                                <div className="space-y-3">
-                                                    {optionOrder.map((originalOptionIndex, displayedOptionIndex) => {
-                                                        const opt = q.options[originalOptionIndex] ?? ""
-                                                        const selected = quizTakeModal.answers[originalQuestionIndex] === originalOptionIndex
-                                                        return (
-                                                            <button key={`${originalQuestionIndex}-${originalOptionIndex}`} onClick={() => setQuizTakeModal((prev) => {
-                                                                const answers = [...prev.answers]
-                                                                answers[originalQuestionIndex] = originalOptionIndex
-                                                                return { ...prev, answers }
-                                                            })}
-                                                                className={`exam-reveal-zone w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${selected ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20" : "border-gray-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-600"}`}>
-                                                                <span className={`w-6 h-6 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs font-bold ${selected ? "border-blue-500 bg-blue-500 text-white" : "border-gray-300 text-gray-400"}`}>
-                                                                    {["A","B","C","D"][displayedOptionIndex]}
-                                                                </span>
-                                                                <span className="exam-reveal-text text-sm text-gray-800 dark:text-gray-200">{opt}</span>
-                                                            </button>
-                                                        )
-                                                    })}
-                                                </div>
+                                                {q.type === "essay" ? (
+                                                    <textarea
+                                                        className="exam-reveal-zone min-h-[160px] w-full rounded-xl border-2 border-gray-200 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                                                        placeholder="Nhập câu trả lời tự luận..."
+                                                        value={quizTakeModal.textAnswers[originalQuestionIndex] ?? ""}
+                                                        onChange={(e) => setQuizTakeModal((prev) => {
+                                                            const textAnswers = [...prev.textAnswers]
+                                                            textAnswers[originalQuestionIndex] = e.target.value
+                                                            return { ...prev, textAnswers }
+                                                        })}
+                                                    />
+                                                ) : (
+                                                    <div className="space-y-3">
+                                                        {optionOrder.map((originalOptionIndex, displayedOptionIndex) => {
+                                                            const opt = q.options[originalOptionIndex] ?? ""
+                                                            const selected = quizTakeModal.answers[originalQuestionIndex] === originalOptionIndex
+                                                            return (
+                                                                <button key={`${originalQuestionIndex}-${originalOptionIndex}`} onClick={() => setQuizTakeModal((prev) => {
+                                                                    const answers = [...prev.answers]
+                                                                    answers[originalQuestionIndex] = originalOptionIndex
+                                                                    return { ...prev, answers }
+                                                                })}
+                                                                    className={`exam-reveal-zone w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${selected ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20" : "border-gray-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-600"}`}>
+                                                                    <span className={`w-6 h-6 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs font-bold ${selected ? "border-blue-500 bg-blue-500 text-white" : "border-gray-300 text-gray-400"}`}>
+                                                                        {["A","B","C","D"][displayedOptionIndex]}
+                                                                    </span>
+                                                                    <span className="exam-reveal-text text-sm text-gray-800 dark:text-gray-200">{opt}</span>
+                                                                </button>
+                                                            )
+                                                        })}
+                                                    </div>
+                                                )}
                                                 {/* Progress dots */}
                                                 <div className="flex gap-1.5 flex-wrap pt-2">
                                                     {quizTakeModal.questionOrder.map((originalIndex, i) => (
@@ -8944,7 +9185,7 @@ export default function DocumentsPage() {
                                                             className={`w-7 h-7 rounded-full text-xs font-medium transition-all ${
                                                                 i === quizTakeModal.currentQuestion
                                                                     ? "bg-blue-600 text-white"
-                                                                    : quizTakeModal.answers[originalIndex] !== -1
+                                                                    : isQuizQuestionAnswered(quizTakeModal, originalIndex)
                                                                         ? "bg-green-500 text-white"
                                                                         : "bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400"
                                                             } disabled:opacity-40 disabled:cursor-not-allowed`}
@@ -9018,6 +9259,26 @@ export default function DocumentsPage() {
                                 {result?.reviewQuestions && (
                                     <div className="w-full space-y-3 text-left max-h-64 overflow-y-auto">
                                         {result.reviewQuestions.map((rq, i) => {
+                                            if (rq.type === "essay") {
+                                                const grade = result.essayGrades?.[i]
+                                                const passedEssay = (grade?.score ?? 0) >= 70
+                                                return (
+                                                    <div key={i} className={`rounded-xl border p-3 ${passedEssay ? "border-green-300 bg-green-50 dark:bg-green-900/10" : "border-amber-300 bg-amber-50 dark:bg-amber-900/10"}`}>
+                                                        <div className="flex items-start gap-2 mb-1">
+                                                            {passedEssay ? <CheckCircle2 className="w-4 h-4 text-green-600 flex-shrink-0 mt-0.5" /> : <XCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />}
+                                                            <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{rq.text}</p>
+                                                        </div>
+                                                        <p className="text-xs text-gray-600 dark:text-gray-300 pl-6 whitespace-pre-wrap">
+                                                            {(result.textAnswers?.[i] || "").trim() || "(không trả lời)"}
+                                                        </p>
+                                                        <p className="text-xs text-gray-500 pl-6 mt-1">
+                                                            AI chấm sơ bộ: <strong>{grade?.score ?? 0}/100</strong>
+                                                            {grade?.feedback ? ` · ${grade.feedback}` : ""}
+                                                            {grade?.gradedBy === "trainer" ? " · Trainer đã chấm lại" : ""}
+                                                        </p>
+                                                    </div>
+                                                )
+                                            }
                                             const myAns = result.answers[i]
                                             const correct = rq.correctIndex!
                                             const isCorrect = myAns === correct
@@ -9508,6 +9769,7 @@ export default function DocumentsPage() {
                                                             {scopedAttempts.map((att) => {
                                                                 const isExpanded = expandedAttemptIds.has(att.id)
                                                                 const incorrectQuestions = getIncorrectAttemptQuestions(att)
+                                                                const essayQuestions = getEssayAttemptQuestions(att)
                                                                 const hasReviewQuestions = (att.reviewQuestions?.length ?? 0) > 0
                                                                 return (
                                                                     <div key={att.id} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/30">
@@ -9579,18 +9841,84 @@ export default function DocumentsPage() {
                                                                                         <p className="font-semibold text-gray-900 dark:text-white">{new Date(att.submittedAt).toLocaleString("vi-VN")}</p>
                                                                                     </div>
                                                                                 </div>
+                                                                                {essayQuestions.length > 0 && (
+                                                                                    <div className="mb-3 space-y-2">
+                                                                                        <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">
+                                                                                            Câu tự luận (AI chấm sơ bộ — trainer có thể chấm lại):
+                                                                                        </p>
+                                                                                        {essayQuestions.map(({ question, questionIndex, textAnswer, essayGrade }) => {
+                                                                                            const draftKey = `${att.id}:${questionIndex}`
+                                                                                            const draft = essayRegradeDrafts[draftKey] ?? {
+                                                                                                score: String(essayGrade?.score ?? 0),
+                                                                                                feedback: essayGrade?.feedback ?? "",
+                                                                                            }
+                                                                                            return (
+                                                                                                <div key={draftKey} className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/50 dark:bg-amber-900/10">
+                                                                                                    <p className="text-xs font-semibold text-gray-900 dark:text-white">
+                                                                                                        Câu {questionIndex + 1}: {question.text}
+                                                                                                    </p>
+                                                                                                    <p className="mt-1 whitespace-pre-wrap text-xs text-gray-700 dark:text-gray-200">
+                                                                                                        {textAnswer.trim() || "(không trả lời)"}
+                                                                                                    </p>
+                                                                                                    {question.sampleAnswer && (
+                                                                                                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                                                                                            Đáp án mẫu: {question.sampleAnswer}
+                                                                                                        </p>
+                                                                                                    )}
+                                                                                                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                                                                                                        Điểm hiện tại: <strong>{essayGrade?.score ?? 0}/100</strong>
+                                                                                                        {" · "}
+                                                                                                        {essayGrade?.gradedBy === "trainer" ? "Trainer đã chấm lại" : "AI chấm sơ bộ"}
+                                                                                                        {essayGrade?.feedback ? ` · ${essayGrade.feedback}` : ""}
+                                                                                                    </p>
+                                                                                                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[100px_1fr_auto]">
+                                                                                                        <Input
+                                                                                                            type="number"
+                                                                                                            min={0}
+                                                                                                            max={100}
+                                                                                                            className="h-8 text-xs"
+                                                                                                            value={draft.score}
+                                                                                                            onChange={(e) => setEssayRegradeDrafts((prev) => ({
+                                                                                                                ...prev,
+                                                                                                                [draftKey]: { ...draft, score: e.target.value },
+                                                                                                            }))}
+                                                                                                        />
+                                                                                                        <Input
+                                                                                                            className="h-8 text-xs"
+                                                                                                            placeholder="Nhận xét khi chấm lại"
+                                                                                                            value={draft.feedback}
+                                                                                                            onChange={(e) => setEssayRegradeDrafts((prev) => ({
+                                                                                                                ...prev,
+                                                                                                                [draftKey]: { ...draft, feedback: e.target.value },
+                                                                                                            }))}
+                                                                                                        />
+                                                                                                        <Button
+                                                                                                            type="button"
+                                                                                                            size="sm"
+                                                                                                            className="h-8 bg-amber-600 hover:bg-amber-700 text-white"
+                                                                                                            disabled={regradingEssayKey === draftKey}
+                                                                                                            onClick={() => void handleRegradeEssay(att, questionIndex)}
+                                                                                                        >
+                                                                                                            {regradingEssayKey === draftKey ? "Đang lưu..." : "Chấm lại"}
+                                                                                                        </Button>
+                                                                                                    </div>
+                                                                                                </div>
+                                                                                            )
+                                                                                        })}
+                                                                                    </div>
+                                                                                )}
                                                                                 {!hasReviewQuestions ? (
                                                                                     <p className="text-xs text-gray-500 dark:text-gray-400">Chưa có dữ liệu câu hỏi để đối chiếu đáp án sai.</p>
-                                                                                ) : incorrectQuestions.length === 0 ? (
+                                                                                ) : incorrectQuestions.filter((item) => item.question.type !== "essay").length === 0 ? (
                                                                                     <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-medium text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300">
-                                                                                        Lần làm này không sai câu nào.
+                                                                                        Không sai câu trắc nghiệm nào.
                                                                                     </div>
                                                                                 ) : (
                                                                                     <div className="space-y-2">
                                                                                         <p className="text-xs font-semibold text-red-600 dark:text-red-300">
-                                                                                            Sai {incorrectQuestions.length} câu:
+                                                                                            Sai {incorrectQuestions.filter((item) => item.question.type !== "essay").length} câu trắc nghiệm:
                                                                                         </p>
-                                                                                        {incorrectQuestions.map(({ question, questionIndex, selectedIndex, correctIndex }) => (
+                                                                                        {incorrectQuestions.filter((item) => item.question.type !== "essay").map(({ question, questionIndex, selectedIndex, correctIndex }) => (
                                                                                             <div key={`${att.id}-${questionIndex}`} className="rounded-lg border border-red-200 bg-red-50/80 p-3 dark:border-red-900/60 dark:bg-red-900/10">
                                                                                                 <p className="text-xs font-semibold text-gray-900 dark:text-white">
                                                                                                     Câu {questionIndex + 1}: {question.text}

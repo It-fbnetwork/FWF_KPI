@@ -11,7 +11,8 @@
     "cap:android": "cap open android",
     "lint": "next lint",
     "migrate:gridfs:to-postgres": "node ./scripts/migration/migrate-gridfs-to-postgres.js",
-    "migrate:storage:r2-metadata": "node ./scripts/migration/apply-r2-storage-metadata.js"
+    "migrate:storage:r2-metadata": "node ./scripts/migration/apply-r2-storage-metadata.js",
+    "cron:quiz-reminders": "bash ./scripts/run-quiz-deadline-reminders.sh"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.0",

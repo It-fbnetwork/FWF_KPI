@@ -311,3 +311,71 @@ export async function sendLearningAnnouncementEmail({
     `
   });
 }
+
+export async function sendQuizDeadlineReminderEmail({
+  to,
+  recipientName,
+  quizTitle,
+  documentName,
+  deadlineAt,
+  appUrl,
+  managementEmails,
+}: {
+  to: string;
+  recipientName: string;
+  quizTitle: string;
+  documentName: string;
+  deadlineAt: string;
+  appUrl: string;
+  managementEmails: string[];
+}) {
+  const deadlineLabel = new Date(deadlineAt).toLocaleString("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    hour: "2-digit",
+    minute: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+  const managementList = managementEmails.filter(Boolean);
+  const managementText = managementList.length > 0 ? managementList.join(", ") : "ban quản lý";
+  const explainSubject = encodeURIComponent(`[Giải trình] Chưa hoàn thành bài kiểm tra: ${quizTitle}`);
+  const explainBody = encodeURIComponent(
+    `Kính gửi Ban quản lý,\n\nTôi là ${recipientName}.\nTôi chưa hoàn thành bài kiểm tra "${quizTitle}" (tài liệu: ${documentName}) trước hạn ${deadlineLabel}.\n\nLý do giải trình:\n- ...\n\nTrân trọng.`
+  );
+  const mailtoHref =
+    managementList.length > 0
+      ? `mailto:${managementList.join(",")}?subject=${explainSubject}&body=${explainBody}`
+      : undefined;
+
+  await sendTransactionalEmail({
+    to,
+    subject: `FWF KPI - Nhắc hạn bài kiểm tra còn 1 ngày: ${quizTitle}`,
+    text: `Xin chào ${recipientName}, bài kiểm tra "${quizTitle}" sẽ đến hạn vào ${deadlineLabel}. Vui lòng hoàn thành trước hạn. Nếu chưa thể làm kịp, hãy gửi email giải trình về ${managementText}.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+        <h2 style="margin-bottom: 12px;">Nhắc hạn bài kiểm tra (còn 1 ngày)</h2>
+        <p>Xin chào ${recipientName},</p>
+        <p>Hệ thống ghi nhận bạn <strong>chưa hoàn thành</strong> bài kiểm tra:</p>
+        <p style="font-weight: 700; margin: 14px 0;">${quizTitle}</p>
+        <p>Tài liệu: <strong>${documentName}</strong></p>
+        <p>Hạn hoàn thành: <strong>${deadlineLabel}</strong></p>
+        <p style="margin-top: 16px;"><strong>Yêu cầu:</strong></p>
+        <ol>
+          <li>Hoàn thành bài kiểm tra trước hạn trên ứng dụng, hoặc</li>
+          <li>Gửi email giải trình về Ban quản lý${managementList.length > 0 ? ` (<strong>${managementText}</strong>)` : ""} nếu chưa thể hoàn thành kịp.</li>
+        </ol>
+        <p style="margin-top: 18px;">
+          <a href="${appUrl}" style="display:inline-block;background:#7c3aed;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:600;">
+            Mở ứng dụng để làm bài
+          </a>
+        </p>
+        ${
+          mailtoHref
+            ? `<p style="margin-top: 12px;"><a href="${mailtoHref}">Gửi email giải trình cho Ban quản lý</a></p>`
+            : ""
+        }
+      </div>
+    `,
+  });
+}

@@ -2,7 +2,9 @@
   {
     "AllowedOrigins": [
       "http://localhost:3000",
-      "http://127.0.0.1:3000"
+      "http://127.0.0.1:3000",
+      "https://fwfkpi-staging.up.railway.app",
+      "https://kpi.facewashfox.com"
     ],
     "AllowedMethods": ["GET", "PUT", "HEAD"],
     "AllowedHeaders": ["*"],

@@ -30,11 +30,13 @@ import {
   isOtpEmailConfigured,
   sendLearningAnnouncementEmail,
   sendOtpEmail,
+  sendQuizDeadlineReminderEmail,
   sendRoleApprovalGrantedEmail,
   sendRoleApprovalRejectedEmail,
   sendRoleApprovalRequestEmail
 } from "@/lib/server/mailer";
 import type { AppRealtimeEntityType, AppRealtimeEventAction, AppRealtimeEventType } from "@/lib/server/realtime";
+import { gradeEssayWithAi } from "@/lib/server/quiz-essay";
 
 type DbUser = {
   _id: string;
@@ -247,11 +249,23 @@ type DbTestSession = {
   violationReason?: string;
 };
 
+type DbQuizQuestionType = "mcq" | "essay";
+
 type DbQuizQuestion = {
+  type?: DbQuizQuestionType;
   text: string;
   options: string[];
   correctIndex: number;
   explanation?: string;
+  sampleAnswer?: string;
+};
+
+type DbEssayGrade = {
+  score: number;
+  feedback: string;
+  gradedBy: "ai" | "trainer";
+  gradedAt: string;
+  gradedByPersonId?: string;
 };
 
 type DbLearningQuiz = {
@@ -274,6 +288,8 @@ type DbQuizAttempt = {
   documentId: string;
   personId: string;
   answers: number[];
+  textAnswers?: string[];
+  essayGrades?: Array<DbEssayGrade | null>;
   score: number;
   correctAnswers: number;
   totalQuestions: number;
@@ -518,11 +534,23 @@ export type TestProgressRow = {
   violationReason?: string;
 };
 
+export type QuizQuestionType = "mcq" | "essay";
+
 export type QuizQuestion = {
+  type?: QuizQuestionType;
   text: string;
   options: string[];
   correctIndex?: number;
   explanation?: string;
+  sampleAnswer?: string;
+};
+
+export type EssayGradeRecord = {
+  score: number;
+  feedback: string;
+  gradedBy: "ai" | "trainer";
+  gradedAt: string;
+  gradedByPersonId?: string;
 };
 
 export type LearningQuizRecord = {
@@ -547,6 +575,8 @@ export type QuizAttemptRecord = {
   personName?: string;
   personRole?: string;
   answers: number[];
+  textAnswers?: string[];
+  essayGrades?: Array<EssayGradeRecord | null>;
   score: number;
   correctAnswers: number;
   totalQuestions: number;
@@ -557,6 +587,111 @@ export type QuizAttemptRecord = {
   isActiveAttempt?: boolean;
   reviewQuestions?: QuizQuestion[];
 };
+
+type QuizQuestionInput = {
+  type?: QuizQuestionType;
+  text: string;
+  options?: string[];
+  correctIndex?: number;
+  explanation?: string;
+  sampleAnswer?: string;
+};
+
+const ESSAY_PASS_THRESHOLD = 70;
+
+function normalizeQuizQuestion(input: QuizQuestionInput): DbQuizQuestion {
+  const type: DbQuizQuestionType = input.type === "essay" ? "essay" : "mcq";
+  const text = input.text.trim();
+  if (type === "essay") {
+    return {
+      type: "essay",
+      text,
+      options: [],
+      correctIndex: -1,
+      explanation: input.explanation?.trim() ?? "",
+      sampleAnswer: input.sampleAnswer?.trim() ?? "",
+    };
+  }
+  const options = (input.options ?? []).map((option) => option.trim());
+  return {
+    type: "mcq",
+    text,
+    options,
+    correctIndex: Math.min(Math.max(Number(input.correctIndex ?? 0), 0), Math.max(options.length - 1, 0)),
+    explanation: input.explanation?.trim() ?? "",
+  };
+}
+
+function isEssayQuestion(question: Pick<DbQuizQuestion, "type"> | Pick<QuizQuestion, "type"> | undefined) {
+  return question?.type === "essay";
+}
+
+function clampEssayScore(value: unknown) {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.min(100, Math.max(0, Math.round(num)));
+}
+
+function scoreQuizFromAnswers(
+  questions: DbQuizQuestion[],
+  answers: number[],
+  essayGrades: Array<DbEssayGrade | null>
+) {
+  if (questions.length === 0) {
+    return { score: 0, correctAnswers: 0 };
+  }
+  let totalPoints = 0;
+  let correctAnswers = 0;
+  questions.forEach((question, index) => {
+    if (isEssayQuestion(question)) {
+      const grade = essayGrades[index];
+      const points = clampEssayScore(grade?.score ?? 0);
+      totalPoints += points;
+      if (points >= ESSAY_PASS_THRESHOLD) correctAnswers += 1;
+      return;
+    }
+    const isCorrect = answers[index] === question.correctIndex;
+    totalPoints += isCorrect ? 100 : 0;
+    if (isCorrect) correctAnswers += 1;
+  });
+  return {
+    score: Math.round(totalPoints / questions.length),
+    correctAnswers,
+  };
+}
+
+async function loadDocumentContextForEssayGrading(documentId: string) {
+  if (shouldUsePostgresDataProvider()) {
+    const docRes = await pgQuery<{
+      name: string | null;
+      learning_plan: { steps?: Array<{ content?: string }> } | null;
+    }>("select name, learning_plan from documents where id = $1 limit 1", [documentId]);
+    const row = docRes.rows[0];
+    const steps = row?.learning_plan?.steps ?? [];
+    const context = steps
+      .map((step) => step.content?.trim())
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, 12000);
+    return {
+      documentName: row?.name?.trim() || "Tài liệu",
+      documentContext: context,
+    };
+  }
+
+  const db = await getMongoDb();
+  const doc = await db.collection<{ _id: string; name?: string; learningPlan?: { steps?: Array<{ content?: string }> } }>("documents").findOne({ _id: documentId });
+  const steps = doc?.learningPlan?.steps ?? [];
+  const context = steps
+    .map((step) => step.content?.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 12000);
+  return {
+    documentName: doc?.name?.trim() || "Tài liệu",
+    documentContext: context,
+  };
+}
 
 export type QuizAttemptResetRecord = {
   id: string;
@@ -616,6 +751,11 @@ declare global {
         checkedAt: number;
       }
     | undefined;
+  var __fwfQuizDeadlineReminderSchemaReady__:
+    | {
+        checkedAt: number;
+      }
+    | undefined;
   var __fwfTestSubmissionSchemaReady__:
     | {
         checkedAt: number;
@@ -640,6 +780,28 @@ async function ensureQuizAttemptResetSchemaReady() {
   `);
   await pgQuery("create index if not exists idx_quiz_attempt_resets_doc_person on quiz_attempt_resets(document_id, person_id, reset_at desc)");
   globalThis.__fwfQuizAttemptResetSchemaReady__ = { checkedAt: Date.now() };
+}
+
+async function ensureQuizDeadlineReminderSchemaReady() {
+  if (!shouldUsePostgresDataProvider()) return;
+  const state = globalThis.__fwfQuizDeadlineReminderSchemaReady__;
+  if (state && Date.now() - state.checkedAt < 5 * 60 * 1000) return;
+
+  await pgQuery(`
+    create table if not exists quiz_deadline_reminder_logs (
+      id text primary key,
+      quiz_id text not null,
+      document_id text not null,
+      person_id text not null,
+      deadline_at timestamptz not null,
+      sent_at timestamptz not null,
+      raw_json jsonb
+    )
+  `);
+  await pgQuery(
+    "create unique index if not exists idx_quiz_deadline_reminder_unique on quiz_deadline_reminder_logs(quiz_id, person_id, deadline_at)"
+  );
+  globalThis.__fwfQuizDeadlineReminderSchemaReady__ = { checkedAt: Date.now() };
 }
 
 async function ensureTestSubmissionSchemaReady() {
@@ -1380,12 +1542,17 @@ function mapDbLearningQuiz(quiz: DbLearningQuiz, sanitize: boolean): LearningQui
     documentId: quiz.documentId,
     title: quiz.title,
     description: quiz.description ?? "",
-    questions: quiz.questions.map((q) => ({
-      text: q.text,
-      options: q.options,
-      ...(sanitize ? {} : { correctIndex: q.correctIndex }),
-      ...(sanitize ? {} : { explanation: q.explanation }),
-    })),
+    questions: quiz.questions.map((q) => {
+      const type: QuizQuestionType = isEssayQuestion(q) ? "essay" : "mcq";
+      return {
+        type,
+        text: q.text,
+        options: type === "essay" ? [] : q.options,
+        ...(sanitize || type === "essay" ? {} : { correctIndex: q.correctIndex }),
+        ...(sanitize ? {} : { explanation: q.explanation }),
+        ...(sanitize || type !== "essay" ? {} : { sampleAnswer: q.sampleAnswer }),
+      };
+    }),
     durationMinutes: quiz.durationMinutes,
     ...(quiz.timePerQuestionSeconds ? { timePerQuestionSeconds: quiz.timePerQuestionSeconds } : {}),
     ...(quiz.deadlineAt ? { deadlineAt: quiz.deadlineAt } : {}),
@@ -1411,6 +1578,8 @@ function mapDbQuizAttempt(
     personName,
     personRole,
     answers: attempt.answers,
+    textAnswers: attempt.textAnswers ?? [],
+    essayGrades: attempt.essayGrades ?? [],
     score: attempt.score,
     correctAnswers: attempt.correctAnswers,
     totalQuestions: attempt.totalQuestions,
@@ -1426,10 +1595,12 @@ function mapDbQuizAttempt(
 function buildQuizReviewQuestions(quiz?: Pick<DbLearningQuiz, "questions"> | null): QuizQuestion[] | undefined {
   if (!quiz) return undefined;
   return quiz.questions.map((q) => ({
+    type: isEssayQuestion(q) ? "essay" : "mcq",
     text: q.text,
-    options: q.options,
-    correctIndex: q.correctIndex,
+    options: isEssayQuestion(q) ? [] : q.options,
+    correctIndex: isEssayQuestion(q) ? -1 : q.correctIndex,
     explanation: q.explanation,
+    sampleAnswer: q.sampleAnswer,
   }));
 }
 
@@ -1852,12 +2023,28 @@ function mapPgLearningQuizRow(row: Record<string, unknown>): DbLearningQuiz {
 }
 
 function mapPgQuizAttemptRow(row: Record<string, unknown>): DbQuizAttempt {
+  const raw =
+    row.raw_json && typeof row.raw_json === "object"
+      ? (row.raw_json as Record<string, unknown>)
+      : {};
+  const textAnswers = Array.isArray(raw.textAnswers)
+    ? (raw.textAnswers as string[])
+    : Array.isArray(row.text_answers)
+      ? (row.text_answers as string[])
+      : [];
+  const essayGrades = Array.isArray(raw.essayGrades)
+    ? (raw.essayGrades as Array<DbEssayGrade | null>)
+    : Array.isArray(row.essay_grades)
+      ? (row.essay_grades as Array<DbEssayGrade | null>)
+      : [];
   return {
     _id: String(row.id),
     quizId: String(row.quiz_id ?? ""),
     documentId: String(row.document_id ?? ""),
     personId: String(row.person_id ?? ""),
     answers: Array.isArray(row.answers) ? (row.answers as number[]) : [],
+    textAnswers,
+    essayGrades,
     score: Number(row.score ?? 0),
     correctAnswers: Number(row.correct_answers ?? 0),
     totalQuestions: Number(row.total_questions ?? 0),
@@ -2412,6 +2599,354 @@ export async function sendStoreLearningAnnouncementEmails(input: {
       })
     )
   );
+}
+
+function getVietnamDateKey(date: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function addDaysToDateKey(dateKey: string, days: number) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const utc = new Date(Date.UTC(year!, (month ?? 1) - 1, day ?? 1));
+  utc.setUTCDate(utc.getUTCDate() + days);
+  return utc.toISOString().slice(0, 10);
+}
+
+function getAppBaseUrl() {
+  return (
+    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
+    process.env.APP_URL?.trim() ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "") ||
+    "https://kpi.facewashfox.com"
+  );
+}
+
+function getConfiguredManagementEmails() {
+  return (process.env.LEARNING_MANAGEMENT_EMAILS ?? "")
+    .split(",")
+    .map((email) => email.trim())
+    .filter(Boolean);
+}
+
+async function loadLearningManagementEmails(): Promise<string[]> {
+  const configured = getConfiguredManagementEmails();
+  if (configured.length > 0) return Array.from(new Set(configured.map((email) => normalizeEmail(email))));
+
+  if (shouldUsePostgresDataProvider()) {
+    const usersRes = await pgQuery(
+      `select email from users
+       where verified = true
+         and department = 'Cửa hàng'
+         and role = any($1::text[])`,
+      [["store_trainer", "store_manager"]]
+    );
+    return Array.from(
+      new Set(
+        usersRes.rows
+          .map((row) => normalizeEmail(String(row.email ?? "")))
+          .filter(Boolean)
+      )
+    );
+  }
+
+  const db = await getMongoDb();
+  const users = await db
+    .collection<DbUser>("users")
+    .find({
+      verified: true,
+      department: "Cửa hàng",
+      role: { $in: ["store_trainer", "store_manager"] },
+    })
+    .toArray();
+  return Array.from(new Set(users.map((user) => normalizeEmail(user.email)).filter(Boolean)));
+}
+
+type QuizDeadlineReminderTarget = {
+  personId: string;
+  email: string;
+  name: string;
+};
+
+async function listIncompleteQuizReminderTargets(input: {
+  documentId: string;
+  quizId: string;
+}): Promise<{ documentName: string; targets: QuizDeadlineReminderTarget[] }> {
+  const passScore = 90;
+  const learnerRoles = new Set<UserRole>(["store_manager", "store_lead", "store_technician", "store_staff"]);
+
+  if (shouldUsePostgresDataProvider()) {
+    await ensureQuizAttemptResetSchemaReady();
+    const [documentRes, peopleRes, usersRes, attemptsRes, resetRes] = await Promise.all([
+      pgQuery("select * from documents where id = $1 limit 1", [input.documentId]),
+      pgQuery("select * from people"),
+      pgQuery("select * from users where verified = true"),
+      pgQuery("select * from quiz_attempts where document_id = $1", [input.documentId]),
+      pgQuery("select * from quiz_attempt_resets where document_id = $1", [input.documentId]),
+    ]);
+    const documentRow = documentRes.rows[0];
+    if (!documentRow) return { documentName: "", targets: [] };
+    const document = mapPgDocumentRow(documentRow);
+    const mappedPeople = peopleRes.rows.map((row) => mapDbPerson(mapPgPersonRow(row)));
+    const ownerTeamByPersonId = new Map(mappedPeople.map((person) => [person.id, person.team]));
+    const users = usersRes.rows.map((row) => mapDbUser(mapPgUserRow(row)));
+    const attempts = attemptsRes.rows.map((row) => mapPgQuizAttemptRow(row));
+    const resets = resetRes.rows.map((row) => mapPgQuizAttemptResetRow(row));
+    const latestResetAtByPerson = new Map<string, string>();
+    for (const reset of resets) {
+      const prev = latestResetAtByPerson.get(reset.personId);
+      if (!prev || new Date(reset.resetAt).getTime() > new Date(prev).getTime()) {
+        latestResetAtByPerson.set(reset.personId, reset.resetAt);
+      }
+    }
+    const passedPersonIds = new Set<string>();
+    for (const attempt of attempts) {
+      const latestResetAt = latestResetAtByPerson.get(attempt.personId);
+      if (latestResetAt && new Date(attempt.submittedAt).getTime() <= new Date(latestResetAt).getTime()) continue;
+      if (attempt.score >= passScore) passedPersonIds.add(attempt.personId);
+    }
+
+    const targets = users
+      .filter((user) => Boolean(user.personId) && Boolean(user.email))
+      .filter((user) => user.department === "Cửa hàng" && learnerRoles.has(user.role))
+      .filter((user) => {
+        const person = mappedPeople.find((candidate) => candidate.id === user.personId);
+        if (!person) return false;
+        if (passedPersonIds.has(person.id)) return false;
+        return canPersonAccessDocument(person, document, ownerTeamByPersonId);
+      })
+      .map((user) => ({
+        personId: user.personId as string,
+        email: user.email,
+        name: user.name,
+      }));
+
+    const unique = new Map<string, QuizDeadlineReminderTarget>();
+    for (const target of targets) {
+      if (!unique.has(target.personId)) unique.set(target.personId, target);
+    }
+    return { documentName: document.name, targets: Array.from(unique.values()) };
+  }
+
+  const db = await getMongoDb();
+  const [document, allPeople, allUsers, attempts, resets] = await Promise.all([
+    db.collection<DbDocument>("documents").findOne({ _id: input.documentId }),
+    db.collection<DbPerson>("people").find({}).toArray(),
+    db.collection<DbUser>("users").find({ verified: true }).toArray(),
+    db.collection<DbQuizAttempt>("quiz_attempts").find({ documentId: input.documentId }).toArray(),
+    db.collection<DbQuizAttemptReset>("quiz_attempt_resets").find({ documentId: input.documentId }).toArray(),
+  ]);
+  if (!document) return { documentName: "", targets: [] };
+
+  const mappedPeople = allPeople.map(mapDbPerson);
+  const ownerTeamByPersonId = new Map(mappedPeople.map((person) => [person.id, person.team]));
+  const latestResetAtByPerson = new Map<string, string>();
+  for (const reset of resets) {
+    const prev = latestResetAtByPerson.get(reset.personId);
+    if (!prev || new Date(reset.resetAt).getTime() > new Date(prev).getTime()) {
+      latestResetAtByPerson.set(reset.personId, reset.resetAt);
+    }
+  }
+  const passedPersonIds = new Set<string>();
+  for (const attempt of attempts) {
+    const latestResetAt = latestResetAtByPerson.get(attempt.personId);
+    if (latestResetAt && new Date(attempt.submittedAt).getTime() <= new Date(latestResetAt).getTime()) continue;
+    if (attempt.score >= passScore) passedPersonIds.add(attempt.personId);
+  }
+
+  const targets = allUsers
+    .map(mapDbUser)
+    .filter((user) => Boolean(user.personId) && Boolean(user.email))
+    .filter((user) => user.department === "Cửa hàng" && learnerRoles.has(user.role))
+    .filter((user) => {
+      const person = mappedPeople.find((candidate) => candidate.id === user.personId);
+      if (!person) return false;
+      if (passedPersonIds.has(person.id)) return false;
+      return canPersonAccessDocument(person, document, ownerTeamByPersonId);
+    })
+    .map((user) => ({
+      personId: user.personId as string,
+      email: user.email,
+      name: user.name,
+    }));
+
+  const unique = new Map<string, QuizDeadlineReminderTarget>();
+  for (const target of targets) {
+    if (!unique.has(target.personId)) unique.set(target.personId, target);
+  }
+  return { documentName: document.name, targets: Array.from(unique.values()) };
+}
+
+async function hasQuizDeadlineReminderBeenSent(input: {
+  quizId: string;
+  personId: string;
+  deadlineAt: string;
+}) {
+  if (shouldUsePostgresDataProvider()) {
+    await ensureQuizDeadlineReminderSchemaReady();
+    const existing = await pgQuery(
+      `select id from quiz_deadline_reminder_logs
+       where quiz_id = $1 and person_id = $2 and deadline_at = $3::timestamptz
+       limit 1`,
+      [input.quizId, input.personId, input.deadlineAt]
+    );
+    return Boolean(existing.rows[0]);
+  }
+
+  const db = await getMongoDb();
+  const existing = await db.collection("quiz_deadline_reminder_logs").findOne({
+    quizId: input.quizId,
+    personId: input.personId,
+    deadlineAt: input.deadlineAt,
+  });
+  return Boolean(existing);
+}
+
+async function markQuizDeadlineReminderSent(input: {
+  quizId: string;
+  documentId: string;
+  personId: string;
+  deadlineAt: string;
+}) {
+  const now = new Date().toISOString();
+  const record = {
+    _id: `qdr_${Date.now()}_${randomInt(1000, 9999)}`,
+    quizId: input.quizId,
+    documentId: input.documentId,
+    personId: input.personId,
+    deadlineAt: input.deadlineAt,
+    sentAt: now,
+  };
+
+  if (shouldUsePostgresDataProvider()) {
+    await ensureQuizDeadlineReminderSchemaReady();
+    await pgQuery(
+      `insert into quiz_deadline_reminder_logs
+      (id, quiz_id, document_id, person_id, deadline_at, sent_at, raw_json)
+      values ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb)
+      on conflict (quiz_id, person_id, deadline_at) do nothing`,
+      [record._id, record.quizId, record.documentId, record.personId, record.deadlineAt, record.sentAt, JSON.stringify(record)]
+    );
+    return;
+  }
+
+  const db = await getMongoDb();
+  await db.collection("quiz_deadline_reminder_logs").updateOne(
+    { quizId: input.quizId, personId: input.personId, deadlineAt: input.deadlineAt },
+    { $setOnInsert: record },
+    { upsert: true }
+  );
+}
+
+export async function processQuizDeadlineReminders(now = new Date()) {
+  if (!isOtpEmailConfigured()) {
+    return { ok: false as const, message: "Email chưa được cấu hình.", quizzes: 0, sent: 0, skipped: 0 };
+  }
+
+  const todayKey = getVietnamDateKey(now);
+  const tomorrowKey = addDaysToDateKey(todayKey, 1);
+  const appUrl = getAppBaseUrl();
+  const managementEmails = await loadLearningManagementEmails();
+
+  type QuizCandidate = {
+    id: string;
+    documentId: string;
+    title: string;
+    deadlineAt: string;
+  };
+
+  let quizzes: QuizCandidate[] = [];
+
+  if (shouldUsePostgresDataProvider()) {
+    await ensureQuizDeadlineReminderSchemaReady();
+    const quizRes = await pgQuery(
+      `select id, document_id, title, deadline_at
+       from learning_quizzes
+       where deadline_at is not null`
+    );
+    quizzes = quizRes.rows
+      .map((row) => {
+        const deadlineAt = toIsoStringOrUndefined(row.deadline_at);
+        if (!deadlineAt) return null;
+        return {
+          id: String(row.id),
+          documentId: String(row.document_id ?? ""),
+          title: String(row.title ?? ""),
+          deadlineAt,
+        };
+      })
+      .filter((row): row is QuizCandidate => Boolean(row))
+      .filter((quiz) => getVietnamDateKey(new Date(quiz.deadlineAt)) === tomorrowKey);
+  } else {
+    const db = await getMongoDb();
+    const rows = await db.collection<DbLearningQuiz>("learning_quizzes").find({}).toArray();
+    quizzes = rows
+      .filter((quiz) => Boolean(quiz.deadlineAt))
+      .filter((quiz) => getVietnamDateKey(new Date(quiz.deadlineAt!)) === tomorrowKey)
+      .map((quiz) => ({
+        id: quiz._id,
+        documentId: quiz.documentId,
+        title: quiz.title,
+        deadlineAt: quiz.deadlineAt!,
+      }));
+  }
+
+  let sent = 0;
+  let skipped = 0;
+
+  for (const quiz of quizzes) {
+    const { documentName, targets } = await listIncompleteQuizReminderTargets({
+      documentId: quiz.documentId,
+      quizId: quiz.id,
+    });
+    for (const target of targets) {
+      const alreadySent = await hasQuizDeadlineReminderBeenSent({
+        quizId: quiz.id,
+        personId: target.personId,
+        deadlineAt: quiz.deadlineAt,
+      });
+      if (alreadySent) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        await sendQuizDeadlineReminderEmail({
+          to: target.email,
+          recipientName: target.name,
+          quizTitle: quiz.title,
+          documentName: documentName || quiz.title,
+          deadlineAt: quiz.deadlineAt,
+          appUrl,
+          managementEmails,
+        });
+        await markQuizDeadlineReminderSent({
+          quizId: quiz.id,
+          documentId: quiz.documentId,
+          personId: target.personId,
+          deadlineAt: quiz.deadlineAt,
+        });
+        sent += 1;
+      } catch (error) {
+        console.error("[quiz-deadline-reminder] send failed", {
+          quizId: quiz.id,
+          personId: target.personId,
+          error,
+        });
+      }
+    }
+  }
+
+  return {
+    ok: true as const,
+    reminderDate: tomorrowKey,
+    quizzes: quizzes.length,
+    sent,
+    skipped,
+  };
 }
 
 async function getSessionActor(sessionUserId?: string | null): Promise<SessionActor | null> {
@@ -7675,7 +8210,7 @@ export async function createLearningQuiz(
     documentId: string;
     title: string;
     description?: string;
-    questions: Array<{ text: string; options: string[]; correctIndex: number; explanation?: string }>;
+    questions: QuizQuestionInput[];
     durationMinutes: number;
     timePerQuestionSeconds?: number;
     deadlineAt?: string;
@@ -7696,12 +8231,7 @@ export async function createLearningQuiz(
       documentId: input.documentId,
       title: input.title.trim(),
       description: input.description?.trim() ?? "",
-      questions: input.questions.map((q) => ({
-        text: q.text.trim(),
-        options: q.options.map((o) => o.trim()),
-        correctIndex: q.correctIndex,
-        explanation: q.explanation?.trim() ?? "",
-      })),
+      questions: input.questions.map((q) => normalizeQuizQuestion(q)),
       durationMinutes: Math.max(5, input.durationMinutes),
       timePerQuestionSeconds: input.timePerQuestionSeconds ? Math.max(5, Math.floor(input.timePerQuestionSeconds)) : undefined,
       deadlineAt: normalizedDeadlineAt,
@@ -7733,12 +8263,7 @@ export async function createLearningQuiz(
     documentId: input.documentId,
     title: input.title.trim(),
     description: input.description?.trim() ?? "",
-    questions: input.questions.map((q) => ({
-      text: q.text.trim(),
-      options: q.options.map((o) => o.trim()),
-      correctIndex: q.correctIndex,
-      explanation: q.explanation?.trim() ?? "",
-    })),
+    questions: input.questions.map((q) => normalizeQuizQuestion(q)),
     durationMinutes: Math.max(5, input.durationMinutes),
     timePerQuestionSeconds: input.timePerQuestionSeconds
       ? Math.max(5, Math.floor(input.timePerQuestionSeconds))
@@ -7759,7 +8284,7 @@ export async function updateLearningQuiz(
   updates: {
     title?: string;
     description?: string;
-    questions?: Array<{ text: string; options: string[]; correctIndex: number; explanation?: string }>;
+    questions?: QuizQuestionInput[];
     durationMinutes?: number;
     timePerQuestionSeconds?: number;
     deadlineAt?: string;
@@ -7778,12 +8303,7 @@ export async function updateLearningQuiz(
     if (updates.title) payload.title = updates.title.trim();
     if (updates.description !== undefined) payload.description = updates.description.trim();
     if (updates.questions) {
-      payload.questions = updates.questions.map((q) => ({
-        text: q.text.trim(),
-        options: q.options.map((o) => o.trim()),
-        correctIndex: q.correctIndex,
-        explanation: q.explanation?.trim() ?? "",
-      }));
+      payload.questions = updates.questions.map((q) => normalizeQuizQuestion(q));
     }
     if (updates.durationMinutes !== undefined) payload.durationMinutes = Math.max(5, updates.durationMinutes);
     if (updates.timePerQuestionSeconds !== undefined) payload.timePerQuestionSeconds = Math.max(5, Math.floor(updates.timePerQuestionSeconds));
@@ -7806,12 +8326,7 @@ export async function updateLearningQuiz(
   if (updates.title) payload.title = updates.title.trim();
   if (updates.description !== undefined) payload.description = updates.description.trim();
   if (updates.questions) {
-    payload.questions = updates.questions.map((q) => ({
-      text: q.text.trim(),
-      options: q.options.map((o) => o.trim()),
-      correctIndex: q.correctIndex,
-      explanation: q.explanation?.trim() ?? "",
-    }));
+    payload.questions = updates.questions.map((q) => normalizeQuizQuestion(q));
   }
   if (updates.durationMinutes !== undefined) payload.durationMinutes = Math.max(5, updates.durationMinutes);
   if (updates.timePerQuestionSeconds !== undefined) {
@@ -7848,12 +8363,57 @@ export async function submitQuizAttempt(
   sessionUserId: string | null | undefined,
   documentId: string,
   answers: number[],
-  startedAt: string
+  startedAt: string,
+  textAnswers: string[] = []
 ): Promise<QuizAttemptRecord> {
   const passScore = 90;
   const actor = await getSessionActor(sessionUserId);
   if (!actor) throw new Error("Unauthorized");
   if (actor.user.role === "store_trainer") throw new Error("Forbidden");
+
+  const buildGradedAttempt = async (quiz: DbLearningQuiz): Promise<DbQuizAttempt> => {
+    const normalizedTextAnswers = quiz.questions.map((_, index) =>
+      typeof textAnswers[index] === "string" ? textAnswers[index]!.trim() : ""
+    );
+    const normalizedAnswers = quiz.questions.map((question, index) =>
+      isEssayQuestion(question) ? -1 : Number(answers[index] ?? -1)
+    );
+    const { documentName, documentContext } = await loadDocumentContextForEssayGrading(documentId);
+    const essayGrades: Array<DbEssayGrade | null> = await Promise.all(
+      quiz.questions.map(async (question, index) => {
+        if (!isEssayQuestion(question)) return null;
+        const grade = await gradeEssayWithAi({
+          documentName,
+          documentContext,
+          questionText: question.text,
+          sampleAnswer: question.sampleAnswer,
+          studentAnswer: normalizedTextAnswers[index] ?? "",
+        });
+        return {
+          score: grade.score,
+          feedback: grade.feedback,
+          gradedBy: "ai" as const,
+          gradedAt: grade.gradedAt,
+        };
+      })
+    );
+    const { score, correctAnswers } = scoreQuizFromAnswers(quiz.questions, normalizedAnswers, essayGrades);
+    const now = new Date().toISOString();
+    return {
+      _id: `attempt_${Date.now()}`,
+      quizId: quiz._id,
+      documentId,
+      personId: actor.person.id,
+      answers: normalizedAnswers,
+      textAnswers: normalizedTextAnswers,
+      essayGrades,
+      score,
+      correctAnswers,
+      totalQuestions: quiz.questions.length,
+      startedAt,
+      submittedAt: now,
+    };
+  };
 
   if (shouldUsePostgresDataProvider()) {
     await ensureQuizAttemptResetSchemaReady();
@@ -7883,25 +8443,7 @@ export async function submitQuizAttempt(
     const quizRow = quizRes.rows[0];
     if (!quizRow) throw new Error("Không tìm thấy bài kiểm tra.");
     const quiz = mapPgLearningQuizRow(quizRow);
-
-    let correctAnswers = 0;
-    for (let i = 0; i < quiz.questions.length; i++) {
-      if (answers[i] === quiz.questions[i].correctIndex) correctAnswers++;
-    }
-    const score = quiz.questions.length > 0 ? Math.round((correctAnswers / quiz.questions.length) * 100) : 0;
-    const now = new Date().toISOString();
-    const attempt: DbQuizAttempt = {
-      _id: `attempt_${Date.now()}`,
-      quizId: quiz._id,
-      documentId,
-      personId: actor.person.id,
-      answers,
-      score,
-      correctAnswers,
-      totalQuestions: quiz.questions.length,
-      startedAt,
-      submittedAt: now,
-    };
+    const attempt = await buildGradedAttempt(quiz);
     await pgQuery(
       `insert into quiz_attempts
       (id,quiz_id,document_id,person_id,answers,score,correct_answers,total_questions,started_at,submitted_at,raw_json)
@@ -7936,26 +8478,7 @@ export async function submitQuizAttempt(
   const quiz = await db.collection<DbLearningQuiz>("learning_quizzes").findOne({ documentId });
   if (!quiz) throw new Error("Không tìm thấy bài kiểm tra.");
 
-  let correctAnswers = 0;
-  for (let i = 0; i < quiz.questions.length; i++) {
-    if (answers[i] === quiz.questions[i].correctIndex) correctAnswers++;
-  }
-  const score = quiz.questions.length > 0 ? Math.round((correctAnswers / quiz.questions.length) * 100) : 0;
-
-  const now = new Date().toISOString();
-  const attempt: DbQuizAttempt = {
-    _id: `attempt_${Date.now()}`,
-    quizId: quiz._id,
-    documentId,
-    personId: actor.person.id,
-    answers,
-    score,
-    correctAnswers,
-    totalQuestions: quiz.questions.length,
-    startedAt,
-    submittedAt: now,
-  };
-
+  const attempt = await buildGradedAttempt(quiz);
   await db.collection<DbQuizAttempt>("quiz_attempts").insertOne(attempt);
 
   const reviewQuestions = buildQuizReviewQuestions(quiz);
@@ -7966,6 +8489,93 @@ export async function submitQuizAttempt(
     submittedAt: { $lte: attempt.submittedAt },
   });
   return mapDbQuizAttempt(attempt, actor.person.name, actor.person.role, reviewQuestions, Math.max(1, attemptRound), true);
+}
+
+export async function regradeQuizEssayAttempt(
+  sessionUserId: string | null | undefined,
+  attemptId: string,
+  questionIndex: number,
+  score: number,
+  feedback: string
+): Promise<QuizAttemptRecord> {
+  const actor = await getSessionActor(sessionUserId);
+  if (!actor) throw new Error("Unauthorized");
+  if (!canManageLearningContent(actor)) throw new Error("Forbidden");
+
+  const nextScore = clampEssayScore(score);
+  const nextFeedback = feedback.trim() || "Trainer đã chấm lại.";
+  const now = new Date().toISOString();
+
+  if (shouldUsePostgresDataProvider()) {
+    const attemptRes = await pgQuery("select * from quiz_attempts where id = $1 limit 1", [attemptId]);
+    const attemptRow = attemptRes.rows[0];
+    if (!attemptRow) throw new Error("Không tìm thấy bài làm.");
+    const attempt = mapPgQuizAttemptRow(attemptRow);
+    const quizRes = await pgQuery("select * from learning_quizzes where id = $1 limit 1", [attempt.quizId]);
+    const quizRow = quizRes.rows[0];
+    if (!quizRow) throw new Error("Không tìm thấy bài kiểm tra.");
+    const quiz = mapPgLearningQuizRow(quizRow);
+    if (questionIndex < 0 || questionIndex >= quiz.questions.length) throw new Error("Câu hỏi không hợp lệ.");
+    if (!isEssayQuestion(quiz.questions[questionIndex])) throw new Error("Chỉ chấm lại được câu tự luận.");
+
+    const essayGrades = quiz.questions.map((_, index) => attempt.essayGrades?.[index] ?? null);
+    essayGrades[questionIndex] = {
+      score: nextScore,
+      feedback: nextFeedback,
+      gradedBy: "trainer",
+      gradedAt: now,
+      gradedByPersonId: actor.person.id,
+    };
+    const scored = scoreQuizFromAnswers(quiz.questions, attempt.answers, essayGrades);
+    const updated: DbQuizAttempt = {
+      ...attempt,
+      essayGrades,
+      score: scored.score,
+      correctAnswers: scored.correctAnswers,
+    };
+    await pgQuery(
+      `update quiz_attempts
+       set score = $2, correct_answers = $3, raw_json = $4::jsonb
+       where id = $1`,
+      [attemptId, updated.score, updated.correctAnswers, JSON.stringify(updated)]
+    );
+    return mapDbQuizAttempt(updated, undefined, undefined, buildQuizReviewQuestions(quiz), undefined, true);
+  }
+
+  const db = await getMongoDb();
+  const attempt = await db.collection<DbQuizAttempt>("quiz_attempts").findOne({ _id: attemptId });
+  if (!attempt) throw new Error("Không tìm thấy bài làm.");
+  const quiz = await db.collection<DbLearningQuiz>("learning_quizzes").findOne({ _id: attempt.quizId });
+  if (!quiz) throw new Error("Không tìm thấy bài kiểm tra.");
+  if (questionIndex < 0 || questionIndex >= quiz.questions.length) throw new Error("Câu hỏi không hợp lệ.");
+  if (!isEssayQuestion(quiz.questions[questionIndex])) throw new Error("Chỉ chấm lại được câu tự luận.");
+
+  const essayGrades = quiz.questions.map((_, index) => attempt.essayGrades?.[index] ?? null);
+  essayGrades[questionIndex] = {
+    score: nextScore,
+    feedback: nextFeedback,
+    gradedBy: "trainer",
+    gradedAt: now,
+    gradedByPersonId: actor.person.id,
+  };
+  const scored = scoreQuizFromAnswers(quiz.questions, attempt.answers, essayGrades);
+  const updated: DbQuizAttempt = {
+    ...attempt,
+    essayGrades,
+    score: scored.score,
+    correctAnswers: scored.correctAnswers,
+  };
+  await db.collection<DbQuizAttempt>("quiz_attempts").updateOne(
+    { _id: attemptId },
+    {
+      $set: {
+        essayGrades: updated.essayGrades,
+        score: updated.score,
+        correctAnswers: updated.correctAnswers,
+      },
+    }
+  );
+  return mapDbQuizAttempt(updated, undefined, undefined, buildQuizReviewQuestions(quiz), undefined, true);
 }
 
 export async function getMyQuizAttempt(

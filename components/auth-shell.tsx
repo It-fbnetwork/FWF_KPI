@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { COMPANY_DOMAIN, departments, registrationRoles, storeRegistrationRoles, type Department, type UserRole } from "@/lib/auth";
+import { departments, isCompanyEmail, registrationRoles, storeRegistrationRoles, type Department, type UserRole } from "@/lib/auth";
 import {
   STORE_BRANCHES_BY_REGION,
   STORE_REGIONS,
@@ -17,7 +17,6 @@ import {
 } from "@/lib/store-branches";
 
 type AuthMode = "login" | "register";
-type EmailMode = "company" | "external";
 
 const roleLabels: Record<UserRole, string> = {
   admin: "Quản trị viên",
@@ -54,56 +53,8 @@ function InputField({ label, value, onChange, type = "text", placeholder }: Fiel
   );
 }
 
-function extractEmailLocalPart(email: string) {
-  const normalizedEmail = email.trim();
-
-  if (!normalizedEmail) {
-    return "";
-  }
-
-  return normalizedEmail.split("@")[0] ?? "";
-}
-
-function normalizeCompanyEmailInput(value: string) {
-  const localPart = value.replace(/\s+/g, "").split("@")[0]?.trim() ?? "";
-  return localPart ? `${localPart}${COMPANY_DOMAIN}` : "";
-}
-
-function normalizeExternalEmailInput(value: string) {
+function normalizeEmailInput(value: string) {
   return value.replace(/\s+/g, "").trim().toLowerCase();
-}
-
-function CompanyEmailField({ value, onChange }: Pick<FieldProps, "value" | "onChange">) {
-  return (
-    <label className="grid gap-2">
-      <span className="text-sm font-medium text-text">Email công ty</span>
-      <div className="flex items-center rounded-2xl border border-[rgba(55,45,33,0.12)] bg-white/85 px-4 py-3 transition focus-within:border-ink dark:border-slate-600 dark:bg-slate-900/70">
-        <input
-          type="text"
-          value={extractEmailLocalPart(value)}
-          onChange={(event) => onChange(normalizeCompanyEmailInput(event.target.value))}
-          placeholder="yourname"
-          className="min-w-0 flex-1 bg-transparent text-slate-900 outline-none placeholder:text-slate-400 dark:text-slate-100 dark:placeholder:text-slate-400"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-        />
-        <span className="ml-2 shrink-0 font-medium text-[#dd6b4d] dark:text-orange-300">{COMPANY_DOMAIN}</span>
-      </div>
-    </label>
-  );
-}
-
-function ExternalEmailField({ value, onChange }: Pick<FieldProps, "value" | "onChange">) {
-  return (
-    <InputField
-      label="Email cá nhân"
-      value={value}
-      onChange={(nextValue) => onChange(normalizeExternalEmailInput(nextValue))}
-      placeholder="you@example.com"
-      type="email"
-    />
-  );
 }
 
 function maskEmail(email: string) {
@@ -126,7 +77,6 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
   const { requestLoginOtp, verifyLoginOtp, requestRegistrationOtp, verifyRegistrationOtp, refreshSession, users } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [emailMode, setEmailMode] = useState<EmailMode>("company");
   const [department, setDepartment] = useState<Department>("IT");
   const [role, setRole] = useState<UserRole>("employee");
   const [storeRegion, setStoreRegion] = useState<StoreRegion>("Hồ Chí Minh");
@@ -227,22 +177,6 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
   const isCeoRole = role === "ceo";
   const effectiveDepartment: Department = isCeoRole ? "Vận hành" : department;
   const isOtpStep = mode === "login" ? loginStep === "otp" : registerStep === "otp";
-  const isExternalEmail = emailMode === "external";
-
-  function switchEmailMode(nextMode: EmailMode) {
-    if (isOtpStep || nextMode === emailMode) {
-      return;
-    }
-
-    setEmailMode(nextMode);
-    if (nextMode === "company") {
-      const localPart = extractEmailLocalPart(email);
-      setEmail(localPart ? `${localPart}${COMPANY_DOMAIN}` : "");
-      return;
-    }
-
-    setEmail("");
-  }
 
   useEffect(() => {
     if (!isOtpStep || resendCountdown <= 0) {
@@ -387,9 +321,9 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
       setRegisterStep("otp");
       setResendCountdown(30);
       setSuccess(
-        role === "admin" || role === "ceo" || isExternalEmail
+        role === "admin" || role === "ceo" || !isCompanyEmail(email)
           ? "OTP đã được gửi. Sau khi xác thực, tài khoản sẽ chuyển sang trạng thái chờ quản trị viên/CEO duyệt trước khi sử dụng."
-          : "OTP đã được gửi tới email công ty. Nhập mã xác nhận để hoàn tất đăng ký."
+          : "OTP đã được gửi tới email. Nhập mã xác nhận để hoàn tất đăng ký."
       );
       setIsSubmitting(false);
       return;
@@ -411,7 +345,6 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
       setOtpPreview("");
       setName("");
       setEmail("");
-      setEmailMode("company");
       setRole("employee");
       setDepartment("IT");
       setStoreRegion("Hồ Chí Minh");
@@ -463,10 +396,10 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
         <p className="mt-3 text-sm leading-7 text-muted">
           {mode === "login"
             ? loginStep === "form"
-              ? "Nhập email công ty hoặc email cá nhân để nhận OTP đăng nhập."
+              ? "Nhập email để nhận OTP đăng nhập."
               : "Nhập mã OTP đã gửi tới email của bạn để hoàn tất đăng nhập."
             : registerStep === "form"
-              ? "Đăng ký bằng email công ty hoặc email cá nhân, chọn phòng ban và vai trò rồi xác thực bằng OTP."
+              ? "Nhập email, chọn phòng ban và vai trò rồi xác thực bằng OTP."
               : "Tài khoản chỉ được tạo sau khi OTP được xác nhận thành công."}
         </p>
 
@@ -480,41 +413,13 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
             />
           ) : null}
 
-          <div className="grid gap-2">
-            <span className="text-sm font-medium text-text">Loại email</span>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                disabled={isOtpStep}
-                onClick={() => switchEmailMode("company")}
-                className={`rounded-xl border px-3 py-2 text-sm font-medium transition ${
-                  emailMode === "company"
-                    ? "border-ink bg-orange-500 text-white"
-                    : "border-[rgba(55,45,33,0.12)] bg-white/70 text-black"
-                } ${isOtpStep ? "cursor-not-allowed opacity-60" : ""}`}
-              >
-                Email công ty
-              </button>
-              <button
-                type="button"
-                disabled={isOtpStep}
-                onClick={() => switchEmailMode("external")}
-                className={`rounded-xl border px-3 py-2 text-sm font-medium transition ${
-                  emailMode === "external"
-                    ? "border-ink bg-orange-500 text-white"
-                    : "border-[rgba(55,45,33,0.12)] bg-white/70 text-black"
-                } ${isOtpStep ? "cursor-not-allowed opacity-60" : ""}`}
-              >
-                Email cá nhân
-              </button>
-            </div>
-          </div>
-
-          {emailMode === "company" ? (
-            <CompanyEmailField value={email} onChange={setEmail} />
-          ) : (
-            <ExternalEmailField value={email} onChange={setEmail} />
-          )}
+          <InputField
+            label="Email"
+            value={email}
+            onChange={(nextValue) => setEmail(normalizeEmailInput(nextValue))}
+            placeholder="you@example.com"
+            type="email"
+          />
 
           {mode === "register" && registerStep === "form" ? (
             <>

@@ -10,8 +10,18 @@ export async function POST(
   try {
     const { documentId } = await params;
     const sessionUserId = await getSessionUserId();
-    const body = await request.json() as { answers: number[]; startedAt: string };
-    const result = await submitQuizAttempt(sessionUserId, documentId, body.answers, body.startedAt);
+    const body = (await request.json()) as {
+      answers: number[];
+      textAnswers?: string[];
+      startedAt: string;
+    };
+    const result = await submitQuizAttempt(
+      sessionUserId,
+      documentId,
+      body.answers,
+      body.startedAt,
+      body.textAnswers ?? []
+    );
     const [authState, audience] = await Promise.all([getAuthState(sessionUserId), getDocumentRealtimeAudience(documentId)]);
     void publishAppEventToPersons(audience.personIds, {
       type: "learning.updated",
