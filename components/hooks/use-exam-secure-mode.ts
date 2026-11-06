@@ -123,6 +123,13 @@ export function useExamSecureMode({ enabled, watermark, onViolation }: UseExamSe
 
     void setNativeSecureMode(true)
 
+    // Mobile keyboards can blur the window without hiding the exam page.
+    const isTouchDevice = navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches
+    let awayReported = false
+    const getFullscreenElement = () => document.fullscreenElement ??
+      (document as Document & { webkitFullscreenElement?: Element | null }).webkitFullscreenElement ?? null
+    let wasFullscreen = Boolean(getFullscreenElement())
+
     const revealIfSafe = () => {
       if (!document.hidden && document.hasFocus()) {
         setIsContentHidden(false)
@@ -212,30 +219,41 @@ export function useExamSecureMode({ enabled, watermark, onViolation }: UseExamSe
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        // Chuyển tab: ẩn đề, không cần watermark trên UI người dùng.
-        hideContent("Bạn vừa chuyển tab hoặc rời màn hình làm bài.")
+        hideContent("Bạn vừa chuyển tab hoặc rời màn hình làm bài.", { violation: false })
+        if (!awayReported) {
+          awayReported = true
+          reportViolation("Bạn vừa chuyển tab hoặc rời màn hình làm bài.")
+        }
       } else {
+        if (document.hasFocus()) awayReported = false
         revealIfSafe()
       }
     }
 
     const handleWindowBlur = () => {
+      if (isTouchDevice && !document.hidden) return
       setExamSecureHideLayerVisible(true)
       setIsContentHidden(true)
-      reportViolation("Bạn vừa rời cửa sổ làm bài.")
+      if (!awayReported) {
+        awayReported = true
+        reportViolation("Bạn vừa rời cửa sổ làm bài.")
+      }
     }
 
     const handleWindowFocus = () => {
+      if (!document.hidden) awayReported = false
       revealIfSafe()
     }
 
     const handleFullscreenChange = () => {
-      const fullscreenDocument = document as Document & {
-        webkitFullscreenElement?: Element | null
-      }
-      const fullscreenElement =
-        document.fullscreenElement ?? fullscreenDocument.webkitFullscreenElement ?? null
-      if (!fullscreenElement && !document.hidden && document.hasFocus()) {
+      const fullscreenElement = getFullscreenElement()
+      const exitedFullscreen = wasFullscreen && !fullscreenElement
+      wasFullscreen = Boolean(fullscreenElement)
+      const activeElement = document.activeElement
+      const isEditing = activeElement instanceof HTMLElement &&
+        (activeElement.matches("textarea, input, select") || activeElement.isContentEditable)
+      if (isTouchDevice && isEditing) return
+      if (exitedFullscreen && !document.hidden && document.hasFocus()) {
         hideContent("Bạn vừa thoát chế độ toàn màn hình.", { holdMs: 3500 })
       }
     }
