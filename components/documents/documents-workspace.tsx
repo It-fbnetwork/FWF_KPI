@@ -7,6 +7,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { useDirectory } from "@/components/directory-provider"
 import { useAuth } from "@/components/auth-provider"
 import { subscribeToPersonChannel } from "@/lib/client/realtime"
+import { getQuizDurationMinutes } from "@/lib/quiz-timing"
 import { YoutubeLikePlayer } from "@/components/youtube-like-player"
 import { toast } from "@/components/ui/use-toast"
 import { Button } from "@/components/ui/button"
@@ -357,6 +358,16 @@ interface QuizTakeState {
     result: QuizAttemptRecord | null
     questionOrder: number[]
     optionOrderByQuestion: number[][]
+}
+
+function getQuizQuestionTimeLimit(
+    quiz: LearningQuizRecord | null,
+    questionOrder: number[],
+    displayedIndex: number,
+    defaultSeconds: number,
+) {
+    const originalIndex = questionOrder[displayedIndex] ?? displayedIndex
+    return quiz?.questions[originalIndex]?.type === "essay" ? 60 : defaultSeconds
 }
 
 interface QuizResultsState {
@@ -4027,7 +4038,7 @@ export default function DocumentsPage() {
     }
 
     const handleSaveQuiz = async () => {
-        const { documentId: currentDocId, existingQuizId, title, description, durationMinutes, timePerQuestionSeconds, deadlineAt, questions, isNewDocument } = quizCreateDialog
+        const { documentId: currentDocId, existingQuizId, title, description, timePerQuestionSeconds, deadlineAt, questions, isNewDocument } = quizCreateDialog
         const normalizedTitle = title.trim()
         if (!normalizedTitle) { toast({ title: "Cần nhập tên bài kiểm tra", variant: "destructive" }); return }
         if (questions.some((q) => {
@@ -4072,7 +4083,7 @@ export default function DocumentsPage() {
             const payload = {
                 title: normalizedTitle,
                 description: description.trim(),
-                durationMinutes: Number(durationMinutes) || 15,
+                durationMinutes: getQuizDurationMinutes(questions, Number(timePerQuestionSeconds) || 30),
                 timePerQuestionSeconds: Math.max(5, Number(timePerQuestionSeconds) || 30),
                 deadlineAt: deadlineAt ? new Date(deadlineAt).toISOString() : undefined,
                 questions,
@@ -4222,9 +4233,7 @@ export default function DocumentsPage() {
             question.type === "essay" ? [] : shuffleIndices(Math.max(question.options.length, 4))
         )
         const startedAt = new Date().toISOString()
-        const questionTimeLimitSeconds = quiz.timePerQuestionSeconds
-            ? Math.max(5, quiz.timePerQuestionSeconds)
-            : Math.max(10, Math.floor((quiz.durationMinutes * 60) / Math.max(quiz.questions.length, 1)))
+        const questionTimeLimitSeconds = Math.max(5, Math.floor(quiz.timePerQuestionSeconds || 30))
         setQuizTakeModal({
             open: true,
             quiz,
@@ -4233,7 +4242,7 @@ export default function DocumentsPage() {
             textAnswers: Array(quiz.questions.length).fill("") as string[],
             currentQuestion: 0,
             startedAt,
-            timeLeftSeconds: questionTimeLimitSeconds,
+            timeLeftSeconds: getQuizQuestionTimeLimit(quiz, questionOrder, 0, questionTimeLimitSeconds),
             questionTimeLimitSeconds,
             expiredQuestionIndexes: [],
             isSubmitting: false,
@@ -4269,7 +4278,7 @@ export default function DocumentsPage() {
                         ...prev,
                         expiredQuestionIndexes: Array.from(expiredSet).sort((a, b) => a - b),
                         currentQuestion: currentIndex + 1,
-                        timeLeftSeconds: prev.questionTimeLimitSeconds,
+                        timeLeftSeconds: getQuizQuestionTimeLimit(prev.quiz, prev.questionOrder, currentIndex + 1, prev.questionTimeLimitSeconds),
                     }
                 }
                 return { ...prev, timeLeftSeconds: prev.timeLeftSeconds - 1 }
@@ -4346,7 +4355,7 @@ export default function DocumentsPage() {
             return {
                 ...prev,
                 currentQuestion: targetIndex,
-                timeLeftSeconds: prev.questionTimeLimitSeconds,
+                timeLeftSeconds: getQuizQuestionTimeLimit(prev.quiz, prev.questionOrder, targetIndex, prev.questionTimeLimitSeconds),
             }
         })
     }, [canNavigateToQuestion])
@@ -8874,14 +8883,14 @@ export default function DocumentsPage() {
                                 onChange={(e) => setQuizCreateDialog((s) => ({ ...s, description: e.target.value }))} />
                             <div className="flex flex-wrap items-center gap-2">
                                 <Timer className="w-4 h-4 text-gray-400" />
-                                <Input type="number" min={5} placeholder="Thời lượng (phút)" className="w-40"
-                                    value={quizCreateDialog.durationMinutes}
-                                    onChange={(e) => setQuizCreateDialog((s) => ({ ...s, durationMinutes: e.target.value }))} />
-                                <span className="text-sm text-gray-500">phút</span>
+                                <Input type="number" aria-label="Tổng thời gian tự động (phút)" className="w-40"
+                                    value={getQuizDurationMinutes(quizCreateDialog.questions, Number(quizCreateDialog.timePerQuestionSeconds) || 30)}
+                                    readOnly />
+                                <span className="text-sm text-gray-500">phút (tự tính)</span>
                                 <Input type="number" min={5} placeholder="Thời gian/câu" className="w-40"
                                     value={quizCreateDialog.timePerQuestionSeconds}
                                     onChange={(e) => setQuizCreateDialog((s) => ({ ...s, timePerQuestionSeconds: e.target.value }))} />
-                                <span className="text-sm text-gray-500">giây/câu</span>
+                                <span className="text-sm text-gray-500">giây/câu trắc nghiệm · Tự luận: 1 phút/câu</span>
                             </div>
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">

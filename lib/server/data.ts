@@ -37,6 +37,7 @@ import {
 } from "@/lib/server/mailer";
 import type { AppRealtimeEntityType, AppRealtimeEventAction, AppRealtimeEventType } from "@/lib/server/realtime";
 import { gradeEssayWithAi } from "@/lib/server/quiz-essay";
+import { getQuizDurationMinutes } from "@/lib/quiz-timing";
 
 type DbUser = {
   _id: string;
@@ -1553,7 +1554,7 @@ function mapDbLearningQuiz(quiz: DbLearningQuiz, sanitize: boolean): LearningQui
         ...(sanitize || type !== "essay" ? {} : { sampleAnswer: q.sampleAnswer }),
       };
     }),
-    durationMinutes: quiz.durationMinutes,
+    durationMinutes: getQuizDurationMinutes(quiz.questions, quiz.timePerQuestionSeconds),
     ...(quiz.timePerQuestionSeconds ? { timePerQuestionSeconds: quiz.timePerQuestionSeconds } : {}),
     ...(quiz.deadlineAt ? { deadlineAt: quiz.deadlineAt } : {}),
     createdByPersonId: quiz.createdByPersonId,
@@ -8232,7 +8233,7 @@ export async function createLearningQuiz(
       title: input.title.trim(),
       description: input.description?.trim() ?? "",
       questions: input.questions.map((q) => normalizeQuizQuestion(q)),
-      durationMinutes: Math.max(5, input.durationMinutes),
+      durationMinutes: getQuizDurationMinutes(input.questions, input.timePerQuestionSeconds),
       timePerQuestionSeconds: input.timePerQuestionSeconds ? Math.max(5, Math.floor(input.timePerQuestionSeconds)) : undefined,
       deadlineAt: normalizedDeadlineAt,
       createdByPersonId: actor.person.id,
@@ -8264,7 +8265,7 @@ export async function createLearningQuiz(
     title: input.title.trim(),
     description: input.description?.trim() ?? "",
     questions: input.questions.map((q) => normalizeQuizQuestion(q)),
-    durationMinutes: Math.max(5, input.durationMinutes),
+    durationMinutes: getQuizDurationMinutes(input.questions, input.timePerQuestionSeconds),
     timePerQuestionSeconds: input.timePerQuestionSeconds
       ? Math.max(5, Math.floor(input.timePerQuestionSeconds))
       : undefined,
@@ -8309,6 +8310,7 @@ export async function updateLearningQuiz(
     if (updates.timePerQuestionSeconds !== undefined) payload.timePerQuestionSeconds = Math.max(5, Math.floor(updates.timePerQuestionSeconds));
     if (updates.deadlineAt !== undefined) payload.deadlineAt = normalizeOptionalIsoDate(updates.deadlineAt);
     const merged: DbLearningQuiz = { ...current, ...payload };
+    merged.durationMinutes = getQuizDurationMinutes(merged.questions, merged.timePerQuestionSeconds);
     await pgQuery(
       `update learning_quizzes set
       title=$2,description=$3,questions=$4::jsonb,duration_minutes=$5,time_per_question_seconds=$6,deadline_at=$7,updated_at=$8,raw_json=$9::jsonb
@@ -8322,6 +8324,8 @@ export async function updateLearningQuiz(
   }
 
   const db = await getMongoDb();
+  const current = await db.collection<DbLearningQuiz>("learning_quizzes").findOne({ _id: quizId });
+  if (!current) return null;
   const payload: Partial<DbLearningQuiz> = { updatedAt: new Date().toISOString() };
   if (updates.title) payload.title = updates.title.trim();
   if (updates.description !== undefined) payload.description = updates.description.trim();
@@ -8336,6 +8340,10 @@ export async function updateLearningQuiz(
     payload.deadlineAt = normalizeOptionalIsoDate(updates.deadlineAt);
   }
 
+  payload.durationMinutes = getQuizDurationMinutes(
+    payload.questions ?? current.questions,
+    payload.timePerQuestionSeconds ?? current.timePerQuestionSeconds,
+  );
   await db.collection<DbLearningQuiz>("learning_quizzes").updateOne({ _id: quizId }, { $set: payload });
   const updated = await db.collection<DbLearningQuiz>("learning_quizzes").findOne({ _id: quizId });
   return updated ? mapDbLearningQuiz(updated, false) : null;
