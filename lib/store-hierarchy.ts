@@ -94,5 +94,6 @@ export function getAccessiblePeopleForActor(
   if (!actorUser || !actorPerson) return [];
 
   const managedIds = getManagedPersonIdsFromPeople(actorUser, actorPerson, allPeople);
-  return allPeople.filter((person) => managedIds.has(person.id));
+  // IT contacts are visible company-wide without granting management rights.
+  return allPeople.filter((person) => managedIds.has(person.id) || person.team === "dev");
 }

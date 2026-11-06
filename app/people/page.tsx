@@ -257,7 +257,7 @@ export default function PeoplePage() {
         if (!actorUserProfile || !currentUser) return []
         return getAccessiblePeopleForActor(actorUserProfile, currentUser, people)
     }, [actorUserProfile, currentUser, isAdmin, people])
-    const visibleTeams = isAdmin ? teams : teams.filter((team) => team.id === currentTeamId)
+    const visibleTeams = isAdmin ? teams : teams.filter((team) => team.id === currentTeamId || team.id === "dev")
     const trainerManagedRoleSet = useMemo(
         () => new Set(["Quản lí khu vực", "Cửa hàng trưởng", "Kỹ thuật viên", "Nhân viên cửa hàng"]),
         []
@@ -762,7 +762,13 @@ export default function PeoplePage() {
                             <div className="mt-1 space-y-1">
                                 <div className="flex items-center text-xs text-gray-500 dark:text-gray-400">
                                     <Mail className="w-3 h-3 mr-1" />
-                                    <span className="truncate">{person.email}</span>
+                                    {person.team === "dev" ? (
+                                        <a href={`mailto:${person.email}`} className="truncate text-blue-600 hover:underline dark:text-blue-400" aria-label={`Gửi email hỗ trợ đến ${person.name}`}>
+                                            {person.email}
+                                        </a>
+                                    ) : (
+                                        <span className="truncate">{person.email}</span>
+                                    )}
                                 </div>
                                 <div className="flex items-center text-xs text-gray-500 dark:text-gray-400">
                                     <Store className="w-3 h-3 mr-1 shrink-0" />
