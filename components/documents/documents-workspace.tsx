@@ -804,6 +804,9 @@ export default function DocumentsPage() {
 
     const [quizCreateDialog, setQuizCreateDialog] = useState<QuizCreateState>(defaultQuizCreate())
     const [quizTakeModal, setQuizTakeModal] = useState<QuizTakeState>(defaultQuizTake())
+    const [quizSubmitConfirmation, setQuizSubmitConfirmation] = useState(false)
+    const [quizSubmitError, setQuizSubmitError] = useState<string | null>(null)
+    const quizSubmitInFlightRef = useRef(false)
     const [quizResultsModal, setQuizResultsModal] = useState<QuizResultsState>({
         open: false, documentId: "", documentName: "", attempts: [], resets: [], learningStatuses: [], isLoading: false,
     })
@@ -4233,6 +4236,8 @@ export default function DocumentsPage() {
             question.type === "essay" ? [] : shuffleIndices(Math.max(question.options.length, 4))
         )
         const startedAt = new Date().toISOString()
+        setQuizSubmitConfirmation(false)
+        setQuizSubmitError(null)
         const questionTimeLimitSeconds = Math.max(5, Math.floor(quiz.timePerQuestionSeconds || 30))
         setQuizTakeModal({
             open: true,
@@ -4292,19 +4297,32 @@ export default function DocumentsPage() {
     useEffect(() => { quizTakeModalRef.current = quizTakeModal }, [quizTakeModal])
 
     const handleSubmitQuiz = async (autoSubmit = false) => {
-        if (!autoSubmit && !confirm(`Nộp bài? Bạn cần đạt từ ${QUIZ_PASS_SCORE}% để hoàn thành.`)) return
+        if (quizSubmitInFlightRef.current || quizTakeModalRef.current.isSubmitted) return
+        if (!autoSubmit && !quizSubmitConfirmation) {
+            setQuizSubmitConfirmation(true)
+            return
+        }
+        quizSubmitInFlightRef.current = true
+        setQuizSubmitConfirmation(false)
+        setQuizSubmitError(null)
         if (quizTimerRef.current) clearInterval(quizTimerRef.current)
         setQuizTakeModal((prev) => ({ ...prev, isSubmitting: true }))
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 120_000)
         try {
             const { documentId, answers, textAnswers, startedAt } = quizTakeModalRef.current
             const res = await fetch(`/api/learning/quiz/${documentId}/submit`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: "include",
+                signal: controller.signal,
                 body: JSON.stringify({ answers, textAnswers, startedAt }),
             })
-            const data = (await res.json()) as { ok: boolean; result?: QuizAttemptRecord; message?: string }
-            if (!res.ok || !data.ok) throw new Error(data.message ?? "Lỗi nộp bài")
+            if (res.status === 401) {
+                throw new Error("Không xác thực được tài khoản. Vui lòng liên hệ quản lý kiểm tra tài khoản và phiên đăng nhập. Giữ trang này để tránh mất câu trả lời.")
+            }
+            const data = (await res.json().catch(() => null)) as { ok: boolean; result?: QuizAttemptRecord; message?: string } | null
+            if (!res.ok || !data?.ok || !data.result) throw new Error(data?.message ?? "Máy chủ chưa xác nhận bài nộp. Vui lòng thử nộp lại.")
             setMyAttempts((prev) => ({
                 ...prev,
                 [documentId]: data.result!.score >= QUIZ_PASS_SCORE ? data.result! : null,
@@ -4318,8 +4336,17 @@ export default function DocumentsPage() {
                 })
             }
         } catch (err) {
-            toast({ title: err instanceof Error ? err.message : "Không thể nộp bài", variant: "destructive" })
+            const message = controller.signal.aborted
+                ? "Chờ phản hồi quá lâu, chưa xác nhận được kết quả nộp bài. Câu trả lời vẫn còn trên trang này; vui lòng thử nộp lại."
+                : err instanceof TypeError
+                    ? "Không kết nối được máy chủ. Kiểm tra mạng rồi thử nộp lại; câu trả lời vẫn còn trên trang này."
+                    : err instanceof Error ? err.message : "Không thể nộp bài. Vui lòng thử lại."
+            setQuizSubmitError(message)
+            toast({ title: message, variant: "destructive" })
             setQuizTakeModal((prev) => ({ ...prev, isSubmitting: false }))
+        } finally {
+            clearTimeout(timeout)
+            quizSubmitInFlightRef.current = false
         }
     }
 
@@ -9112,6 +9139,15 @@ export default function DocumentsPage() {
                 <div className={`fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 ${
                     quizTakeModal.isSubmitted ? "bg-black/80" : "bg-slate-950"
                 }`}>
+                    {quizTakeModal.isSubmitting && (
+                        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 p-4" role="status" aria-live="polite" aria-atomic="true">
+                            <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl bg-white px-6 py-8 text-center shadow-xl dark:bg-gray-800">
+                                <Loader2 className="h-10 w-10 animate-spin text-green-600" aria-hidden="true" />
+                                <p className="text-base font-semibold text-gray-900 dark:text-white">Đang nộp bài, vui lòng chờ…</p>
+                                <p className="text-sm text-gray-500 dark:text-gray-400">Hệ thống đang xử lý bài làm. Vui lòng giữ trang này mở.</p>
+                            </div>
+                        </div>
+                    )}
                     <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl dark:bg-gray-800 sm:max-h-[90vh]">
                         {!quizTakeModal.isSubmitted ? (
                             <>
@@ -9209,11 +9245,25 @@ export default function DocumentsPage() {
                                 </div>
 
                                 {/* Navigation */}
+                                {quizSubmitError && (
+                                    <p role="alert" className="mx-4 mb-3 rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-200 sm:mx-6">
+                                        {quizSubmitError}
+                                    </p>
+                                )}
+                                {quizSubmitConfirmation && (
+                                    <div className="mx-4 mb-3 rounded-lg border p-3 text-sm sm:mx-6" role="group" aria-label="Xác nhận nộp bài">
+                                        <p>Nộp bài? Bạn cần đạt từ {QUIZ_PASS_SCORE}% để hoàn thành.</p>
+                                        <div className="mt-3 flex justify-end gap-2">
+                                            <Button variant="outline" onClick={() => setQuizSubmitConfirmation(false)}>Làm tiếp</Button>
+                                            <Button className="bg-green-600 hover:bg-green-700" onClick={() => void handleSubmitQuiz()}>Xác nhận nộp bài</Button>
+                                        </div>
+                                    </div>
+                                )}
                                 <div className="flex items-center justify-between border-t border-gray-200 px-4 py-4 dark:border-gray-700 sm:px-6">
                                     <Button
                                         variant="outline"
                                         className="bg-transparent"
-                                        disabled={!canNavigateToQuestion(quizTakeModal.currentQuestion - 1, quizTakeModal)}
+                                        disabled={quizTakeModal.isSubmitting || quizSubmitConfirmation || !canNavigateToQuestion(quizTakeModal.currentQuestion - 1, quizTakeModal)}
                                         onClick={() => moveToQuizQuestion(quizTakeModal.currentQuestion - 1)}
                                     >
                                         <ChevronLeft className="w-4 h-4 mr-1" />Trước
@@ -9226,9 +9276,11 @@ export default function DocumentsPage() {
                                             Tiếp <ChevronRight className="w-4 h-4 ml-1" />
                                         </Button>
                                     ) : (
-                                        <Button disabled={quizTakeModal.isSubmitting} onClick={() => void handleSubmitQuiz()}
+                                        <Button disabled={quizTakeModal.isSubmitting || quizSubmitConfirmation} onClick={() => void handleSubmitQuiz()}
                                             className="bg-green-600 hover:bg-green-700">
-                                            <CheckCircle2 className="w-4 h-4 mr-2" />
+                                            {quizTakeModal.isSubmitting
+                                                ? <Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" />
+                                                : <CheckCircle2 className="w-4 h-4 mr-2" />}
                                             {quizTakeModal.isSubmitting ? "Đang nộp..." : "Nộp bài"}
                                         </Button>
                                     )}
