@@ -3507,7 +3507,7 @@ export default function DocumentsPage() {
         const quizState = quizTakeModalRef.current
         let handled = false
 
-        if (quizState.open && !quizState.isSubmitted && quizState.documentId) {
+        if (quizState.open && !quizState.isSubmitted && quizState.documentId && !quizSubmitInFlightRef.current && !quizState.isSubmitting) {
             handled = true
             const violationKey = `quiz:${quizState.documentId}`
             const nextCount = (examViolationCountsRef.current[violationKey] ?? 0) + 1
@@ -3604,7 +3604,7 @@ export default function DocumentsPage() {
         canUserViewTest(user?.role, test.targetRoles)
     )
     const isExamSecureActive =
-        hasOpenTakingTest || (quizTakeModal.open && !quizTakeModal.isSubmitted)
+        hasOpenTakingTest || (quizTakeModal.open && !quizTakeModal.isSubmitted && !quizTakeModal.isSubmitting)
     const examSecureWatermark =
         [user?.name, user?.email].filter(Boolean).join(" · ") || "FWF Exam"
     const {
@@ -4327,6 +4327,7 @@ export default function DocumentsPage() {
                 ...prev,
                 [documentId]: data.result!.score >= QUIZ_PASS_SCORE ? data.result! : null,
             }))
+            quizTakeModalRef.current = { ...quizTakeModalRef.current, isSubmitting: false, isSubmitted: true, result: data.result! }
             setQuizTakeModal((prev) => ({ ...prev, isSubmitting: false, isSubmitted: true, result: data.result! }))
             if (data.result!.score < QUIZ_PASS_SCORE) {
                 toast({
