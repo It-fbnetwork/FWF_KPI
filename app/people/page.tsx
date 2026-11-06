@@ -220,16 +220,16 @@ export default function PeoplePage() {
     const shouldEditStoreLeadLocation =
         personForm.team === "store" &&
         personForm.role === "Cửa hàng trưởng"
-    const shouldEditTechnicianLocation =
+    const shouldEditSingleStoreLocation =
         Boolean(editingPerson) &&
         personForm.team === "store" &&
-        personForm.role === "Kỹ thuật viên"
+        (personForm.role === "Kỹ thuật viên" || personForm.role === "Nhân viên cửa hàng")
     const shouldEditStoreManagerLocation =
         Boolean(editingPerson) &&
         personForm.team === "store" &&
         personForm.role === "Quản lí khu vực" &&
         (isAdmin || isStoreTrainer)
-    const shouldEditStoreLocation = shouldEditStoreLeadLocation || shouldEditTechnicianLocation || shouldEditStoreManagerLocation
+    const shouldEditStoreLocation = shouldEditStoreLeadLocation || shouldEditSingleStoreLocation || shouldEditStoreManagerLocation
     const canEditMultipleStoreBranches = shouldEditStoreManagerLocation || shouldEditStoreLeadLocation
     const storeLocationBranchSelectionLimit = canEditMultipleStoreBranches ? 5 : 1
     const selectableStoreRegions = useMemo(() => {
@@ -583,10 +583,10 @@ export default function PeoplePage() {
             })
             return
         }
-        if (shouldEditTechnicianLocation && personForm.storeBranchIds.length !== 1) {
+        if (shouldEditSingleStoreLocation && personForm.storeBranchIds.length !== 1) {
             toast({
                 title: "Thiếu cửa hàng",
-                description: "Vui lòng chọn 1 cửa hàng cho kỹ thuật viên.",
+                description: `Vui lòng chọn 1 cửa hàng cho ${personForm.role.toLowerCase()}.`,
                 variant: "destructive",
             })
             return
@@ -1298,7 +1298,7 @@ export default function PeoplePage() {
                                         <Label>
                                             {shouldEditStoreManagerLocation
                                             ? "Cửa hàng quản lí (chọn tối đa 5)"
-                                            : shouldEditTechnicianLocation
+                                            : shouldEditSingleStoreLocation
                                                 ? "Cửa hàng (chọn 1)"
                                                 : "Cửa hàng phụ trách (chọn tối đa 5)"}
                                         </Label>

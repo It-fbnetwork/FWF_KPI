@@ -4247,8 +4247,8 @@ function normalizeStoreManagerLocationInput(actor: SessionActor, input: Pick<Per
   return normalizeStoreLocationInput(actor, input, { label: "Quản lí khu vực", minBranches: 1, maxBranches: 5, maxRegions: 2 });
 }
 
-function normalizeStoreTechnicianLocationInput(actor: SessionActor, input: Pick<PersonMutationInput, "storeRegion" | "storeRegions" | "storeBranchIds">) {
-  return normalizeStoreLocationInput(actor, input, { label: "Kỹ thuật viên", minBranches: 1, maxBranches: 1 });
+function normalizeStoreEmployeeLocationInput(actor: SessionActor, input: Pick<PersonMutationInput, "storeRegion" | "storeRegions" | "storeBranchIds">, role: string) {
+  return normalizeStoreLocationInput(actor, input, { label: role, minBranches: 1, maxBranches: 1 });
 }
 
 export async function createPersonRecord(
@@ -4464,8 +4464,8 @@ export async function updatePersonRecord(
     const directStoreLeadLocation = updates.team === "store" && normalizedRole === "Cửa hàng trưởng" && updates.storeBranchIds !== undefined
       ? normalizeStoreLeadLocationInput(actor, updates)
       : null;
-    const directTechnicianLocation = updates.team === "store" && normalizedRole === "Kỹ thuật viên" && updates.storeBranchIds !== undefined
-      ? normalizeStoreTechnicianLocationInput(actor, updates)
+    const directStoreEmployeeLocation = updates.team === "store" && (normalizedRole === "Kỹ thuật viên" || normalizedRole === "Nhân viên cửa hàng") && updates.storeBranchIds !== undefined
+      ? normalizeStoreEmployeeLocationInput(actor, updates, normalizedRole)
       : null;
     const directStoreManagerLocation = updates.team === "store" && normalizedRole === "Quản lí khu vực" && updates.storeBranchIds !== undefined
       ? normalizeStoreManagerLocationInput(actor, updates)
@@ -4640,22 +4640,22 @@ export async function updatePersonRecord(
         ]
       );
     }
-    if (directTechnicianLocation) {
+    if (directStoreEmployeeLocation) {
       const targetUsersRes = await pgQuery("select * from users where person_id = $1 or email = $2", [personId, existingPerson.email]);
-      const targetTechnicianUserForLocation = targetUsersRes.rows
+      const targetStoreEmployeeUserForLocation = targetUsersRes.rows
         .map((row) => mapDbUser(mapPgUserRow(row)))
-        .find((targetUser) => targetUser.role === "store_technician") ?? null;
-      if (!targetTechnicianUserForLocation) {
-        throw new Error("Chỉ được cập nhật khu vực/cửa hàng cho tài khoản Kỹ thuật viên.");
+        .find((targetUser) => targetUser.role === nextAuthRole) ?? null;
+      if (!targetStoreEmployeeUserForLocation) {
+        throw new Error(`Không tìm thấy tài khoản ${normalizedRole} để cập nhật khu vực/cửa hàng.`);
       }
       await pgQuery(
         `update users
          set store_region=$2, store_branch_ids=$3::jsonb, updated_at=$4::timestamptz
          where id=$1`,
         [
-          targetTechnicianUserForLocation.id,
-          directTechnicianLocation.storeRegion,
-          JSON.stringify(directTechnicianLocation.storeBranchIds),
+          targetStoreEmployeeUserForLocation.id,
+          directStoreEmployeeLocation.storeRegion,
+          JSON.stringify(directStoreEmployeeLocation.storeBranchIds),
           now
         ]
       );
@@ -4717,8 +4717,8 @@ export async function updatePersonRecord(
   const directStoreLeadLocation = updates.team === "store" && normalizedRole === "Cửa hàng trưởng" && updates.storeBranchIds !== undefined
     ? normalizeStoreLeadLocationInput(actor, updates)
     : null;
-  const directTechnicianLocation = updates.team === "store" && normalizedRole === "Kỹ thuật viên" && updates.storeBranchIds !== undefined
-    ? normalizeStoreTechnicianLocationInput(actor, updates)
+  const directStoreEmployeeLocation = updates.team === "store" && (normalizedRole === "Kỹ thuật viên" || normalizedRole === "Nhân viên cửa hàng") && updates.storeBranchIds !== undefined
+    ? normalizeStoreEmployeeLocationInput(actor, updates, normalizedRole)
     : null;
   const directStoreManagerLocation = updates.team === "store" && normalizedRole === "Quản lí khu vực" && updates.storeBranchIds !== undefined
     ? normalizeStoreManagerLocationInput(actor, updates)
@@ -4896,18 +4896,18 @@ export async function updatePersonRecord(
       }
     );
   }
-  if (directTechnicianLocation) {
+  if (directStoreEmployeeLocation) {
     const targetUsers = await db.collection<DbUser>("users").find({ $or: [{ personId }, { email: existingPerson.email }] }).toArray();
-    const targetTechnicianUserForLocation = targetUsers.map(mapDbUser).find((targetUser) => targetUser.role === "store_technician") ?? null;
-    if (!targetTechnicianUserForLocation) {
-      throw new Error("Chỉ được cập nhật khu vực/cửa hàng cho tài khoản Kỹ thuật viên.");
+    const targetStoreEmployeeUserForLocation = targetUsers.map(mapDbUser).find((targetUser) => targetUser.role === nextAuthRole) ?? null;
+    if (!targetStoreEmployeeUserForLocation) {
+      throw new Error(`Không tìm thấy tài khoản ${normalizedRole} để cập nhật khu vực/cửa hàng.`);
     }
     await db.collection<DbUser>("users").updateOne(
-      { _id: targetTechnicianUserForLocation.id },
+      { _id: targetStoreEmployeeUserForLocation.id },
       {
         $set: {
-          storeRegion: directTechnicianLocation.storeRegion,
-          storeBranchIds: directTechnicianLocation.storeBranchIds,
+          storeRegion: directStoreEmployeeLocation.storeRegion,
+          storeBranchIds: directStoreEmployeeLocation.storeBranchIds,
           updatedAt: new Date().toISOString()
         }
       }
