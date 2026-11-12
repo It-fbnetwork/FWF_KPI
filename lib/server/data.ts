@@ -4645,7 +4645,7 @@ export async function updatePersonRecord(
       const targetUsersRes = await pgQuery("select * from users where person_id = $1 or email = $2", [personId, existingPerson.email]);
       const targetStoreEmployeeUserForLocation = targetUsersRes.rows
         .map((row) => mapDbUser(mapPgUserRow(row)))
-        .find((targetUser) => targetUser.role === nextAuthRole) ?? null;
+        .find((targetUser) => targetUser.role === normalizeUserRole(nextAuthRole ?? "employee")) ?? null;
       if (!targetStoreEmployeeUserForLocation) {
         throw new Error(`Không tìm thấy tài khoản ${normalizedRole} để cập nhật khu vực/cửa hàng.`);
       }
@@ -4899,7 +4899,7 @@ export async function updatePersonRecord(
   }
   if (directStoreEmployeeLocation) {
     const targetUsers = await db.collection<DbUser>("users").find({ $or: [{ personId }, { email: existingPerson.email }] }).toArray();
-    const targetStoreEmployeeUserForLocation = targetUsers.map(mapDbUser).find((targetUser) => targetUser.role === nextAuthRole) ?? null;
+    const targetStoreEmployeeUserForLocation = targetUsers.map(mapDbUser).find((targetUser) => targetUser.role === normalizeUserRole(nextAuthRole ?? "employee")) ?? null;
     if (!targetStoreEmployeeUserForLocation) {
       throw new Error(`Không tìm thấy tài khoản ${normalizedRole} để cập nhật khu vực/cửa hàng.`);
     }
