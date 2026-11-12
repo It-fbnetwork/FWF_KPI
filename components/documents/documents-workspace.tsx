@@ -337,6 +337,8 @@ interface QuizCreateState {
     deadlineAt: string
     questions: QuizCreateQuestion[]
     isNewDocument?: boolean
+    isUploadingSource?: boolean
+    sourceFileName?: string
     isGenerating?: boolean
     autoQuestionCount?: string
     autoEssayCount?: string
@@ -4040,7 +4042,55 @@ export default function DocumentsPage() {
         setQuizCreateDialog((s) => ({ ...s, questions: s.questions.filter((_, i) => i !== idx) }))
     }
 
+    const handleUploadQuizSource = async (file: File) => {
+        const type = inferDocumentType(file.name)
+        if (type !== "pdf" && type !== "pptx") {
+            toast({ title: "Vui lòng chọn file PDF hoặc PPTX", variant: "destructive" })
+            return
+        }
+        if (!file.size) {
+            toast({ title: "File trống, vui lòng chọn file khác", variant: "destructive" })
+            return
+        }
+        setQuizCreateDialog((s) => ({ ...s, isUploadingSource: true }))
+        try {
+            const contentType = type === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            const presignRes = await fetch("/api/documents/upload/presign", {
+                method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+                body: JSON.stringify({ filename: file.name, contentType, size: file.size }),
+            })
+            const upload = await presignRes.json() as { ok: boolean; message?: string; fileId: string; provider: "r2" | "volume"; bucket?: string; objectPath: string; uploadUrl: string; contentType: string }
+            if (!presignRes.ok || !upload.ok) throw new Error(upload.message || "Không thể khởi tạo tải file")
+            const headers: Record<string, string> = { "content-type": upload.contentType || contentType }
+            if (upload.provider === "volume") headers["x-fwf-filename"] = encodeURIComponent(file.name)
+            const putRes = await fetch(upload.uploadUrl, { method: "PUT", headers, body: file })
+            if (!putRes.ok) throw new Error("Tải file thất bại, vui lòng thử lại")
+            const finalizeRes = await fetch("/api/documents/upload/finalize", {
+                method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+                body: JSON.stringify({ fileId: upload.fileId, filename: file.name, contentType: upload.contentType || contentType, size: file.size, provider: upload.provider, bucket: upload.bucket, objectPath: upload.objectPath }),
+            })
+            const result = await finalizeRes.json() as { ok: boolean; message?: string; url: string; learningPlan?: Document["learningPlan"]; warnings?: string[] }
+            if (!finalizeRes.ok || !result.ok || !result.url) throw new Error(result.message || "Không thể hoàn tất tải file")
+            const docRes = await fetch("/api/documents", {
+                method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+                body: JSON.stringify({ name: quizCreateDialog.title.trim() || inferBaseName(file.name), type, size: file.size, url: result.url, learningPlan: result.learningPlan, tags: ["learning", "uploaded"], visibility: getDefaultVisibility(user), visibleToPersonIds: [], description: quizCreateDialog.description.trim(), isLearningMaterial: true }),
+            })
+            const payload = await docRes.json() as { ok: boolean; message?: string; document?: Document }
+            if (!docRes.ok || !payload.ok || !payload.document) throw new Error(payload.message || "Không thể lưu tài liệu bài kiểm tra")
+            const doc = payload.document
+            setDocumentsData((prev) => [doc, ...prev])
+            setQuizzes((prev) => ({ ...prev, [doc.id]: null }))
+            setMyAttempts((prev) => ({ ...prev, [doc.id]: null }))
+            setQuizCreateDialog((s) => ({ ...s, documentId: doc.id, documentName: doc.name, title: s.title.trim() || doc.name, isNewDocument: false, sourceFileName: file.name, isUploadingSource: false, autoQuestionCount: s.autoQuestionCount ?? "5", autoEssayCount: s.autoEssayCount ?? "1" }))
+            toast({ title: "Đã tải tài liệu cho bài kiểm tra", description: result.warnings?.[0] })
+        } catch (error) {
+            setQuizCreateDialog((s) => ({ ...s, isUploadingSource: false }))
+            toast({ title: "Không thể tải tài liệu", description: error instanceof Error ? error.message : "Vui lòng thử lại", variant: "destructive" })
+        }
+    }
+
     const handleSaveQuiz = async () => {
+        if (quizCreateDialog.isUploadingSource || quizCreateDialog.isGenerating) return
         const { documentId: currentDocId, existingQuizId, title, description, timePerQuestionSeconds, deadlineAt, questions, isNewDocument } = quizCreateDialog
         const normalizedTitle = title.trim()
         if (!normalizedTitle) { toast({ title: "Cần nhập tên bài kiểm tra", variant: "destructive" }); return }
@@ -8883,7 +8933,7 @@ export default function DocumentsPage() {
                                 </h2>
                                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Tạo bài kiểm tra trắc nghiệm cho tài liệu học</p>
                             </div>
-                            <button onClick={() => setQuizCreateDialog(defaultQuizCreate())} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                            <button disabled={quizCreateDialog.isUploadingSource} onClick={() => setQuizCreateDialog(defaultQuizCreate())} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
                                 <X className="w-5 h-5" />
                             </button>
                         </div>
@@ -8909,6 +8959,19 @@ export default function DocumentsPage() {
                             </div>
                             <Input placeholder="Mô tả (tuỳ chọn)" value={quizCreateDialog.description}
                                 onChange={(e) => setQuizCreateDialog((s) => ({ ...s, description: e.target.value }))} />
+                            {quizCreateDialog.isNewDocument && (
+                                <div className="space-y-2 rounded-xl border border-dashed border-violet-300 bg-violet-50 p-4 dark:border-violet-700 dark:bg-violet-900/20">
+                                    <label htmlFor="quiz-source-file" className="block text-sm font-semibold">Tải tài liệu cho bài kiểm tra (tuỳ chọn)</label>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">Chọn PDF hoặc PPTX để tạo câu hỏi từ file riêng. Tài liệu tải lên sẽ được lưu trong E-learning. Có thể bỏ qua để soạn câu hỏi thủ công.</p>
+                                    <Input id="quiz-source-file" type="file" accept=".pdf,.pptx" disabled={quizCreateDialog.isUploadingSource} onChange={(e) => {
+                                        const file = e.target.files?.[0]
+                                        e.target.value = ""
+                                        if (file) void handleUploadQuizSource(file)
+                                    }} />
+                                    {quizCreateDialog.isUploadingSource && <p role="status" className="flex items-center gap-2 text-sm text-violet-700 dark:text-violet-300"><Loader2 className="h-4 w-4 animate-spin" />Đang tải và xử lý tài liệu, vui lòng chờ…</p>}
+                                </div>
+                            )}
+                            {quizCreateDialog.sourceFileName && <p className="text-sm text-violet-700 dark:text-violet-300">Tài liệu đã tải: {quizCreateDialog.sourceFileName}</p>}
                             <div className="flex flex-wrap items-center gap-2">
                                 <Timer className="w-4 h-4 text-gray-400" />
                                 <Input type="number" aria-label="Tổng thời gian tự động (phút)" className="w-40"
@@ -9125,8 +9188,8 @@ export default function DocumentsPage() {
                         </div>
 
                         <div className="flex justify-end gap-2 border-t border-gray-200 px-4 py-4 dark:border-gray-700 sm:px-6">
-                            <Button variant="outline" className="bg-transparent" onClick={() => setQuizCreateDialog(defaultQuizCreate())}>Huỷ</Button>
-                            <Button disabled={isSubmitting} onClick={() => void handleSaveQuiz()} className="bg-violet-600 hover:bg-violet-700">
+                            <Button variant="outline" className="bg-transparent" disabled={quizCreateDialog.isUploadingSource} onClick={() => setQuizCreateDialog(defaultQuizCreate())}>Huỷ</Button>
+                            <Button disabled={isSubmitting || quizCreateDialog.isUploadingSource || quizCreateDialog.isGenerating} onClick={() => void handleSaveQuiz()} className="bg-violet-600 hover:bg-violet-700">
                                 <ClipboardCheck className="w-4 h-4 mr-2" />
                                 {isSubmitting ? "Đang lưu..." : (quizCreateDialog.existingQuizId ? "Cập nhật" : "Tạo quiz")}
                             </Button>
