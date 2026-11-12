@@ -7,6 +7,13 @@ export type StoreBranch = {
   name: string;
   city: string;
   address: string;
+  phone?: string;
+  services?: string[];
+  lat?: number;
+  lng?: number;
+  hours?: string;
+  mapsUrl?: string;
+  publishAt?: string;
 };
 
 export const STORE_BRANCHES: StoreBranch[] = [
@@ -58,6 +65,19 @@ export const STORE_BRANCHES: StoreBranch[] = [
   { id: 47, name: "Saigon Pearl", city: "Hồ Chí Minh", address: "92 Nguyễn Hữu Cảnh, Saigon Pearl, Bình Thạnh, Hồ Chí Minh 700000, Việt Nam" },
   { id: 51, name: "Face Wash Fox - Vincom Mega Mall Grand Park", city: "Hồ Chí Minh", address: "Đường D2A, Khu đô thị, Vinhomes Grand Park, Thành phố Hồ Chí Minh, 700000" },
   { id: 55, name: "Face Wash Fox - Thiso Mall", city: "Hồ Chí Minh", address: "L1-17A, 10 Mai Chí Thọ, Thủ Thiêm, An Khánh, Hồ Chí Minh." },
+  {
+    id: 58,
+    name: "Face Wash Fox - Aeon Mall Bình Tân Premium",
+    address: "Tầng trệt, Aeon Mall Bình Tân, 1 Đ. Số 17A, Bình Trị Đông B, Bình Tân",
+    phone: "0889 866 666",
+    services: ["Tư vấn", "Rửa mặt", "Mỹ phẩm"],
+    lat: 10.7427958,
+    lng: 106.6119311,
+    hours: "10:00 - 20:00",
+    mapsUrl: "https://maps.app.goo.gl/vkEivdubPZWXmpbT7",
+    city: "Hồ Chí Minh",
+    publishAt: "2026-10-31",
+  },
 
   { id: 41, name: "177 Trần Phú", city: "Đà Nẵng", address: "177 Trần Phú, P. Hải Châu, TP. Đà Nẵng" },
   { id: 56, name: "Aeon Đà Nẵng", city: "Đà Nẵng", address: "46 Điện Biên Phủ, Thanh Khê, Đà Nẵng 550000, Việt Nam" },
