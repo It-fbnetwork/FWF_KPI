@@ -28,6 +28,7 @@ import { getManagedPersonIdsFromPeople } from "@/lib/store-hierarchy";
 import type { Project, Task, TaskAttachment, TaskGroups, TimePeriod } from "@/components/workspace-context";
 import {
   isOtpEmailConfigured,
+  getOtpEmailErrorMessage,
   sendLearningAnnouncementEmail,
   sendOtpEmail,
   sendQuizDeadlineReminderEmail,
@@ -59,9 +60,9 @@ type StoredUserRole = UserRole | "boss" | "manager";
 
 function logEmailDeliveryError(context: string, error: unknown) {
   const details =
-    error instanceof Error
+    error && typeof error === "object" && "message" in error
       ? {
-          name: error.name,
+          name: (error as { name?: unknown }).name,
           message: error.message,
           code: (error as { code?: unknown }).code,
           command: (error as { command?: unknown }).command,
@@ -3313,7 +3314,7 @@ export async function createLoginOtp(email: string) {
         }
 
         await pgQuery("delete from pending_login_otps where id = $1", [normalizedEmail]);
-        return { ok: false, message: "Chưa cấu hình SMTP để gửi OTP thật." };
+        return { ok: false, message: "Chưa cấu hình dịch vụ gửi email OTP. Vui lòng liên hệ IT để kiểm tra." };
       }
 
       await sendOtpEmail({
@@ -3326,7 +3327,7 @@ export async function createLoginOtp(email: string) {
     } catch (error) {
       logEmailDeliveryError("postgres-login", error);
       await pgQuery("delete from pending_login_otps where id = $1", [normalizedEmail]);
-      return { ok: false, message: "Không thể gửi OTP qua email. Vui lòng kiểm tra cấu hình SMTP." };
+      return { ok: false, message: getOtpEmailErrorMessage(error) };
     }
   }
 
@@ -3372,7 +3373,7 @@ export async function createLoginOtp(email: string) {
       }
 
       await db.collection<PendingLoginOtp>("pending_login_otps").deleteOne({ email: normalizedEmail });
-      return { ok: false, message: "Chưa cấu hình SMTP để gửi OTP thật." };
+      return { ok: false, message: "Chưa cấu hình dịch vụ gửi email OTP. Vui lòng liên hệ IT để kiểm tra." };
     }
 
     await sendOtpEmail({
@@ -3385,7 +3386,7 @@ export async function createLoginOtp(email: string) {
   } catch (error) {
     logEmailDeliveryError("mongo-login", error);
     await db.collection<PendingLoginOtp>("pending_login_otps").deleteOne({ email: normalizedEmail });
-    return { ok: false, message: "Không thể gửi OTP qua email. Vui lòng kiểm tra cấu hình SMTP." };
+    return { ok: false, message: getOtpEmailErrorMessage(error) };
   }
 }
 
@@ -3552,7 +3553,7 @@ export async function createRegistrationOtp(input: {
         }
 
         await pgQuery("delete from pending_registrations where id = $1", [normalizedEmail]);
-        return { ok: false, message: "Chưa cấu hình SMTP để gửi OTP thật." };
+        return { ok: false, message: "Chưa cấu hình dịch vụ gửi email OTP. Vui lòng liên hệ IT để kiểm tra." };
       }
 
       await sendOtpEmail({
@@ -3565,7 +3566,7 @@ export async function createRegistrationOtp(input: {
     } catch (error) {
       logEmailDeliveryError("postgres-registration", error);
       await pgQuery("delete from pending_registrations where id = $1", [normalizedEmail]);
-      return { ok: false, message: "Không thể gửi OTP qua email. Vui lòng kiểm tra cấu hình SMTP." };
+      return { ok: false, message: getOtpEmailErrorMessage(error) };
     }
   }
 
@@ -3682,7 +3683,7 @@ export async function createRegistrationOtp(input: {
       }
 
       await db.collection<PendingRegistration>("pending_registrations").deleteOne({ email: normalizedEmail });
-      return { ok: false, message: "Chưa cấu hình SMTP để gửi OTP thật." };
+      return { ok: false, message: "Chưa cấu hình dịch vụ gửi email OTP. Vui lòng liên hệ IT để kiểm tra." };
     }
 
     await sendOtpEmail({
@@ -3695,7 +3696,7 @@ export async function createRegistrationOtp(input: {
   } catch (error) {
     logEmailDeliveryError("mongo-registration", error);
     await db.collection<PendingRegistration>("pending_registrations").deleteOne({ email: normalizedEmail });
-    return { ok: false, message: "Không thể gửi OTP qua email. Vui lòng kiểm tra cấu hình SMTP." };
+    return { ok: false, message: getOtpEmailErrorMessage(error) };
   }
 }
 

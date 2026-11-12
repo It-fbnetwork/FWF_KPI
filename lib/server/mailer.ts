@@ -99,16 +99,40 @@ async function createSmtpTransporter() {
   };
 }
 
-export function isOtpEmailConfigured() {
-  if (process.env.RESEND_API_KEY?.trim() && getFirstEnv("RESEND_FROM", "EMAIL_FROM", "SMTP_FROM")) {
-    return true;
-  }
-
+function isSmtpConfigured() {
   return Boolean(
     getFirstEnv("SMTP_HOST", "EMAIL_HOST") &&
       getFirstEnv("SMTP_USER", "EMAIL_USER") &&
       getFirstEnv("SMTP_PASS", "EMAIL_PASSWORD")
   );
+}
+
+export function isOtpEmailConfigured() {
+  return Boolean(
+    (process.env.RESEND_API_KEY?.trim() && getFirstEnv("RESEND_FROM", "EMAIL_FROM", "SMTP_FROM")) ||
+    isSmtpConfigured()
+  );
+}
+
+export function getOtpEmailErrorMessage(error: unknown) {
+  const message = error && typeof error === "object" && "message" in error
+    ? String(error.message)
+    : "";
+  if (message.startsWith("Resend email failed")) {
+    if (/domain.*not verified/i.test(message)) {
+      return "Chưa gửi được OTP vì tên miền gửi email chưa được xác minh trên Resend. Vui lòng liên hệ IT để kiểm tra.";
+    }
+    if (/API key.*(invalid|not active|suspended)|restricted_api_key/i.test(message)) {
+      return "Chưa gửi được OTP vì cấu hình API key Resend chưa hợp lệ. Vui lòng liên hệ IT để kiểm tra.";
+    }
+    if (/quota|daily.*limit|monthly.*limit/i.test(message)) {
+      return "Dịch vụ gửi email đã đạt giới hạn. Vui lòng liên hệ IT để kiểm tra hạn mức Resend.";
+    }
+    if (/\(429\)/.test(message)) {
+      return "Dịch vụ email đang nhận quá nhiều yêu cầu. Vui lòng chờ một lát rồi gửi lại OTP.";
+    }
+  }
+  return "Không thể gửi OTP qua email. Vui lòng thử lại hoặc liên hệ IT để kiểm tra dịch vụ gửi email.";
 }
 
 async function sendEmail({
@@ -141,9 +165,17 @@ async function sendEmail({
 
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
-      throw new Error(`Resend email failed (${response.status}): ${detail || response.statusText}`);
+      // A rejected quota request has not been accepted for delivery, so SMTP
+      // can send it without retrying an ambiguously accepted Resend request.
+      const quotaExceeded = (response.status === 429 || response.status === 403) &&
+        /daily_quota_exceeded|monthly_quota_exceeded|sending_quota_exceeded|email sending quota/i.test(detail);
+      if (!quotaExceeded || !isSmtpConfigured()) {
+        throw new Error(`Resend email failed (${response.status}): ${detail || response.statusText}`);
+      }
+      console.warn("[email:resend] Sending quota exceeded; using configured SMTP transport.");
+    } else {
+      return;
     }
-    return;
   }
 
   const { from, transporter } = await createSmtpTransporter();
