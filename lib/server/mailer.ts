@@ -383,7 +383,7 @@ export async function sendQuizDeadlineReminderEmail({
   await sendTransactionalEmail({
     to,
     subject: `FWF KPI - Nhắc hạn bài kiểm tra còn 1 ngày: ${quizTitle}`,
-    text: `Xin chào ${recipientName}, bài kiểm tra "${quizTitle}" sẽ đến hạn vào ${deadlineLabel}. Vui lòng hoàn thành trước hạn. Nếu chưa thể làm kịp, hãy gửi email giải trình về ${managementText}.`,
+    text: `Xin chào ${recipientName}, bài kiểm tra "${quizTitle}" sẽ đến hạn vào ${deadlineLabel}. Mở bài học và bài kiểm tra: ${appUrl} . Vui lòng hoàn thành trước hạn. Nếu chưa thể làm kịp, hãy gửi email giải trình về ${managementText}.`,
     html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
         <h2 style="margin-bottom: 12px;">Nhắc hạn bài kiểm tra (còn 1 ngày)</h2>
@@ -399,7 +399,7 @@ export async function sendQuizDeadlineReminderEmail({
         </ol>
         <p style="margin-top: 18px;">
           <a href="${appUrl}" style="display:inline-block;background:#7c3aed;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:600;">
-            Mở ứng dụng để làm bài
+            Mở bài học và bài kiểm tra
           </a>
         </p>
         ${

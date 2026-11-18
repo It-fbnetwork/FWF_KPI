@@ -1,4 +1,5 @@
 import "server-only";
+import { getLearningPath } from "@/lib/learning-links";
 
 import { randomInt } from "node:crypto";
 import { ObjectId } from "mongodb";
@@ -2922,7 +2923,7 @@ export async function processQuizDeadlineReminders(now = new Date()) {
           quizTitle: quiz.title,
           documentName: documentName || quiz.title,
           deadlineAt: quiz.deadlineAt,
-          appUrl,
+          appUrl: new URL(getLearningPath(quiz.documentId), appUrl).toString(),
           managementEmails,
         });
         await markQuizDeadlineReminderSent({
@@ -3195,6 +3196,14 @@ function isEmployeePerson(person: Person) {
     !normalizedRole.includes("ceo") &&
     !normalizedRole.includes("trainer")
   );
+}
+
+function hasVerifiedLoginAccount(
+  personId: string,
+  userByPersonId: Map<string, Pick<UserAccount, "verified" | "personId">>
+) {
+  const user = userByPersonId.get(personId);
+  return Boolean(user?.personId && user.verified);
 }
 
 function canPersonAccessDocument(
@@ -5699,6 +5708,10 @@ export async function deletePersonRecord(
     );
     const threadIds = threadRes.rows.map((r) => String(r.id));
 
+    await pgQuery("delete from quiz_attempts where person_id = $1", [personId]);
+    await pgQuery("delete from quiz_attempt_resets where person_id = $1", [personId]);
+    await pgQuery("delete from learning_progress where person_id = $1", [personId]);
+    await pgQuery("delete from quiz_deadline_reminder_logs where person_id = $1", [personId]).catch(() => undefined);
     await pgQuery("delete from people where id = $1", [personId]);
     await pgQuery(
       "update company_teams set member_ids = coalesce((select jsonb_agg(v) from jsonb_array_elements_text(coalesce(member_ids,'[]'::jsonb)) v where v <> $1),'[]'::jsonb)",
@@ -5748,6 +5761,10 @@ export async function deletePersonRecord(
     }
   }
 
+  await db.collection<DbQuizAttempt>("quiz_attempts").deleteMany({ personId });
+  await db.collection<DbQuizAttemptReset>("quiz_attempt_resets").deleteMany({ personId });
+  await db.collection<DbLearningProgress>("learning_progress").deleteMany({ personId });
+  await db.collection("quiz_deadline_reminder_logs").deleteMany({ personId });
   await db.collection<DbPerson>("people").deleteOne({ _id: personId });
   await db.collection<DbCompanyTeam>("company_teams").updateMany(
     {},
@@ -9471,6 +9488,7 @@ export async function getTeamLearningStatusesForDocument(
     const targetPeople = mappedPeople.filter((person) => {
       if (!actor.isAdmin && !visibleTeamMemberIds.has(person.id)) return false;
       if (!isEmployeePerson(person)) return false;
+      if (!hasVerifiedLoginAccount(person.id, userByPersonId)) return false;
       if (actor.user.role === "store_lead" && person.id === actor.person.id) return false;
       return canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId);
     });
@@ -9538,6 +9556,9 @@ export async function getTeamLearningStatusesForDocument(
   const personRolesByPersonId = new Map<string, Set<UserRole>>();
   const storeProfileByPersonId = new Map<string, Pick<TeamLearningStatusRow, "storeRegion" | "storeBranchIds" | "storeBranchNames" | "supervisorUserId" | "supervisorName" | "supervisorRole">>();
   const mappedUsers = allUsers.map(mapDbUser);
+  const userByPersonId = new Map(
+    mappedUsers.filter((user) => Boolean(user.personId)).map((user) => [user.personId as string, user])
+  );
   for (const user of mappedUsers) {
     if (!user.personId) continue;
     const roles = personRolesByPersonId.get(user.personId) ?? new Set<UserRole>();
@@ -9554,6 +9575,7 @@ export async function getTeamLearningStatusesForDocument(
   const targetPeople = mappedPeople.filter((person) => {
     if (!actor.isAdmin && !visibleTeamMemberIds.has(person.id)) return false;
     if (!isEmployeePerson(person)) return false;
+    if (!hasVerifiedLoginAccount(person.id, userByPersonId)) return false;
     if (actor.user.role === "store_lead" && person.id === actor.person.id) return false;
     return canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId);
   });
@@ -9709,7 +9731,7 @@ export async function getQuizReport(
       pgQuery("select * from people"),
       pgQuery("select id,name from company_teams"),
       pgQuery("select * from learning_progress"),
-      pgQuery("select person_id, role from users where person_id is not null"),
+      pgQuery("select person_id, role, verified from users where person_id is not null"),
     ]);
     const allAttempts = attemptRows.rows.map((row) => mapPgQuizAttemptRow(row));
     const quizMap = new Map(quizzesRes.rows.map((q) => [String(q.id), String(q.title ?? "Quiz")]));
@@ -9720,14 +9742,26 @@ export async function getQuizReport(
     const mappedPeople = people.map(mapDbPerson);
     const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
     const personRolesByPersonId = buildPersonRolesMap(usersRes.rows);
+    const verifiedUserByPersonId = new Map(
+      usersRes.rows
+        .filter((row) => Boolean(row.person_id) && Boolean(row.verified ?? true))
+        .map((row) => [
+          String(row.person_id),
+          {
+            personId: String(row.person_id),
+            verified: Boolean(row.verified ?? true),
+          },
+        ])
+    );
     const teamNameMap = new Map(teamsRes.rows.map((t) => [String(t.id), String(t.name)]));
     const progressRows = progressRes.rows.map((row) => mapPgLearningProgressRow(row));
 
-    const targetPeople = actor.isAdmin
+    const scopedPeople = actor.isAdmin
       ? mappedPeople
       : actor.isLeader
         ? actor.teamMembers
         : [actor.person];
+    const targetPeople = scopedPeople.filter((person) => hasVerifiedLoginAccount(person.id, verifiedUserByPersonId));
     const targetPersonIds = new Set(targetPeople.map((person) => person.id));
     const attempts = allAttempts.filter((attempt) => targetPersonIds.has(attempt.personId));
     const attemptRounds = computeAttemptRoundByPersonAndDocument(attempts);
@@ -9838,7 +9872,7 @@ export async function getQuizReport(
     db.collection<DbPerson>("people").find(personIdFilter ? { _id: { $in: personIdFilter } } : {}).toArray(),
     db.collection<DbCompanyTeam>("company_teams").find({}).toArray(),
     db.collection<DbLearningProgress>("learning_progress").find(personIdFilter ? { personId: { $in: personIdFilter } } : {}).toArray(),
-    db.collection<DbUser>("users").find({ personId: { $exists: true } }, { projection: { personId: 1, role: 1 } }).toArray(),
+    db.collection<DbUser>("users").find({ personId: { $exists: true } }, { projection: { personId: 1, role: 1, verified: 1 } }).toArray(),
   ]);
 
   const quizMap = new Map(quizzes.map((q) => [q._id, q]));
@@ -9847,11 +9881,15 @@ export async function getQuizReport(
   const mappedPeople = people.map(mapDbPerson);
   const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
   const personRolesByPersonId = new Map<string, Set<UserRole>>();
+  const verifiedUserByPersonId = new Map<string, { personId: string; verified: boolean }>();
   for (const user of users) {
     if (!user.personId) continue;
     const roles = personRolesByPersonId.get(user.personId) ?? new Set<UserRole>();
     roles.add(normalizeUserRole(user.role));
     personRolesByPersonId.set(user.personId, roles);
+    if (user.verified !== false) {
+      verifiedUserByPersonId.set(user.personId, { personId: user.personId, verified: true });
+    }
   }
   const learningDocuments = documents.filter((document) => document.isLearningMaterial);
   const progressByPersonAndDocument = new Map<string, DbLearningProgress>();
@@ -9873,7 +9911,7 @@ export async function getQuizReport(
   }
 
   const rows: QuizReportRow[] = [];
-  for (const person of mappedPeople) {
+  for (const person of mappedPeople.filter((candidate) => hasVerifiedLoginAccount(candidate.id, verifiedUserByPersonId))) {
     const personAttempts = grouped.get(person.id) ?? [];
     const accessibleLearningDocuments = learningDocuments.filter((document) =>
       canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId) && !document.isLocked

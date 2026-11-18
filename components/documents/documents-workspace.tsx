@@ -8,6 +8,7 @@ import { useDirectory } from "@/components/directory-provider"
 import { useAuth } from "@/components/auth-provider"
 import { subscribeToPersonChannel } from "@/lib/client/realtime"
 import { getQuizDurationMinutes } from "@/lib/quiz-timing"
+import { getLearningPath } from "@/lib/learning-links"
 import { YoutubeLikePlayer } from "@/components/youtube-like-player"
 import { toast } from "@/components/ui/use-toast"
 import { Button } from "@/components/ui/button"
@@ -510,17 +511,41 @@ type LearningProgressRecord = {
     startedAtByStepId: Record<string, string>
 }
 
-type SortBy = "name" | "date" | "size" | "type" | "owner"
+type ContentSort = "name" | "name_desc" | "date" | "date_asc"
+type SortBy = ContentSort | "size" | "type" | "owner"
 type GroupBy = "none" | "type" | "date" | "owner" | "folder"
 type ViewMode = "grid" | "list"
 type DocVisibility = "team" | "office" | "store"
 
 const sortByLabels: Record<SortBy, string> = {
-    name: "Tên",
-    date: "Ngày",
+    name: "Tên A–Z",
+    name_desc: "Tên Z–A",
+    date: "Cập nhật mới nhất",
+    date_asc: "Cập nhật cũ nhất",
     size: "Dung lượng",
     type: "Loại",
     owner: "Người sở hữu",
+}
+
+function compareNamedContent(a: { name: string; date: string; id: string }, b: { name: string; date: string; id: string }, sort: ContentSort) {
+    const nameOrder = a.name.localeCompare(b.name, "vi", { numeric: true, sensitivity: "base" })
+    const dateOrder = (Date.parse(a.date) || 0) - (Date.parse(b.date) || 0)
+    const order = sort === "name" ? nameOrder : sort === "name_desc" ? -nameOrder : sort === "date" ? -dateOrder : dateOrder
+    return order || nameOrder || a.id.localeCompare(b.id)
+}
+
+function ContentSortSelect({ value, onChange, label, dateLabel = "Cập nhật" }: { value: ContentSort; onChange: (value: ContentSort) => void; label: string; dateLabel?: string }) {
+    return (
+        <label className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+            <span>Sắp xếp</span>
+            <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value as ContentSort)} className="min-w-0 rounded-md border border-gray-200 bg-white px-2 py-2 text-sm text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                <option value="name">Tên A–Z</option>
+                <option value="name_desc">Tên Z–A</option>
+                <option value="date">{dateLabel} mới nhất</option>
+                <option value="date_asc">{dateLabel} cũ nhất</option>
+            </select>
+        </label>
+    )
 }
 
 const groupByLabels: Record<GroupBy, string> = {
@@ -695,7 +720,13 @@ export default function DocumentsPage() {
     const isStoreVideoOnlyUploader = !isLeaderOrAdmin && user?.department === "Cửa hàng"
 
     const [searchQuery, setSearchQuery] = useState("")
+    const [learningSearchQuery, setLearningSearchQuery] = useState("")
+    const [testSearchQuery, setTestSearchQuery] = useState("")
+    const openedSharedLinkRef = useRef(false)
     const [sortBy, setSortBy] = useState<SortBy>("date")
+    const [folderSort, setFolderSort] = useState<ContentSort>("name")
+    const [learningSort, setLearningSort] = useState<ContentSort>("date_asc")
+    const [testSort, setTestSort] = useState<ContentSort>("date")
     const [groupBy, setGroupBy] = useState<GroupBy>("none")
     const [viewMode, setViewMode] = useState<ViewMode>("grid")
     const [selectedDocument, setSelectedDocument] = useState<Document | null>(null)
@@ -3174,7 +3205,7 @@ export default function DocumentsPage() {
             owner?.name.toLowerCase().includes(normalizedSearchQuery) ||
             folder.teamId.toLowerCase().includes(normalizedSearchQuery)
         )
-    })
+    }).sort((a, b) => compareNamedContent({ ...a, date: a.updatedAt || a.createdAt }, { ...b, date: b.updatedAt || b.createdAt }, folderSort))
 
     const filteredDocuments = documentsData.filter(
         (doc) =>
@@ -3185,8 +3216,10 @@ export default function DocumentsPage() {
 
     const sortedDocuments = [...filteredDocuments].sort((a, b) => {
         switch (sortBy) {
-            case "name": return a.name.localeCompare(b.name)
-            case "date": return new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
+            case "name":
+            case "name_desc":
+            case "date":
+            case "date_asc": return compareNamedContent({ ...a, date: a.modifiedAt }, { ...b, date: b.modifiedAt }, sortBy)
             case "size": return b.size - a.size
             case "type": return a.type.localeCompare(b.type)
             case "owner": {
@@ -3224,7 +3257,7 @@ export default function DocumentsPage() {
     const learningDocs = (isLeaderOrAdmin
         ? documentsData.filter((d) => d.isLearningMaterial)
         : documentsData.filter((d) => !d.isLocked)
-    ).sort((a, b) => new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime())
+    ).sort((a, b) => compareNamedContent({ ...a, date: a.modifiedAt }, { ...b, date: b.modifiedAt }, learningSort))
     const learningDocsKey = learningDocs.map((doc) => doc.id).join("|")
     const learningTabLoading = documentsLoading || learningDataLoading || (activeTab === "learning" && !learningDataLoaded)
     const completedLearningCount = learningDocs.filter((doc) => learningProgress.completedDocIds.includes(doc.id)).length
@@ -5248,9 +5281,50 @@ export default function DocumentsPage() {
     const quizCreateTargetDoc = documentsData.find((doc) => doc.id === quizCreateDialog.documentId)
     const quizCreateDocType = quizCreateTargetDoc?.type
     const canAutoGenerateByFormat = quizCreateDocType === "pdf" || quizCreateDocType === "pptx"
-    const visibleTests = canManageTests
+    const visibleTests = [...(canManageTests
         ? tests
-        : tests.filter((test) => canUserViewTest(user?.role, test.targetRoles))
+        : tests.filter((test) => canUserViewTest(user?.role, test.targetRoles)))].sort((a, b) =>
+            compareNamedContent({ id: a.id, name: a.title, date: a.createdAt }, { id: b.id, name: b.title, date: b.createdAt }, testSort)
+        )
+    const normalizeExamSearch = (value: string) => value.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d")
+    const learningSearch = normalizeExamSearch(learningSearchQuery)
+    const testSearch = normalizeExamSearch(testSearchQuery)
+    const searchedLearningDocs = learningDocs.filter((doc) =>
+        normalizeExamSearch(`${doc.name} ${quizzes[doc.id]?.title ?? ""}`).includes(learningSearch)
+    )
+    const searchedTests = visibleTests.filter((test) => normalizeExamSearch(test.title).includes(testSearch))
+    useEffect(() => {
+        if (openedSharedLinkRef.current) return
+        const params = new URLSearchParams(window.location.search)
+        const documentId = params.get("documentId")
+        const testId = params.get("testId")
+        if (documentId) {
+            setActiveTab("learning")
+            if (documentsLoading || !learningDataLoaded) return
+            const doc = learningDocs.find((item) => item.id === documentId)
+            openedSharedLinkRef.current = true
+            if (!doc) { toast({ title: "Không tìm thấy bài học hoặc bạn chưa được cấp quyền xem", variant: "destructive" }); return }
+            setSelectedLearningDoc(doc)
+            setIsLearningSidebarCollapsed(false)
+            setMobileLearningMode("reader")
+        } else if (testId) {
+            setActiveTab("exams")
+            if (!testsDataLoaded || testsLoading) return
+            openedSharedLinkRef.current = true
+            if (!visibleTests.some((item) => item.id === testId)) { toast({ title: "Không tìm thấy bài kiểm tra hoặc bạn chưa được cấp quyền xem", variant: "destructive" }); return }
+            setSelectedTestId(testId)
+            setIsCreatingTest(false)
+        }
+    }, [documentsLoading, learningDataLoaded, learningDocsKey, testsDataLoaded, testsLoading, tests])
+
+    const copyLearningLink = async (id: string, kind: "lesson" | "test") => {
+        try {
+            await navigator.clipboard.writeText(new URL(getLearningPath(id, kind), window.location.origin).toString())
+            toast({ title: "Đã sao chép link" })
+        } catch {
+            toast({ title: "Không thể sao chép link. Vui lòng cấp quyền clipboard cho trình duyệt.", variant: "destructive" })
+        }
+    }
     const activeTakingTest = visibleTests.find((test) =>
         takingTestIds.has(test.id) &&
         !submittedTestIds.has(test.id) &&
@@ -5386,6 +5460,7 @@ export default function DocumentsPage() {
                                         </h2>
                                     )}
                                     <div className="flex items-center gap-1">
+                                        {selectedLearningDoc && <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Sao chép link bài học và quiz" title="Sao chép link bài học và quiz" onClick={() => void copyLearningLink(selectedLearningDoc.id, "lesson")}><Link className="h-4 w-4" /></Button>}
                                         {isLeaderOrAdmin && !isLearningSidebarCollapsed && (
                                             <Button size="sm" variant="ghost" className="h-7 text-xs px-2"
                                                 onClick={() => setQuizCreateDialog({
@@ -5410,7 +5485,11 @@ export default function DocumentsPage() {
                                     </div>
                                 </div>
                                 {!isLearningSidebarCollapsed && (
-                                    <p className="text-xs text-gray-500 dark:text-gray-400">{learningDocs.length} bài học</p>
+                                    <div className="space-y-2">
+                                        <p className="text-xs text-gray-500 dark:text-gray-400">{searchedLearningDocs.length}/{learningDocs.length} bài học</p>
+                                        <Input type="search" aria-label="Tìm bài học hoặc quiz" placeholder="Tìm bài học, bài kiểm tra…" value={learningSearchQuery} onChange={(e) => setLearningSearchQuery(e.target.value)} className="h-9" />
+                                        <ContentSortSelect value={learningSort} onChange={setLearningSort} label="Sắp xếp bài kiểm tra và học liệu" />
+                                    </div>
                                 )}
                                 {/* Employee progress bar */}
                                 {!isLeaderOrAdmin && !isLearningSidebarCollapsed && (
@@ -5432,7 +5511,8 @@ export default function DocumentsPage() {
                             {/* Doc list */}
                             {!isLearningSidebarCollapsed ? (
                                 <div className="max-h-[42vh] overflow-y-auto lg:max-h-none lg:flex-1">
-                                {learningDocs.map((doc) => {
+                                {searchedLearningDocs.length === 0 && <p role="status" className="p-4 text-sm text-gray-500">Không tìm thấy bài phù hợp. Thử tên khác hoặc xoá từ khoá.</p>}
+                                {searchedLearningDocs.map((doc) => {
                                     const quiz = quizzes[doc.id]
                                     const attempt = myAttempts[doc.id]
                                     const isSelected = selectedLearningDoc?.id === doc.id
@@ -6363,6 +6443,7 @@ export default function DocumentsPage() {
                                                     <Plus className="w-3 h-3 mr-1" />Thêm
                                                 </Button>
                                             )}
+                                            {selectedTest && <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Sao chép link bài kiểm tra" title="Sao chép link bài kiểm tra" onClick={() => void copyLearningLink(selectedTest.id, "test")}><Link className="h-4 w-4" /></Button>}
                                             <Button
                                                 size="icon"
                                                 variant="ghost"
@@ -6375,11 +6456,14 @@ export default function DocumentsPage() {
                                             </Button>
                                         </div>
                                     </div>
-                                    <p className="text-xs text-gray-500 dark:text-gray-400">{visibleTests.length} bài thi</p>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">{searchedTests.length}/{visibleTests.length} bài thi</p>
+                                    <Input type="search" aria-label="Tìm bài kiểm tra" placeholder="Tìm bài kiểm tra…" value={testSearchQuery} onChange={(e) => setTestSearchQuery(e.target.value)} className="mt-2 h-9" />
+                                    <div className="mt-2"><ContentSortSelect value={testSort} onChange={setTestSort} label="Sắp xếp bài thi" dateLabel="Ngày tạo" /></div>
                                 </div>
 
                                 <div className="max-h-[42vh] overflow-y-auto lg:max-h-none lg:flex-1">
-                                    {visibleTests.map((test) => {
+                                    {searchedTests.length === 0 && <p role="status" className="p-4 text-sm text-gray-500">Không tìm thấy bài phù hợp. Thử tên khác hoặc xoá từ khoá.</p>}
+                                    {searchedTests.map((test) => {
                                         const selected = selectedTest?.id === test.id && !isCreatingTest
                                         const latestSubmission = testSubmissionHistory[test.id]?.[0]
                                         const latestResult = getTestSubmissionResult(test, latestSubmission)
@@ -7245,6 +7329,7 @@ export default function DocumentsPage() {
             <div className="mb-6">
                 <div className="flex items-center justify-between mb-3">
                     <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Thư mục</h2>
+                    <ContentSortSelect value={folderSort} onChange={setFolderSort} label="Sắp xếp thư mục" />
                     {normalizedSearchQuery && (
                         <span className="text-xs text-gray-500 dark:text-gray-400">
                             {filteredVisibleFolders.length} / {visibleFolders.length} folder
@@ -7281,6 +7366,12 @@ export default function DocumentsPage() {
                 <>
                     {/* Results count */}
                     <div className="mb-4">
+                        <label className="mb-2 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                            Sắp xếp tài liệu
+                            <select aria-label="Sắp xếp tài liệu" value={sortBy} onChange={(e) => setSortBy(e.target.value as SortBy)} className="rounded-md border border-gray-200 bg-white px-2 py-2 text-sm text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                                {(Object.keys(sortByLabels) as SortBy[]).map((value) => <option key={value} value={value}>{sortByLabels[value]}</option>)}
+                            </select>
+                        </label>
                         <p className="text-sm text-gray-600 dark:text-gray-400">
                             {filteredDocuments.length} / {documentsData.length} tài liệu
                             {activeFolder ? ` trong "${activeFolder.name}"` : ""}
@@ -7299,7 +7390,7 @@ export default function DocumentsPage() {
                                 )}
                                 {viewMode === "grid" ? (
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                                        {(sortBy === "date" ? [...groupDocs].reverse() : groupDocs).map((doc) => (
+                                        {groupDocs.map((doc) => (
                                             <DocumentCard key={doc.id} doc={doc} />
                                         ))}
                                     </div>

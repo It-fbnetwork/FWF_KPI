@@ -1,4 +1,5 @@
 "use client";
+import { getSafeLoginDestination } from "@/lib/learning-links";
 
 import Link from "next/link";
 import type { Route } from "next";
@@ -256,7 +257,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
         return;
       }
       await refreshSession();
-      router.replace("/dashboard" as Route);
+      router.replace(getSafeLoginDestination(window.location.search) as Route);
       return;
     }
 
@@ -356,7 +357,7 @@ export function AuthShell({ mode }: { mode: AuthMode }) {
     }
 
     await refreshSession();
-    router.replace("/dashboard" as Route);
+    router.replace(getSafeLoginDestination(window.location.search) as Route);
   }
 
   return (
