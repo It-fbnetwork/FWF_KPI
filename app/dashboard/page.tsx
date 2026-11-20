@@ -79,6 +79,7 @@ type TestReportEndedSession = {
 }
 
 type TestReportRow = {
+    canReset?: boolean
     personId: string
     personName: string
     teamId: string
@@ -1338,25 +1339,27 @@ export default function DashboardPage() {
                                                                                         <span className="text-xs text-red-500 dark:text-red-300">
                                                                                             {violation.blockedAt ? new Date(violation.blockedAt).toLocaleDateString("vi-VN") : "-"}
                                                                                         </span>
-                                                                                        <Button
-                                                                                            type="button"
-                                                                                            size="sm"
-                                                                                            variant="outline"
-                                                                                            className="h-8 bg-white/70 text-xs dark:bg-gray-900/70"
-                                                                                            disabled={isResetting}
-                                                                                            onClick={(event) => {
-                                                                                                event.stopPropagation()
-                                                                                                void handleResetReportTest({
-                                                                                                    personId: row.personId,
-                                                                                                    personName: row.personName,
-                                                                                                    testId: violation.testId,
-                                                                                                    testTitle: violation.testTitle,
-                                                                                                })
-                                                                                            }}
-                                                                                        >
-                                                                                            {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
-                                                                                            Đặt lại
-                                                                                        </Button>
+                                                                                        {row.canReset !== false && (
+                                                                                            <Button
+                                                                                                type="button"
+                                                                                                size="sm"
+                                                                                                variant="outline"
+                                                                                                className="h-8 bg-white/70 text-xs dark:bg-gray-900/70"
+                                                                                                disabled={isResetting}
+                                                                                                onClick={(event) => {
+                                                                                                    event.stopPropagation()
+                                                                                                    void handleResetReportTest({
+                                                                                                        personId: row.personId,
+                                                                                                        personName: row.personName,
+                                                                                                        testId: violation.testId,
+                                                                                                        testTitle: violation.testTitle,
+                                                                                                    })
+                                                                                                }}
+                                                                                            >
+                                                                                                {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
+                                                                                                Đặt lại
+                                                                                            </Button>
+                                                                                        )}
                                                                                     </div>
                                                                                 </td>
                                                                                         </>
@@ -1386,25 +1389,27 @@ export default function DashboardPage() {
                                                                                         <span className="text-xs text-amber-600 dark:text-amber-300">
                                                                                             {ended.endedAt ? new Date(ended.endedAt).toLocaleDateString("vi-VN") : "-"}
                                                                                         </span>
-                                                                                        <Button
-                                                                                            type="button"
-                                                                                            size="sm"
-                                                                                            variant="outline"
-                                                                                            className="h-8 bg-white/70 text-xs dark:bg-gray-900/70"
-                                                                                            disabled={isResetting}
-                                                                                            onClick={(event) => {
-                                                                                                event.stopPropagation()
-                                                                                                void handleResetReportTest({
-                                                                                                    personId: row.personId,
-                                                                                                    personName: row.personName,
-                                                                                                    testId: ended.testId,
-                                                                                                    testTitle: ended.testTitle,
-                                                                                                })
-                                                                                            }}
-                                                                                        >
-                                                                                            {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
-                                                                                            Đặt lại
-                                                                                        </Button>
+                                                                                        {row.canReset !== false && (
+                                                                                            <Button
+                                                                                                type="button"
+                                                                                                size="sm"
+                                                                                                variant="outline"
+                                                                                                className="h-8 bg-white/70 text-xs dark:bg-gray-900/70"
+                                                                                                disabled={isResetting}
+                                                                                                onClick={(event) => {
+                                                                                                    event.stopPropagation()
+                                                                                                    void handleResetReportTest({
+                                                                                                        personId: row.personId,
+                                                                                                        personName: row.personName,
+                                                                                                        testId: ended.testId,
+                                                                                                        testTitle: ended.testTitle,
+                                                                                                    })
+                                                                                                }}
+                                                                                            >
+                                                                                                {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
+                                                                                                Đặt lại
+                                                                                            </Button>
+                                                                                        )}
                                                                                     </div>
                                                                                 </td>
                                                                                         </>
@@ -1455,25 +1460,27 @@ export default function DashboardPage() {
                                                                                     </div>
                                                                                 </td>
                                                                                 <td className="px-5 py-3 text-right">
-                                                                                    <Button
-                                                                                        type="button"
-                                                                                        size="sm"
-                                                                                        variant="outline"
-                                                                                        className="h-8 bg-white/70 text-xs dark:bg-gray-900/70"
-                                                                                        disabled={isResetting}
-                                                                                        onClick={(event) => {
-                                                                                            event.stopPropagation()
-                                                                                            void handleResetReportTest({
-                                                                                                personId: row.personId,
-                                                                                                personName: row.personName,
-                                                                                                testId: attempt.testId,
-                                                                                                testTitle: attempt.testTitle,
-                                                                                            })
-                                                                                        }}
-                                                                                    >
-                                                                                        {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
-                                                                                        Đặt lại
-                                                                                    </Button>
+                                                                                    {row.canReset !== false && (
+                                                                                        <Button
+                                                                                            type="button"
+                                                                                            size="sm"
+                                                                                            variant="outline"
+                                                                                            className="h-8 bg-white/70 text-xs dark:bg-gray-900/70"
+                                                                                            disabled={isResetting}
+                                                                                            onClick={(event) => {
+                                                                                                event.stopPropagation()
+                                                                                                void handleResetReportTest({
+                                                                                                    personId: row.personId,
+                                                                                                    personName: row.personName,
+                                                                                                    testId: attempt.testId,
+                                                                                                    testTitle: attempt.testTitle,
+                                                                                                })
+                                                                                            }}
+                                                                                        >
+                                                                                            {isResetting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
+                                                                                            Đặt lại
+                                                                                        </Button>
+                                                                                    )}
                                                                                 </td>
                                                                                 <td className="px-5 py-3 text-xs text-gray-400">
                                                                                     {new Date(attempt.submittedAt).toLocaleDateString("vi-VN")}

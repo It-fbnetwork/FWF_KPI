@@ -9695,6 +9695,7 @@ export type TestReportEndedSession = {
 };
 
 export type TestReportRow = {
+  canReset?: boolean;
   personId: string;
   personName: string;
   teamId: string;
@@ -9717,6 +9718,22 @@ export type TestReportRow = {
   endedSessions: TestReportEndedSession[];
 };
 
+function getOverviewReportPersonIds(actor: SessionActor, people: Person[]): Set<string> | null {
+  if (actor.isAdmin) return null;
+  if (!actor.isLeader) return new Set([actor.person.id]);
+
+  const personIds = new Set(actor.teamMembers.map((person) => person.id));
+  if (actor.user.role === "leader" && actor.user.department === "Vận hành") {
+    const trainerScope = getManagedPersonIdsFromPeople(
+      { ...actor.user, role: "store_trainer", department: "Cửa hàng" },
+      actor.person,
+      people
+    );
+    for (const personId of trainerScope) personIds.add(personId);
+  }
+  return personIds;
+}
+
 export async function getQuizReport(
   sessionUserId: string | null | undefined
 ): Promise<QuizReportRow[]> {
@@ -9731,7 +9748,7 @@ export async function getQuizReport(
       pgQuery("select * from people"),
       pgQuery("select id,name from company_teams"),
       pgQuery("select * from learning_progress"),
-      pgQuery("select person_id, role, verified from users where person_id is not null"),
+      pgQuery("select id, person_id, role, department, verified from users where person_id is not null"),
     ]);
     const allAttempts = attemptRows.rows.map((row) => mapPgQuizAttemptRow(row));
     const quizMap = new Map(quizzesRes.rows.map((q) => [String(q.id), String(q.title ?? "Quiz")]));
@@ -9756,11 +9773,11 @@ export async function getQuizReport(
     const teamNameMap = new Map(teamsRes.rows.map((t) => [String(t.id), String(t.name)]));
     const progressRows = progressRes.rows.map((row) => mapPgLearningProgressRow(row));
 
-    const scopedPeople = actor.isAdmin
-      ? mappedPeople
-      : actor.isLeader
-        ? actor.teamMembers
-        : [actor.person];
+    const reportPersonIds = getOverviewReportPersonIds(
+      actor,
+      attachUserProfileToPeople(mappedPeople, usersRes.rows.map((row) => mapDbUser(mapPgUserRow(row))))
+    );
+    const scopedPeople = reportPersonIds ? mappedPeople.filter((person) => reportPersonIds.has(person.id)) : mappedPeople;
     const targetPeople = scopedPeople.filter((person) => hasVerifiedLoginAccount(person.id, verifiedUserByPersonId));
     const targetPersonIds = new Set(targetPeople.map((person) => person.id));
     const attempts = allAttempts.filter((attempt) => targetPersonIds.has(attempt.personId));
@@ -9848,14 +9865,17 @@ export async function getQuizReport(
 
   const db = await getMongoDb();
 
-  let personIdFilter: string[] | null = null;
-  if (actor.isAdmin) {
-    personIdFilter = null;
-  } else if (actor.isLeader) {
-    personIdFilter = actor.teamMembers.map((m) => m.id);
-  } else {
-    personIdFilter = [actor.person.id];
-  }
+  const [people, users] = await Promise.all([
+    db.collection<DbPerson>("people").find({}).toArray(),
+    db.collection<DbUser>("users").find(
+      { personId: { $exists: true } },
+      { projection: { personId: 1, role: 1, department: 1, verified: 1 } }
+    ).toArray(),
+  ]);
+  const mappedPeople = people.map(mapDbPerson);
+  const reportPersonIds = getOverviewReportPersonIds(actor, attachUserProfileToPeople(mappedPeople, users.map(mapDbUser)));
+  const personIdFilter = reportPersonIds ? [...reportPersonIds] : null;
+  const scopedPeople = reportPersonIds ? mappedPeople.filter((person) => reportPersonIds.has(person.id)) : mappedPeople;
 
   const attemptQuery = personIdFilter ? { personId: { $in: personIdFilter } } : {};
   const attempts = await db
@@ -9866,19 +9886,16 @@ export async function getQuizReport(
 
   const quizIds = [...new Set(attempts.map((a) => a.quizId))];
 
-  const [quizzes, documents, people, companyTeams, progresses, users] = await Promise.all([
+  const [quizzes, documents, companyTeams, progresses] = await Promise.all([
     db.collection<DbLearningQuiz>("learning_quizzes").find({ _id: { $in: quizIds } }).toArray(),
     db.collection<DbDocument>("documents").find({}).toArray(),
-    db.collection<DbPerson>("people").find(personIdFilter ? { _id: { $in: personIdFilter } } : {}).toArray(),
     db.collection<DbCompanyTeam>("company_teams").find({}).toArray(),
     db.collection<DbLearningProgress>("learning_progress").find(personIdFilter ? { personId: { $in: personIdFilter } } : {}).toArray(),
-    db.collection<DbUser>("users").find({ personId: { $exists: true } }, { projection: { personId: 1, role: 1, verified: 1 } }).toArray(),
   ]);
 
   const quizMap = new Map(quizzes.map((q) => [q._id, q]));
   const docMap = new Map(documents.map((d) => [d._id, d.name]));
   const teamNameMap = new Map(companyTeams.map((t) => [t._id, t.name]));
-  const mappedPeople = people.map(mapDbPerson);
   const ownerTeamByPersonId = new Map(people.map((person) => [person._id, normalizeTeamId(person.teamId)]));
   const personRolesByPersonId = new Map<string, Set<UserRole>>();
   const verifiedUserByPersonId = new Map<string, { personId: string; verified: boolean }>();
@@ -9911,7 +9928,7 @@ export async function getQuizReport(
   }
 
   const rows: QuizReportRow[] = [];
-  for (const person of mappedPeople.filter((candidate) => hasVerifiedLoginAccount(candidate.id, verifiedUserByPersonId))) {
+  for (const person of scopedPeople.filter((candidate) => hasVerifiedLoginAccount(candidate.id, verifiedUserByPersonId))) {
     const personAttempts = grouped.get(person.id) ?? [];
     const accessibleLearningDocuments = learningDocuments.filter((document) =>
       canPersonAccessDocument(person, document, ownerTeamByPersonId, personRolesByPersonId) && !document.isLocked
@@ -10038,8 +10055,7 @@ export async function getTestReport(
       usersRes.rows.map((row) => mapDbUser(mapPgUserRow(row)))
     );
     const teamNameMap = new Map(teamsRes.rows.map((team) => [String(team.id), String(team.name)]));
-    const targetPeople = actor.isAdmin ? mappedPeople : actor.isLeader ? actor.teamMembers : [actor.person];
-    return buildTestReportRows(targetPeople, tests, submissions, sessions, teamNameMap);
+    return buildScopedTestReportRows(actor, mappedPeople, tests, submissions, sessions, teamNameMap);
   }
 
   const db = await getMongoDb();
@@ -10056,8 +10072,29 @@ export async function getTestReport(
     users.map(mapDbUser)
   );
   const teamNameMap = new Map(companyTeams.map((team) => [team._id, team.name]));
-  const targetPeople = actor.isAdmin ? mappedPeople : actor.isLeader ? actor.teamMembers : [actor.person];
-  return buildTestReportRows(targetPeople, tests, submissions, sessions, teamNameMap);
+  return buildScopedTestReportRows(actor, mappedPeople, tests, submissions, sessions, teamNameMap);
+}
+
+function buildScopedTestReportRows(
+  actor: SessionActor,
+  people: Person[],
+  tests: DbTest[],
+  submissions: DbTestSubmission[],
+  sessions: DbTestSession[],
+  teamNameMap: Map<string, string>
+): TestReportRow[] {
+  const targetPeople = actor.isAdmin ? people : actor.isLeader ? actor.teamMembers : [actor.person];
+  if (actor.isAdmin || actor.user.role !== "leader" || actor.user.department !== "Vận hành") {
+    return buildTestReportRows(targetPeople, tests, submissions, sessions, teamNameMap);
+  }
+
+  const reportPersonIds = getOverviewReportPersonIds(actor, people);
+  const reportPeople = people.filter((person) => reportPersonIds?.has(person.id));
+  const managedPersonIds = new Set(actor.teamMembers.map((person) => person.id));
+  return buildTestReportRows(reportPeople, tests, submissions, sessions, teamNameMap).map((row) => ({
+    ...row,
+    canReset: managedPersonIds.has(row.personId) && row.personId !== actor.person.id,
+  }));
 }
 
 function buildTestReportRows(
